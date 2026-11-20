@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+<title>Pip</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="sh"></div>
+  <div id="pet">
+    <canvas></canvas>
+    <div id="fallback">🐿️</div>
+    <div id="bubble"></div>
+  </div>
+
+  <div id="panel" role="dialog" aria-label="Chat">
+    <div class="hd">
+      <span class="dot"></span><b id="nm">Pip</b><span class="sp"></span>
+      <button id="reset" title="New chat">↺</button>
+      <button id="expand" title="Bigger window">⤢</button>
+      <button id="gear" title="Settings">⚙</button>
+      <button id="close" title="Close">✕</button>
+    </div>
+    <div id="msgs"></div>
+    <div class="chips">
+      <button data-c="decide">🤔 Help me decide</button>
+      <button data-c="coin">🪙 Flip a coin</button>
+      <button data-c="fact">✨ Fun fact</button>
+      <button data-c="screen">🖥️ Help with my screen</button>
+      <button data-c="cal">📅 Check my calendar</button>
+      <button data-c="sys">🛠️ Open a setting / do a task</button>
+      <button data-c="clip">📋 What I copied</button>
+      <button data-c="cheer">💛 Cheer me up</button>
+    </div>
+    <div class="in">
+      <textarea id="inp" rows="1" placeholder="Say something..."></textarea>
+      <button id="go" title="Send">➤</button>
+    </div>
+
+    <div id="settings">
+      <label for="s-provider">AI brain provider</label>
+      <select id="s-provider">
+        <option value="anthropic">Anthropic Claude (paid, very capable)</option>
+        <option value="gemini">Google Gemini (free tier available)</option>
+        <option value="groq">Groq (free, no card needed)</option>
+      </select>
+      <div id="s-anth">
+        <label for="s-key">Anthropic API key</label>
+        <input id="s-key" type="password" autocomplete="off" placeholder="sk-ant-...">
+        <div class="hint" id="s-keyhint">Stored encrypted on this computer, sent only to api.anthropic.com. Billed to your Anthropic account.</div>
+        <div class="row tight"><button id="s-getkey-a" class="ghost">Get a key</button></div>
+        <label for="s-model">Claude model</label>
+        <select id="s-model">
+          <option value="claude-haiku-5-5">Haiku 5.5: fastest, cheapest</option>
+          <option value="claude-sonnet-5-5">Sonnet 5.5: smarter, better for code</option>
+          <option value="claude-opus-5-5">Opus 5.5: strongest, costs the most</option>
+        </select>
+      </div>
+      <div id="s-gem" class="hidden">
+        <label for="s-gkey">Google Gemini API key</label>
+        <input id="s-gkey" type="password" autocomplete="off" placeholder="AIza...">
+        <div class="hint" id="s-gkeyhint">Stored encrypted on this computer, sent only to Google (generativelanguage.googleapis.com). Click "Get a free key", sign in with a Google account, create a key, and paste it here.</div>
+        <div class="row tight"><button id="s-getkey-g" class="ghost">Get a free key</button></div>
+        <label for="s-gmodel">Gemini model</label>
+        <input id="s-gmodel" type="text" list="s-gmodels" maxlength="60" autocomplete="off" placeholder="gemini-2.5-flash">
+        <datalist id="s-gmodels">
+          <option value="gemini-2.5-flash"></option>
+          <option value="gemini-2.5-flash-lite"></option>
+          <option value="gemini-2.5-pro"></option>
+          <option value="gemini-3.5-flash"></option>
+        </datalist>
+        <div class="hint">Flash is a good free choice; Flash-Lite is lighter if you hit the free limits. Free limits are small, so long jobs may pause and retry. If a name is rejected, Google may have renamed it: type a current model name from aistudio.google.com.</div>
+        <div class="hint warnbox">Privacy: on Google's free tier, Google may use what Pip sends (your chats, and anything you approve sharing, like screenshots, files and command output) to improve its products, and human reviewers may read it. Don't use it for private things. Turning on billing for the key's Google project switches it to Google's paid terms, which don't use your data that way.</div>
+      </div>
+      <div id="s-groq" class="hidden">
+        <label for="s-grkey">Groq API key</label>
+        <input id="s-grkey" type="password" autocomplete="off" placeholder="gsk_...">
+        <div class="hint" id="s-grkeyhint">Stored encrypted on this computer, sent only to Groq (api.groq.com). Click "Get a free key", sign up with an email, create a key, and paste it here.</div>
+        <div class="row tight"><button id="s-getkey-gr" class="ghost">Get a free key</button></div>
+        <label for="s-grmodel">Groq model</label>
+        <input id="s-grmodel" type="text" list="s-grmodels" maxlength="80" autocomplete="off" placeholder="llama-3.3-70b-versatile">
+        <datalist id="s-grmodels">
+          <option value="llama-3.3-70b-versatile"></option>
+          <option value="llama-3.1-8b-instant"></option>
+        </datalist>
+        <div class="hint">The 70b model is smarter; the 8b one is faster and has higher free limits. These models read text only, so "look at my screen" won't work (use Gemini or Claude for that). Free limits are small, so long jobs may pause and retry.</div>
+        <div class="hint warnbox">Privacy: what Pip sends (your chats, and anything you approve sharing, like files and command output) goes to Groq. Free services can have different data rules from paid ones, so check Groq's privacy policy and don't use it for private things.</div>
+      </div>
+      <label for="s-name">Name</label>
+      <input id="s-name" type="text" maxlength="20">
+      <label for="s-palette">Fur colour</label>
+      <select id="s-palette">
+        <option value="classic">Classic grey-blue</option>
+        <option value="honey">Honey</option>
+        <option value="cocoa">Cocoa</option>
+      </select>
+      <label class="check"><input id="s-wander" type="checkbox"> Hop and glide around on its own</label>
+      <label class="check"><input id="s-quips" type="checkbox"> Friendly nudges (water, stretch...)</label>
+      <label class="check"><input id="s-login" type="checkbox"> Launch at login</label>
+      <label class="check"><input id="s-actions" type="checkbox"> Let Pip do things for me (always asks first)</label>
+      <label class="check"><input id="s-full" type="checkbox"> Full access: run commands, press keys, close apps, use files anywhere (every action still asks first)</label>
+      <div class="hint">With this on, Pip can do almost anything on your computer, one approved step at a time. Risky steps show in red with the exact command. Turn it off to keep Pip to its own folder, the Control Panel and settings pages, web pages, reminders and calendar.</div>
+      <label>Folder Pip may work in</label>
+      <div class="folder"><span id="s-folder">None</span></div>
+      <div class="row"><button id="s-choose" class="ghost">Choose...</button><button id="s-clear" class="ghost">Clear</button></div>
+      <div class="hint">Without full access, Pip can only list, read, move and trash files inside this folder. Either way, every action needs your approval, and trashed files go to the Trash.</div>
+      <label>Calendars (for birthdays and events)</label>
+      <div id="s-cals"></div>
+      <label class="check hidden" id="s-maccal-wrap"><input id="s-maccal" type="checkbox"> Also search the Calendar app on this Mac (by name)</label>
+      <input id="s-calname" type="text" maxlength="30" placeholder="Name (optional)">
+      <input id="s-calurl" type="text" autocomplete="off" placeholder="Calendar link (https://... .ics)">
+      <div class="row tight"><button id="s-caladd" class="ghost">Add link</button><button id="s-calfile" class="ghost">Add .ics file...</button></div>
+      <div class="hint" id="s-calstatus"></div>
+      <div class="hint">Google Calendar: Settings > your calendar > "Secret address in iCal format". Outlook.com: Settings > Calendar > Shared calendars > Publish > ICS link. Links are stored encrypted. Pip only reads, and only after you approve each lookup.</div>
+      <div class="row"><button id="s-save">Save</button><button id="s-cancel" class="ghost">Back</button><span id="s-status"></span></div>
+    </div>
+  </div>
+
+  <script src="model.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

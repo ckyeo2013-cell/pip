@@ -1,0 +1,31 @@
+// Safe bridge between the page (renderer) and the main process.
+const { contextBridge, ipcRenderer } = require('electron');
+
+const on = (channel, cb) => ipcRenderer.on(channel, (_e, ...args) => cb(...args));
+
+contextBridge.exposeInMainWorld('pip', {
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  saveSettings: (s) => ipcRenderer.invoke('settings:save', s),
+  chat: (payload) => ipcRenderer.invoke('chat', payload),
+  copyText: (t) => ipcRenderer.send('clipboard:write', t),
+  readClipboard: () => ipcRenderer.invoke('clipboard:read'),
+  setInteractive: (v) => ipcRenderer.send('interactive', !!v),
+  focus: () => ipcRenderer.send('focus'),
+  savePos: (x) => ipcRenderer.send('pos:save', x),
+  showMenu: () => ipcRenderer.send('menu:show'),
+  respondApproval: (id, ok) => ipcRenderer.send('approve:response', { id, ok: ok === true }),
+  openKeyPage: (which) => ipcRenderer.send('link:open', which),
+  chooseFolder: () => ipcRenderer.invoke('folder:choose'),
+  clearFolder: () => ipcRenderer.invoke('folder:clear'),
+  addCalendarUrl: (label, url) => ipcRenderer.invoke('cal:addUrl', { label, url }),
+  addCalendarFile: () => ipcRenderer.invoke('cal:addFile'),
+  removeCalendar: (id) => ipcRenderer.invoke('cal:remove', id),
+  onApproval: (cb) => on('approve:request', cb),
+  onApprovalExpired: (cb) => on('approve:expired', cb),
+  onSay: (cb) => on('say', cb),
+  onHidePanel: (cb) => on('panel:hide', cb),
+  onCursor: (cb) => on('cursor', cb),
+  onSettings: (cb) => on('settings', cb),
+  onOpenChat: (cb) => on('open-chat', cb),
+  onArea: (cb) => on('area', cb),
+});

@@ -1,0 +1,25 @@
+{
+  "name": "pip-desktop",
+  "version": "1.3.0",
+  "description": "Pip the sugar glider: a friendly 3D desktop pet that chats, helps you decide and does things on your computer (asks first)",
+  "main": "main.js",
+  "author": "You <you@example.com>",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "test": "node selftest.js && node selftest-main.js"
+  },
+  "devDependencies": {
+    "electron": "^39.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.example.pip",
+    "productName": "Pip",
+    "files": ["main.js", "actions.js", "system.js", "agent.js", "calendar.js", "preload.js", "index.html", "style.css", "renderer.js", "model.js", "icon.png", "tray.png", "package.json"],
+    "win": { "target": "nsis" },
+    "mac": { "target": "dmg", "category": "public.app-category.entertainment" },
+    "linux": { "target": "AppImage", "category": "Utility" }
+  }
+}
