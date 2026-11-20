@@ -15,27 +15,27 @@
   </div>
 
   <div id="panel" role="dialog" aria-label="Chat">
-    <div class="hd">
+    <div class="hd" title="Drag to move. Double-click to put it back.">
       <span class="dot"></span><b id="nm">Pip</b><span class="sp"></span>
-      <button id="reset" title="New chat">↺</button>
-      <button id="expand" title="Bigger window">⤢</button>
-      <button id="gear" title="Settings">⚙</button>
-      <button id="close" title="Close">✕</button>
+      <button id="reset" title="New chat"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
+      <button id="expand" title="Bigger window"><svg class="i-big" viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg><svg class="i-small" viewBox="0 0 24 24"><path d="M14 10h6V4M10 14H4v6M20 4l-6 6M4 20l6-6"/></svg></button>
+      <button id="gear" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+      <button id="close" title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
     <div id="msgs"></div>
     <div class="chips">
-      <button data-c="decide">🤔 Help me decide</button>
-      <button data-c="coin">🪙 Flip a coin</button>
-      <button data-c="fact">✨ Fun fact</button>
-      <button data-c="screen">🖥️ Help with my screen</button>
-      <button data-c="cal">📅 Check my calendar</button>
-      <button data-c="sys">🛠️ Open a setting / do a task</button>
-      <button data-c="clip">📋 What I copied</button>
-      <button data-c="cheer">💛 Cheer me up</button>
+      <button data-c="decide">Help me decide</button>
+      <button data-c="coin">Flip a coin</button>
+      <button data-c="fact">Fun fact</button>
+      <button data-c="screen">Help with my screen</button>
+      <button data-c="cal">Check my calendar</button>
+      <button data-c="sys">Open a setting / do a task</button>
+      <button data-c="clip">What I copied</button>
+      <button data-c="cheer">Cheer me up</button>
     </div>
     <div class="in">
       <textarea id="inp" rows="1" placeholder="Say something..."></textarea>
-      <button id="go" title="Send">➤</button>
+      <button id="go" title="Send"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
     </div>
 
     <div id="settings">
@@ -79,12 +79,12 @@
         <div class="hint" id="s-grkeyhint">Stored encrypted on this computer, sent only to Groq (api.groq.com). Click "Get a free key", sign up with an email, create a key, and paste it here.</div>
         <div class="row tight"><button id="s-getkey-gr" class="ghost">Get a free key</button></div>
         <label for="s-grmodel">Groq model</label>
-        <input id="s-grmodel" type="text" list="s-grmodels" maxlength="80" autocomplete="off" placeholder="llama-3.3-70b-versatile">
+        <input id="s-grmodel" type="text" list="s-grmodels" maxlength="80" autocomplete="off" placeholder="openai/gpt-oss-120b">
         <datalist id="s-grmodels">
-          <option value="llama-3.3-70b-versatile"></option>
-          <option value="llama-3.1-8b-instant"></option>
+          <option value="openai/gpt-oss-120b"></option>
+          <option value="openai/gpt-oss-20b"></option>
         </datalist>
-        <div class="hint">The 70b model is smarter; the 8b one is faster and has higher free limits. These models read text only, so "look at my screen" won't work (use Gemini or Claude for that). Free limits are small, so long jobs may pause and retry.</div>
+        <div class="hint">The 120b model is smarter; the 20b one is faster. If a name is rejected, Groq may have renamed it: check console.groq.com/docs/models. These models read text only, so "look at my screen" won't work (use Gemini or Claude for that). Free limits are small, so long jobs may pause and retry.</div>
         <div class="hint warnbox">Privacy: what Pip sends (your chats, and anything you approve sharing, like files and command output) goes to Groq. Free services can have different data rules from paid ones, so check Groq's privacy policy and don't use it for private things.</div>
       </div>
       <label for="s-name">Name</label>

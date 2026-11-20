@@ -257,7 +257,7 @@ function groqErrorMessage(status, detail, model) {
   const d = detail ? ` (${detail})` : '';
   if (status === 401) return 'Groq did not accept that API key. Check that you pasted all of it (it starts with "gsk_") in Pip settings.';
   if (status === 429) return 'Groq says the free limit was reached (too many requests per minute, or the daily cap). Wait a minute and try again, or try again tomorrow.';
-  if (status === 404 || (status === 400 && /model/i.test(detail))) return `Groq does not know the model "${model}", or it is not available to you. Pick another model name in Pip settings.${d}`;
+  if (status === 404 || (status === 400 && /model/i.test(detail))) return `Groq does not know the model "${model}", or it is not available to you. Try openai/gpt-oss-120b or openai/gpt-oss-20b in Pip settings.${d}`;
   if (status === 400 && /tool|function/i.test(detail)) return `The Groq model had trouble using a tool. Try asking again, maybe in a simpler way.${d}`;
   if (status === 403) return `Groq refused the request. Check the key in Pip settings.${d}`;
   if (status >= 500) return `Groq had a problem (${status}). Try again in a moment.`;
@@ -281,7 +281,7 @@ async function runChatGroq({
   const said = [];
 
   for (let step = 0; step <= maxSteps; step++) {
-    const body = { model, messages: convo, max_tokens: 4096 };
+    const body = { model, messages: convo, max_tokens: 8192 };
     if (tools.length) { body.tools = toGroqTools(tools); body.tool_choice = 'auto'; }
 
     // The free tier has per-minute limits, so wait and retry a couple of times before giving up.

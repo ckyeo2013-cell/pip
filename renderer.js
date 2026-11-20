@@ -148,6 +148,9 @@
   let happyUntil = 0;
   let bubbleTimer = 0;
   let interactive = false;
+  let panelPos = null;  // where the user dragged the chat window to (null = sit next to Pip)
+  let panelDrag = null; // set while the chat window is being dragged
+  let lastPanel = { left: 0, top: 0 };
 
   function clampX() { st.x = clamp(st.x, -30, Math.max(-30, area.w - SIZE + 30)); }
 
@@ -268,7 +271,7 @@
   function updateInteractive() {
     const hot = overPet(mouse.x, mouse.y);
     canvas.classList.toggle('hot', hot);
-    const want = st.dragging || hot || overPanel(mouse.x, mouse.y);
+    const want = st.dragging || !!panelDrag || hot || overPanel(mouse.x, mouse.y);
     if (want !== interactive) {
       interactive = want;
       pip.setInteractive(want);
@@ -348,7 +351,11 @@
     panel.style.width = W + 'px';
     panel.style.height = H + 'px';
     let left, top;
-    if (st.y + 50 - H >= 12) {
+    if (panelPos) {
+      left = clamp(panelPos.left, 12, Math.max(12, area.w - W - 12));
+      top = clamp(panelPos.top, 12, Math.max(12, area.h - H - 12));
+      panelPos = { left, top };
+    } else if (st.y + 50 - H >= 12) {
       left = clamp(st.x + SIZE / 2 - W / 2, 12, area.w - W - 12);
       top = st.y + 50 - H;
     } else {
@@ -356,8 +363,39 @@
       left = clamp(left, 12, area.w - W - 12);
       top = clamp(st.y, 12, area.h - H - 12);
     }
+    lastPanel = { left, top };
     panel.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
   }
+
+  // Drag the chat window by its top bar; double-click the bar to put it back next to Pip.
+  const hd = panel.querySelector('.hd');
+  hd.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest('button')) return;
+    panelDrag = { dx: e.clientX - lastPanel.left, dy: e.clientY - lastPanel.top };
+    hd.setPointerCapture(e.pointerId);
+    hd.classList.add('dragging');
+    e.preventDefault();
+    updateInteractive();
+  });
+  hd.addEventListener('pointermove', (e) => {
+    if (!panelDrag) return;
+    panelPos = { left: e.clientX - panelDrag.dx, top: e.clientY - panelDrag.dy };
+    positionPanel();
+  });
+  const endPanelDrag = (e) => {
+    if (!panelDrag) return;
+    panelDrag = null;
+    hd.classList.remove('dragging');
+    try { hd.releasePointerCapture(e.pointerId); } catch (_) {}
+    updateInteractive();
+  };
+  hd.addEventListener('pointerup', endPanelDrag);
+  hd.addEventListener('pointercancel', endPanelDrag);
+  hd.addEventListener('dblclick', (e) => {
+    if (e.target.closest('button')) return;
+    panelPos = null;
+    positionPanel();
+  });
 
   // Tiny safe renderer (no innerHTML): ``` code blocks with a Copy button, `inline code`, **bold**.
   function inline(parent, text) {
@@ -417,7 +455,7 @@
     return d;
   }
   function greet() {
-    addMsg('pet', `Hi! I'm ${settings.petName} 🐾 Ask me anything, or tell me your options and I'll pick one for you!`);
+    addMsg('pet', `Hi, I'm ${settings.petName}. Ask me anything, or tell me your options and I'll pick one for you.`);
   }
 
   function openChat() {
@@ -544,7 +582,7 @@
   window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && st.chatOpen) closeChat(); });
 
   $('close').addEventListener('click', closeChat);
-  $('expand').addEventListener('click', () => { wide = !wide; $('expand').textContent = wide ? '⤡' : '⤢'; positionPanel(); });
+  $('expand').addEventListener('click', () => { wide = !wide; $('expand').classList.toggle('wide', wide); $('expand').title = wide ? 'Smaller window' : 'Bigger window'; positionPanel(); });
   $('reset').addEventListener('click', () => {
     history = [];
     convoCtx = null;
@@ -658,7 +696,7 @@
     $('s-gkey').placeholder = settings.hasGeminiKey ? 'Key saved ✓ (type to replace)' : 'AIza...';
     $('s-grkey').value = '';
     $('s-grkey').placeholder = settings.hasGroqKey ? 'Key saved ✓ (type to replace)' : 'gsk_...';
-    $('s-grmodel').value = settings.groqModel || 'llama-3.3-70b-versatile';
+    $('s-grmodel').value = settings.groqModel || 'openai/gpt-oss-120b';
     $('s-provider').value = settings.provider || 'anthropic';
     $('s-gmodel').value = settings.geminiModel || 'gemini-2.5-flash';
     showProvider();

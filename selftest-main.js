@@ -48,6 +48,7 @@ const txt = (t) => ({ candidates: [{ content: { parts: [{ text: t }] } }] });
   await t('default provider is Anthropic and asks for a key', async () => {
     const s = await handlers['settings:get']();
     assert.strictEqual(s.provider, 'anthropic');
+    assert.strictEqual(s.groqModel, 'openai/gpt-oss-120b');
     assert.deepStrictEqual([s.hasAnthropicKey, s.hasGeminiKey], [false, false]);
     const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'hi' }] });
     assert.deepStrictEqual(r, { error: 'no_key', provider: 'anthropic' });

@@ -25,7 +25,7 @@ const DEFAULTS = {
   geminiModel: 'gemini-2.5-flash',
   geminiKeyEnc: '',
   geminiKeyPlain: '',
-  groqModel: 'llama-3.3-70b-versatile',
+  groqModel: 'openai/gpt-oss-120b',
   groqKeyEnc: '',
   groqKeyPlain: '',
   wander: true,
@@ -58,6 +58,8 @@ function loadSettings() {
   }
   if (!Array.isArray(settings.calendars)) settings.calendars = [];
   if (!PROVIDERS.includes(settings.provider)) settings.provider = 'anthropic';
+  // Groq moved this model to enterprise-only, so older saved settings are switched to the current free-friendly default.
+  if (settings.groqModel === 'llama-3.3-70b-versatile') settings.groqModel = DEFAULTS.groqModel;
 }
 function persist() {
   try {
