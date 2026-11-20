@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('pip', {
   onApproval: (cb) => on('approve:request', cb),
   onApprovalExpired: (cb) => on('approve:expired', cb),
   onSay: (cb) => on('say', cb),
+  onPet: (cb) => on('pet', cb),
   onHidePanel: (cb) => on('panel:hide', cb),
   onCursor: (cb) => on('cursor', cb),
   onSettings: (cb) => on('settings', cb),

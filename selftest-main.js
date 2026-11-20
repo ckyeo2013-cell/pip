@@ -127,6 +127,23 @@ const txt = (t) => ({ candidates: [{ content: { parts: [{ text: t }] } }] });
     listeners['approve:response']({}, { id: req[1].id, ok: false });
     assert.deepStrictEqual(await p, { text: 'Okay, not looking.' });
   });
+  await t('Pip can move its body from chat even when computer actions are off, and nothing else', async () => {
+    await handlers['settings:save']({}, { provider: 'groq', actions: false });
+    sent.length = 0;
+    script = [{ choices: [{ message: { content: null, tool_calls: [{ id: 'p1', type: 'function', function: { name: 'pet_do', arguments: '{"action":"dance"}' } }] } }] }, { choices: [{ message: { content: 'Look at me go!' } }] }];
+    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'dance for me' }] });
+    assert.deepStrictEqual(r, { text: 'Look at me go!' });
+    const first = calls[calls.length - 2];
+    assert.deepStrictEqual(first.body.tools.map((d) => d.function.name), ['pet_do']);
+    assert.match(first.body.messages[0].content, /pet_do tool/);
+    assert.ok(!/run_command|You can take actions on the user's computer/.test(JSON.stringify(first.body)));
+    assert.deepStrictEqual(sent.find((m) => m[0] === 'pet'), ['pet', { action: 'dance' }]);
+    assert.ok(!sent.some((m) => m[0] === 'approve:request'), 'no approval card for moving Pip');
+    script = [{ choices: [{ message: { content: null, tool_calls: [{ id: 'p2', type: 'function', function: { name: 'system_info', arguments: '{}' } }] } }] }, { choices: [{ message: { content: 'Cannot.' } }] }];
+    await handlers.chat({}, { messages: [{ role: 'user', content: 'what is my pc' }] });
+    assert.match(calls[calls.length - 1].body.messages.slice(-1)[0].content, /turned off/);
+    await handlers['settings:save']({}, { actions: true });
+  });
   await t('only the three key pages can be opened', () => {
     listeners['link:open']({}, 'gemini'); listeners['link:open']({}, 'anthropic'); listeners['link:open']({}, 'groq'); listeners['link:open']({}, 'https://evil.example');
     assert.deepStrictEqual(opened, ['https://aistudio.google.com/apikey', 'https://console.anthropic.com/settings/keys', 'https://console.groq.com/keys']);

@@ -142,6 +142,8 @@
     nextQuip: performance.now() + rand(40000, 80000),
     dragging: false,
     chatOpen: false,
+    queue: [],   // hops and moves Pip still has to do (from chat commands)
+    stay: false, // chat told Pip to stay put
   };
   const mouse = { x: area.w / 2, y: area.h / 2 };
   let thinkingFlag = false;
@@ -173,6 +175,39 @@
   }
   function cheer(ms = 1300) { happyUntil = performance.now() + ms; }
 
+  // Commands from the chat (the pet_do tool): hop, dance, cheer, go somewhere, stay, roam.
+  function petCommand(c) {
+    if (!c || typeof c !== 'object' || st.dragging) return;
+    const minX = 8, maxX = Math.max(8, area.w - SIZE - 8);
+    const at = (x) => clamp(x, minX, maxX);
+    const x0 = st.x;
+    st.queue = [];
+    switch (c.action) {
+      case 'hop':
+        for (let i = 0; i < clamp(Math.round(Number(c.times)) || 1, 1, 5); i++) st.queue.push({ tx: x0, h: 70, cheer: 900 });
+        break;
+      case 'dance':
+        for (const dx of [70, -70, 70, -70, 0]) st.queue.push({ tx: at(x0 + dx), h: 55, cheer: 1500 });
+        break;
+      case 'cheer':
+        cheer(2500);
+        break;
+      case 'go': {
+        const tx = c.where === 'left' ? minX : c.where === 'right' ? maxX : c.where === 'middle' ? at((area.w - SIZE) / 2) : at(mouse.x - SIZE / 2);
+        if (Math.abs(tx - x0) > 20) st.queue.push({ tx, h: Math.abs(tx - x0) > 300 ? 150 : 70, cheer: 1200 });
+        else cheer(1200);
+        break;
+      }
+      case 'stay':
+        st.stay = true;
+        break;
+      case 'roam':
+        st.stay = false;
+        st.nextHop = performance.now() + 1500;
+        break;
+    }
+  }
+
   // ---------------------------------------------------------------- loop
   let lastRender = 0;
   function frame(now) {
@@ -181,7 +216,7 @@
     lastRender = now;
 
     // wandering: hops, plus the occasional long glide across the desktop
-    if (!st.hop && !st.dragging && !st.chatOpen && settings.wander && now > st.nextHop) {
+    if (!st.hop && !st.dragging && !st.chatOpen && settings.wander && !st.stay && now > st.nextHop) {
       const dir = Math.random() < 0.5 ? -1 : 1;
       const big = Math.random() < 0.3;
       const span = big ? rand(500, Math.max(600, area.w * 0.5)) : rand(120, 380);
@@ -189,6 +224,11 @@
       if (Math.abs(tx - st.x) < 90) tx = clamp(st.x - dir * span, 8, area.w - SIZE - 8);
       if (Math.abs(tx - st.x) >= 90) startHop(tx, big ? 150 : 60);
       st.nextHop = now + rand(10000, 24000);
+    }
+    if (!st.hop && !st.dragging && st.queue.length) {
+      const q = st.queue.shift();
+      startHop(q.tx, q.h);
+      if (q.cheer) cheer(q.cheer);
     }
     if (st.hop) {
       const p = (now - st.hop.t0) / st.hop.dur;
@@ -556,6 +596,7 @@
   pip.onApproval(showApproval);
   pip.onApprovalExpired(({ id }) => { const f = cards.get(id); if (f) f('⏱ Expired'); });
   pip.onSay(({ text, ms }) => showBubble(text, ms || 3000));
+  pip.onPet(petCommand);
   pip.onHidePanel(() => { if (st.chatOpen) { reopenAfter = true; closeChat(); } });
 
   function localReply(userText, petText) {

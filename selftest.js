@@ -418,6 +418,65 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     assert.strictEqual(g.reqs.length, 4);
   });
 
+
+  // ---------------------------------------------------------------- safe browsing without approval
+  await t('open_url: allowlisted https sites open with no approval card; everything else still asks', async () => {
+    const P = mkActions();
+    for (const u of ['https://en.wikipedia.org/wiki/Sugar_glider', 'https://duckduckgo.com/?q=pip', 'https://github.com/x/y']) {
+      assert.strictEqual((await P.prepare('open_url', { url: u })).auto, true, u);
+    }
+    for (const u of [
+      'http://wikipedia.org',                       // not https
+      'https://evil-wikipedia.org',                 // look-alike
+      'https://wikipedia.org.evil.com',             // look-alike suffix
+      'https://user:pw@wikipedia.org',              // embedded login
+      'https://wikipedia.org:8443',                 // odd port
+      'https://example.com',                        // not on the list
+    ]) {
+      assert.notStrictEqual((await P.prepare('open_url', { url: u })).auto, true, u);
+    }
+    throwsMsg(() => P.prepare('open_url', { url: 'file:///etc/passwd' }), /Only http and https/);
+    throwsMsg(() => P.prepare('open_url', { url: 'javascript:alert(1)' }), /Only http and https/);
+  });
+  await t('open_app: plain browsers open with no approval; other apps still ask', async () => {
+    const P = mkActions({ platform: 'darwin' });
+    for (const n of ['Chrome', 'Firefox', 'Safari', 'Microsoft Edge']) assert.strictEqual((await P.prepare('open_app', { name: n })).auto, true, n);
+    for (const n of ['Notepad', 'Terminal', 'PowerShell']) assert.notStrictEqual((await P.prepare('open_app', { name: n })).auto, true, n);
+  });
+
+  // ---------------------------------------------------------------- Pip's own body (pet_do)
+  await t('pet_do: validates, needs no approval, and sends the command to the pet', async () => {
+    const sent = [];
+    const P = mkActions({ pet: (c) => sent.push(c) });
+    const hop = await P.prepare('pet_do', { action: 'hop', times: 99 });
+    assert.strictEqual(hop.auto, true);
+    assert.match(await hop.run(), /hopped/);
+    assert.deepStrictEqual(sent[0], { action: 'hop', times: 5 });
+    await (await P.prepare('pet_do', { action: 'go', where: 'cursor' })).run();
+    assert.deepStrictEqual(sent[1], { action: 'go', where: 'cursor' });
+    await (await P.prepare('pet_do', { action: 'dance' })).run();
+    assert.deepStrictEqual(sent[2], { action: 'dance' });
+    throwsMsg(() => P.prepare('pet_do', { action: 'delete_everything' }), /action must be one of/);
+    throwsMsg(() => P.prepare('pet_do', { action: 'go', where: '../../etc' }), /where must be one of/);
+    throwsMsg(() => mkActions().prepare('pet_do', { action: 'hop' }), /cannot move/);
+    for (const full of [true, false]) assert.ok(P.toolDefs({ hasFolder: false, fullAccess: full }).some((d) => d.name === 'pet_do'));
+  });
+  await t('pet_do: no approval card is shown on any provider, but other tools still ask', async () => {
+    const asked = [];
+    const P = mkActions({ pet: () => {} });
+    const approve = async (c) => { asked.push(c.title); return true; };
+    const call = gcall('pet_do', { action: 'hop' });
+    const g = grq([gmsg({ content: null, tool_calls: [call] }), gmsg({ content: 'Boing!' })], { prepare: (n, a) => P.prepare(n, a), approve });
+    assert.strictEqual((await g.run()).text, 'Boing!');
+    assert.match(g.reqs[1].body.messages.slice(-1)[0].content, /hopped/);
+    const gm = gem([cand([{ functionCall: { name: 'pet_do', args: { action: 'cheer' } } }]), cand([{ text: 'Yay!' }])], { prepare: (n, a) => P.prepare(n, a), approve });
+    assert.strictEqual((await gm.run()).text, 'Yay!');
+    assert.deepStrictEqual(asked, []);
+    const g2 = grq([gmsg({ content: null, tool_calls: [gcall('system_info', {})] }), gmsg({ content: 'ok' })], { prepare: (n, a) => P.prepare(n, a), approve });
+    await g2.run();
+    assert.strictEqual(asked.length, 1);
+  });
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`\n${passed} checks passed${process.exitCode ? ' (some FAILED)' : ''}`);
 })();

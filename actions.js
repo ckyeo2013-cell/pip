@@ -27,10 +27,29 @@ const sys = require('./system');
 const MAX_TEXT = 20000;
 const MAX_WRITE = 200000;
 const MAX_ITEMS = 100;
+const PET_ACTIONS = ['hop', 'dance', 'cheer', 'go', 'stay', 'roam'];
+const PET_PLACES = ['left', 'right', 'middle', 'cursor'];
 const MAX_LIST = 200;
 const MAX_READ = 20000;
 const MAX_PAGE = 12000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Pages Pip may open WITHOUT an approval card. Strict on purpose: https only,
+// exact host or a subdomain of these, default port, no embedded login details.
+// Anything else still shows an Approve card.
+const SAFE_HOSTS = [
+  'wikipedia.org', 'wikimedia.org', 'duckduckgo.com', 'google.com', 'bing.com',
+  'youtube.com', 'github.com', 'stackoverflow.com', 'developer.mozilla.org',
+  'docs.python.org', 'nodejs.org', 'weather.gov', 'maps.google.com',
+];
+// Browsers Pip may launch by name without asking (just opens a window).
+const SAFE_BROWSERS = ['chrome', 'google chrome', 'firefox', 'microsoft edge', 'edge', 'safari', 'brave', 'brave browser', 'opera'];
+
+function isSafeUrl(u) {
+  if (u.protocol !== 'https:' || u.username || u.password || u.port) return false;
+  const host = u.hostname.toLowerCase().replace(/\.$/, '');
+  return SAFE_HOSTS.some((h) => host === h || host.endsWith('.' + h));
+}
 
 function createActions({
   platform = process.platform,
@@ -47,6 +66,7 @@ function createActions({
   getFull = () => false,  // is full access on?
   protectedPaths = [],    // extra paths Pip may never touch (its own settings)
   remind = null,          // (minutes, message) => Date
+  pet = null,             // (command) => void: moves Pip's own body on screen
   fetchFn = typeof fetch === 'function' ? fetch : null,
   lookup = (host) => dns.promises.lookup(host, { all: true }),
   tmpDir = os.tmpdir(),
@@ -281,6 +301,7 @@ function createActions({
       try { u = new URL(input && input.url); } catch (_) { throw new Error('That is not a valid web address.'); }
       if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('Only http and https links can be opened.');
       return {
+        auto: isSafeUrl(u), // allowlisted safe sites open straight away; everything else asks
         title: 'Open this web page',
         details: u.href,
         async run() { await shell.openExternal(u.href); return 'Opened the page in the default browser.'; },
@@ -294,6 +315,7 @@ function createActions({
       }
       if (platform !== 'win32' && platform !== 'darwin') throw new Error('Opening apps by name is only supported on Windows and macOS.');
       return {
+        auto: SAFE_BROWSERS.includes(name.toLowerCase()), // plain browsers just open a window
         title: 'Open this app',
         details: name,
         run() {
@@ -639,6 +661,28 @@ function createActions({
       };
     },
 
+    pet_do(input) {
+      if (!pet) throw new Error('Pip cannot move right now.');
+      const action = String((input && input.action) || '');
+      if (!PET_ACTIONS.includes(action)) throw new Error(`action must be one of: ${PET_ACTIONS.join(', ')}.`);
+      const cmd = { action };
+      if (action === 'hop') cmd.times = Math.min(5, Math.max(1, Math.round(Number(input.times)) || 1));
+      if (action === 'go') {
+        const where = String(input.where || '');
+        if (!PET_PLACES.includes(where)) throw new Error(`where must be one of: ${PET_PLACES.join(', ')}.`);
+        cmd.where = where;
+      }
+      return {
+        auto: true, // only moves Pip's own body, so no approval card
+        title: 'Move Pip',
+        details: action,
+        async run() {
+          pet(cmd);
+          return ({ hop: 'Pip hopped.', dance: 'Pip is dancing.', cheer: 'Pip looks happy.', go: `Pip is heading ${cmd.where === 'cursor' ? 'to the mouse cursor' : 'to the ' + cmd.where}.`, stay: 'Pip will stay where it is until told otherwise.', roam: 'Pip is free to wander again.' })[action];
+        },
+      };
+    },
+
     set_reminder(input) {
       if (!remind) throw new Error('Reminders are not available here.');
       const minutes = Math.round(Number(input && input.minutes));
@@ -690,6 +734,11 @@ function createActions({
     const anywhere = fullAccess ? ' You may also use absolute paths or "~/..." for anywhere on the computer (for example "~/Desktop/notes.txt" or "~/Downloads"), except system folders and password/key folders.' : '';
     const defs = [
       {
+        name: 'pet_do',
+        description: "Move Pip's own body on the screen. Needs no approval. action: hop (jump in place, optionally 'times' 1-5), dance, cheer (look happy), go (walk or glide to 'where': left, right, middle of the screen, or cursor = next to the mouse), stay (stop wandering around and stay put), roam (wander around again). Use it when the user asks Pip to do one of these, for example 'jump', 'dance', 'come here', 'go to the left' or 'stay there'.",
+        input_schema: { type: 'object', properties: { action: { type: 'string', enum: PET_ACTIONS }, times: { type: 'number', description: 'For hop: how many hops (1 to 5).' }, where: { type: 'string', enum: PET_PLACES, description: 'For go: where to go.' } }, required: ['action'] },
+      },
+      {
         name: 'look_at_screen',
         description: "Take a screenshot of the user's main screen and look at it. Use it when they refer to something on their screen (\"this question\", \"what's on my screen\", \"help me with this\"). The user approves first. Pip hides while the picture is taken. You get one picture per call.",
         input_schema: { type: 'object', properties: {} },
@@ -733,7 +782,7 @@ function createActions({
       },
       {
         name: 'open_url',
-        description: "Open a web page (http or https) on screen in the user's default browser. Needs the user's approval. To READ a page yourself, use fetch_url instead.",
+        description: "Open a web page (http or https) on screen in the user's default browser. Well-known safe sites (Wikipedia, Google, DuckDuckGo, YouTube, GitHub, Stack Overflow, MDN and similar, https only) open with no approval; any other address needs the user's approval. To READ a page yourself, use fetch_url instead.",
         input_schema: { type: 'object', properties: { url: str('Full web address, starting with https://') }, required: ['url'] },
       },
       {
@@ -743,7 +792,7 @@ function createActions({
       },
       {
         name: 'open_app',
-        description: 'Open an app by name, for example "Notepad" or "Calculator". Windows and macOS only. Needs the user\'s approval.',
+        description: 'Open an app by name, for example "Notepad" or "Calculator". Windows and macOS only. Plain web browsers (Chrome, Firefox, Edge, Safari, Brave, Opera) open with no approval; other apps need the user\'s approval.',
         input_schema: { type: 'object', properties: { name: str('App name') }, required: ['name'] },
       },
       {

@@ -25,6 +25,14 @@ Pip appears at the bottom-right of your screen. A tray/menu-bar icon appears too
 
 Pip isn't just for chit-chat: ask it to write or fix code in any language, explain things, do homework or maths, draft and edit writing, plan, or brainstorm. Chit-chat stays short; real tasks get full answers. Code appears in dark code blocks with a **Copy** button, the ⤢ button makes the chat window bigger, and you can ask Pip to type code into your editor or save it as a new file in your chosen folder (each after you approve). For code and harder questions, pick **Sonnet** (or **Opus**) as the Brain in ⚙ settings; Haiku is fastest and cheapest.
 
+## Tell Pip to move
+
+Pip can control its own body from the chat, with no approval card because it touches nothing else on your computer. Try: "hop three times", "dance", "come here", "go to the left", "go to the middle", "stay there", "go back to wandering". This works even if you switch off "do things on my computer" in settings.
+
+## Safe browsing (no approval needed)
+
+Pip opens a few things without a card because they only show you a page: `https` links to a short allowlist of well-known sites (Wikipedia, DuckDuckGo, Google, YouTube, GitHub, Stack Overflow, MDN and a few more, see `SAFE_HOSTS` in `actions.js`), and plain browsers by name (Chrome, Firefox, Edge, Safari, Brave, Opera). Look-alike domains, other ports, links with a login in them and plain `http` still ask first. Edit the lists in `actions.js` to suit you.
+
 ## Letting Pip do things (always asks first)
 
 Pip can now help with almost anything on your computer. **Every single action shows up as a card in the chat with exactly what it will do, and only happens after you click Approve.** Decline works too, and an unanswered card expires after 2 minutes. Risky actions (commands, key presses, closing apps, replacing files, anything outside your work folder) show in **red** with the exact command or path.

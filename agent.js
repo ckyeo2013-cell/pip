@@ -74,7 +74,7 @@ async function runChat({
     const fail = (msg) => ({ type: 'tool_result', tool_use_id: call.id, content: msg, is_error: true });
     try {
       const action = await prepare(call.name, call.input); // validates; does nothing yet
-      const ok = await approve({ title: action.title, details: action.details, risk: action.risk || 'normal' });
+      const ok = action.auto ? true : await approve({ title: action.title, details: action.details, risk: action.risk || 'normal' });
       if (!ok) return fail('The user declined this action. Do not retry it; ask what they would like instead.');
       const out = await action.run();
       // A tool may return { content: [...] } (e.g. a screenshot image plus text) instead of plain text.
@@ -220,7 +220,7 @@ async function runChatGemini({
     });
     try {
       const action = await prepare(name, fc.args || {});
-      const ok = await approve({ title: action.title, details: action.details, risk: action.risk || 'normal' });
+      const ok = action.auto ? true : await approve({ title: action.title, details: action.details, risk: action.risk || 'normal' });
       if (!ok) return reply({ error: 'The user declined this action. Do not retry it; ask what they would like instead.' });
       const out = await action.run();
       if (out && typeof out === 'object' && Array.isArray(out.content)) {
@@ -335,7 +335,7 @@ async function runChatGroq({
     }
     try {
       const action = await prepare(c.function.name, args);
-      const ok = await approve({ title: action.title, details: action.details, risk: action.risk || 'normal' });
+      const ok = action.auto ? true : await approve({ title: action.title, details: action.details, risk: action.risk || 'normal' });
       if (!ok) return 'Error: The user declined this action. Do not retry it; ask what they would like instead.';
       const out = await action.run();
       if (out && typeof out === 'object' && Array.isArray(out.content)) {
