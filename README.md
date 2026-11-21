@@ -29,7 +29,18 @@ Pip isn't just for chit-chat: ask it to write or fix code in any language, expla
 
 ## Tell Pip to move
 
-Pip can control its own body from the chat, with no approval card because it touches nothing else on your computer. Try: "hop three times", "dance", "come here" (he flies to your cursor and perches there), "go to the left", "go to the middle", "stay there", "go back to wandering". When you ask for help opening or clicking something ("help me click Save"), Pip looks at your screen if you approve it, flies to land right next to the thing, and tells you what to do. He cannot click for you. This works even if you switch off "do things on my computer" in settings.
+Pip can control its own body from the chat, with no approval card because it touches nothing else on your computer. Try: "hop three times", "dance", "come here" (he flies to your cursor and perches there), "go to the left", "go to the middle", "stay there", "go back to wandering". Moving his own body works even if you switch off "do things on my computer" in settings. For help with things on screen see **Pip sees buttons without a screenshot** below.
+
+## Pip sees buttons without a screenshot
+
+Pip can read where the buttons, boxes, links and menus are straight from your operating system's accessibility information (the same data screen readers use). No picture is taken, nothing you typed into a box is read, and password boxes are skipped. Try: "press Save for me", "type hello into the search box", "where's the Share button?".
+
+- **find_ui** reads the names and positions of what is in the front window (approve once per look). Pip's own window is ignored.
+- **press_ui** flies Pip next to the item, then presses it (or ticks it, or puts the cursor in it) using accessibility controls, not the mouse. Every press shows a card with the item's name, and names like Delete, Send, Pay or Install show in red.
+- **No card for quick typing:** tick **Let Pip type short one-line things without asking** in ⚙ settings (or the tray menu) and things like "search up cats on YouTube" are typed straight away: Pip flies to the search box, types and presses Enter, and tells you what he typed. Text over 300 characters, multi-line text and code still ask, and he never auto-types into a terminal or password box. "Search up X" with no app named just opens a Google search.
+- **type_text** now flies to the text box that has your cursor and types there, so you no longer have to click within 5 seconds. If no box is found, the window is a terminal, or the app shares nothing, it falls back to the old "click the spot" countdown.
+- Some apps (games, remote desktops, some canvas apps) share nothing. Pip then falls back to **Look at your screen**.
+- **Windows:** nothing to set up. **macOS:** needs the Accessibility permission (the same one typing needs); very busy windows such as web browsers can be slow to read. **Linux:** needs `python3-gi` and `gir1.2-atspi-2.0`, and apps must expose accessibility.
 
 ## Safe browsing (no approval needed)
 
@@ -42,7 +53,7 @@ Pip can now help with almost anything on your computer. **Every single action sh
 **Always available (when "Let Pip do things for me" is on):**
 - **Control Panel and Settings:** "open the control panel", "open Wi-Fi settings", "where do I uninstall apps?", "open Device Manager". Pip opens the right window (Windows Control Panel, Settings pages, Device Manager, Services, Task Manager and more; System Settings on macOS; GNOME/KDE settings on Linux). It only opens the window, you make the changes.
 - **Type for you:** works in search bars, forms, documents and chats. After you approve (you see the exact text), you get 5 seconds to click the exact spot where the text should go, then Pip pastes it there. (Your clipboard is restored afterwards.) If you want a search submitted, Pip can press Enter too, and the card says so. Pip can't click the box for you.
-- **Look at your screen:** "what's the answer to this question?" Pip takes one picture of your main screen (Pip and the chat hide first), reads it, and answers. Never saved.
+- **Look at your screen:** "what's the answer to this question?" Pip takes one picture of your main screen (Pip and the chat hide first), reads it, and answers. Never saved. It asks each time unless you tick **Let Pip look at my screen without asking each time** in ⚙ settings (or in the tray / right-click menu). That switch covers looking only (the picture and the button finder); pressing, typing and everything else still asks. The picture is kept small (1280 px) so it is quick to send.
 - **Read the web:** Pip can download and read a public web page (or a search results page) to look something up. Public sites only; it never reaches into your own network or local services. Or it can open a page on screen.
 - **Calendar:** search it (read only), add an event (opens in your default calendar app and you click Save), or set a reminder ("remind me in 20 minutes").
 - **Clipboard, open apps, see what's running, system info** (OS, memory, free disk space).
@@ -58,7 +69,7 @@ Things to know:
 - Pip is an AI and can misunderstand (smaller or free models more so). **Read each card before approving**, especially red ones. The built-in blocklist catches the worst mistakes, but your click is the real safety.
 - Text from files, web pages, screenshots or command output is treated as data. If something tries to boss Pip around, Pip is told to mention it to you instead of obeying.
 - Command output, file contents and screenshots you approve are sent to whichever AI provider you picked (Anthropic, Google or Groq) so Pip can read them.
-- Pip can't click with the mouse; it uses commands, keys and settings pages instead. For harder jobs pick **Sonnet** or **Opus** as the Brain in ⚙ settings; Haiku is fastest and cheapest.
+- Pip never moves your mouse; it presses things through accessibility controls, commands, keys and settings pages instead. For harder jobs pick **Sonnet** or **Opus** as the Brain in ⚙ settings; Haiku is fastest and cheapest.
 
 Setup notes:
 - **macOS:** typing and key presses need Accessibility permission (System Settings > Privacy & Security > Accessibility). macOS will prompt the first time.

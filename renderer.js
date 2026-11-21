@@ -39,31 +39,49 @@
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const VS = `
     attribute vec3 aP;
-    uniform vec3 uC; uniform vec3 uR; uniform mat3 uM; uniform float uScale;
+    uniform vec3 uC; uniform vec3 uR; uniform mat3 uM; uniform float uScale; uniform float uShellLen;
     varying vec3 vN; varying vec3 vL;
     void main() {
-      vec3 wp = uM * (aP * uR) + uC;
-      vN = normalize(uM * (aP / uR));
+      vec3 n = normalize(uM * (aP / uR));
+      vec3 wp = uM * (aP * uR) + uC + n * uShellLen;
+      vN = n;
       vL = aP;
       gl_Position = vec4(wp.x * uScale, wp.y * uScale, -wp.z * 0.25 * uScale, 1.0);
     }`;
+  // Fur: the base pass is shaded with a fine speckled grain; extra "shell" passes redraw each furry
+  // part slightly bigger with most strands cut away, so the outline is soft and fuzzy instead of smooth.
   const FS = `
+    #ifdef GL_FRAGMENT_PRECISION_HIGH
+    precision highp float;
+    #else
     precision mediump float;
+    #endif
     varying vec3 vN; varying vec3 vL;
-    uniform vec3 uColor; uniform float uSpec; uniform float uFur;
+    uniform vec3 uColor; uniform float uSpec; uniform float uFur; uniform float uShell;
     float hash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
     void main() {
+      float strand = hash(floor(vL * 95.0));
+      if (uShell > 0.0 && strand < 0.25 + uShell * 0.7) discard;
       vec3 n = normalize(vN);
+      // tiny random tilt of the surface per strand: gives the rough, fluffy texture
+      float g1 = hash(floor(vL * 70.0) + 3.1) - 0.5, g2 = hash(floor(vL * 70.0) + 7.7) - 0.5;
+      n = normalize(n + vec3(g1, g2, 0.0) * 0.5 * uFur);
       vec3 L = normalize(vec3(-0.45, 0.75, 0.75));
       float d = smoothstep(0.08, 0.95, dot(n, L) * 0.5 + 0.5);
       vec3 shade = mix(uColor * 0.58 * vec3(0.92, 0.93, 1.05), uColor * 1.08, d);
       float rim = pow(1.0 - clamp(n.z, 0.0, 1.0), 2.2);
-      shade += vec3(1.0, 0.93, 0.85) * rim * 0.2 * uFur;
-      shade *= 1.0 + (hash(floor(vL * 34.0)) - 0.5) * 0.07 * uFur;
+      shade += vec3(1.0, 0.93, 0.85) * rim * 0.18 * uFur;
+      // salt-and-pepper speckle, two sizes
+      float sp = hash(floor(vL * 48.0) + 11.3) - 0.5;
+      shade *= 1.0 + (strand - 0.5) * 0.30 * uFur + sp * 0.22 * uFur;
+      // strands darker near the skin, lighter at the tips
+      shade *= mix(1.0, 0.6 + uShell * 0.4, step(0.001, uShell));
       vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
       shade += vec3(pow(max(dot(n, H), 0.0), 60.0) * uSpec);
       gl_FragColor = vec4(shade, 1.0);
     }`;
+
+  const SHELLS = 4, FUR_LEN = 0.05; // fuzz layers and how far the longest strands stick out (model units)
 
   // One tiny ellipsoid renderer per canvas (Pip has one, the branch he perches on has another).
   function createStage(cv) {
@@ -77,7 +95,7 @@
     g.attachShader(prog, sh(g.FRAGMENT_SHADER, FS));
     g.linkProgram(prog);
     g.useProgram(prog);
-    for (const n of ['C', 'R', 'M', 'Color', 'Spec', 'Fur', 'Scale']) U[n] = g.getUniformLocation(prog, 'u' + n);
+    for (const n of ['C', 'R', 'M', 'Color', 'Spec', 'Fur', 'Scale', 'Shell', 'ShellLen']) U[n] = g.getUniformLocation(prog, 'u' + n);
 
     const lat = 20, lon = 28, pos = [], idx = [];
     for (let i = 0; i <= lat; i++) {
@@ -108,15 +126,22 @@
     return {
       draw(parts) {
         g.clear(g.COLOR_BUFFER_BIT | g.DEPTH_BUFFER_BIT);
-        for (const p of parts) {
-          g.uniform3fv(U.C, p.c);
-          g.uniform3fv(U.R, p.r);
-          g.uniformMatrix3fv(U.M, false, p.M);
-          g.uniform3fv(U.Color, p.color);
-          g.uniform1f(U.Spec, p.spec);
-          g.uniform1f(U.Fur, p.fur);
-          g.drawElements(g.TRIANGLES, count, g.UNSIGNED_SHORT, 0);
-        }
+        const pass = (list, shell, len) => {
+          g.uniform1f(U.Shell, shell);
+          g.uniform1f(U.ShellLen, len);
+          for (const p of list) {
+            g.uniform3fv(U.C, p.c);
+            g.uniform3fv(U.R, p.r);
+            g.uniformMatrix3fv(U.M, false, p.M);
+            g.uniform3fv(U.Color, p.color);
+            g.uniform1f(U.Spec, p.spec);
+            g.uniform1f(U.Fur, p.fur);
+            g.drawElements(g.TRIANGLES, count, g.UNSIGNED_SHORT, 0);
+          }
+        };
+        pass(parts, 0, 0);
+        const furry = parts.filter((p) => p.fur >= 0.8 && p.shell !== false);
+        for (let k = 1; k <= SHELLS; k++) pass(furry, k / SHELLS, (k / SHELLS) * FUR_LEN);
       },
     };
   }
@@ -960,6 +985,8 @@
     $('s-login').checked = !!settings.openAtLogin;
     $('s-actions').checked = settings.actions !== false;
     $('s-full').checked = settings.fullAccess !== false;
+    $('s-autolook').checked = !!settings.autoLook;
+    $('s-autotype').checked = !!settings.autoType;
     $('s-folder').textContent = settings.workFolder || 'None chosen';
     renderCals(settings.calendars || []);
     $('s-maccal-wrap').classList.toggle('hidden', settings.platform !== 'darwin');
@@ -996,6 +1023,8 @@
       openAtLogin: $('s-login').checked,
       actions: $('s-actions').checked,
       fullAccess: $('s-full').checked,
+      autoLook: $('s-autolook').checked,
+      autoType: $('s-autotype').checked,
       macCalendar: $('s-maccal').checked,
     });
     Object.assign(settings, saved);

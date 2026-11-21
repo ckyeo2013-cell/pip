@@ -16,6 +16,8 @@ const { createCalendar } = require('./calendar');
 
 const DEFAULTS = {
   actions: true,
+  autoType: false,    // short one-line typing (like a search) without asking each time
+  autoLook: false,    // look at the screen (screenshot / button finder) without asking each time
   fullAccess: true,   // commands, key presses, files anywhere (every single action still needs approval)
   workFolder: '',
   petName: 'Pip',
@@ -206,6 +208,18 @@ function buildMenu() {
       click: () => update({ wander: !settings.wander }),
     },
     {
+      label: 'Look at my screen without asking',
+      type: 'checkbox',
+      checked: !!settings.autoLook,
+      click: (item) => update({ autoLook: item.checked }),
+    },
+    {
+      label: 'Type short things (like searches) without asking',
+      type: 'checkbox',
+      checked: !!settings.autoType,
+      click: (item) => update({ autoType: item.checked }),
+    },
+    {
       label: 'Launch at login',
       type: 'checkbox',
       checked: !!settings.openAtLogin,
@@ -291,22 +305,24 @@ async function captureScreen() {
   }
   const wasVisible = !!(win && !win.isDestroyed() && win.isVisible());
   if (wasVisible) win.hide();
-  await sleep(450);
+  await sleep(250);
   try {
     const d = screen.getPrimaryDisplay();
     const sf = d.scaleFactor || 1;
+    // ask for a smaller picture straight away (faster to capture, upload and read); 1280px is plenty to read text
+    const k0 = Math.min(1, 1280 / Math.max(d.size.width * sf, d.size.height * sf));
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
-      thumbnailSize: { width: Math.round(d.size.width * sf), height: Math.round(d.size.height * sf) },
+      thumbnailSize: { width: Math.round(d.size.width * sf * k0), height: Math.round(d.size.height * sf * k0) },
     });
     const src = sources.find((x) => String(x.display_id) === String(d.id)) || sources[0];
     if (!src || src.thumbnail.isEmpty()) throw new Error('Could not capture the screen. On a Mac, check Screen Recording permission; on Linux, this needs X11 or a desktop that allows screen capture.');
     let img = src.thumbnail;
     const { width, height } = img.getSize();
-    const k = Math.min(1, 1920 / Math.max(width, height));
+    const k = Math.min(1, 1280 / Math.max(width, height));
     if (k < 1) img = img.resize({ width: Math.round(width * k), height: Math.round(height * k), quality: 'best' });
     const size = img.getSize();
-    return { data: img.toJPEG(85).toString('base64'), width: size.width, height: size.height };
+    return { data: img.toJPEG(72).toString('base64'), width: size.width, height: size.height };
   } finally {
     if (wasVisible && win && !win.isDestroyed()) win.showInactive();
   }
@@ -337,9 +353,13 @@ function setupActions() {
     execFile,
     getRoot: () => settings.workFolder,
     getFull: () => !!settings.fullAccess,
+    getAutoLook: () => !!settings.autoLook,
+    getAutoType: () => !!settings.autoType,
     protectedPaths: [app.getPath('userData')],
     remind,
     pet: (cmd) => send('pet', cmd),
+    getScreenInfo: () => { const d = screen.getPrimaryDisplay(); return { workArea: d.workArea, scaleFactor: d.scaleFactor || 1 }; },
+    pipPid: process.pid,
     fetchFn: fetch,
     notify: (text, ms) => send('say', { text, ms }),
     hidePanel: () => send('panel:hide'),
@@ -352,8 +372,9 @@ const PET_RULES =
   `When the user asks you to hop, jump, dance, stay still or roam again, do it with pet_do and then say something short, in character. ` +
   `You are a sugar glider, so you fly: whenever you need to be at a particular place, fly there and a branch grows for you to perch on. ` +
   `'Come here' means pet_do go with where cursor. When the user asks for help opening or clicking something on their screen, ` +
-  `first look at the screen if you have that tool and do not already know where it is, then use pet_do fly with x and y (0 to 1 from the top-left) ` +
-  `to land right next to it, and tell them where it is and what to do. You cannot click for them. ` +
+  `first find where it is: use find_ui if you have it (it reads button names and positions without a picture), otherwise look_at_screen. ` +
+  `Then use pet_do fly with x and y (0 to 1 from the top-left) to land right next to it. If you have press_ui and the user wants you to do it, ` +
+  `press it with press_ui using the [number] from find_ui (Pip flies there and does it after they approve); otherwise tell them where it is and what to do. ` +
   `Don't move on every message; an occasional happy hop when you celebrate something is fine. Never claim to have moved unless you used the tool.`;
 
 function buildActionRules() {
@@ -374,15 +395,20 @@ function buildActionRules() {
     `\n\nControl Panel and settings: for "open Wi-Fi settings", "open the control panel", "where do I uninstall apps", "open Device Manager" and similar, ` +
     `use open_system_settings. For a change the user wants made for them (volume, dark mode, power plan, a Wi-Fi toggle...), explain what you will change, then use run_command. ` +
     `Never change security settings, the registry or system files unless the user clearly asked for exactly that.` +
+    `\n\nButtons and boxes: to press, open, tick or type into something, use find_ui (with a short 'query' like "save" to keep the list small), then press_ui or type_text with the [number]. ` +
+    `Look again with find_ui after every press, because the screen changes. If find_ui finds nothing, use look_at_screen and tell the user where to click. ` +
+    `Only press what the user asked for, and never press things like Delete, Send, Pay or Install unless they clearly asked for exactly that.` +
     `\n\nScreen: if the user asks about something on their screen (for example "what's the answer to this question?"), use ` +
     `look_at_screen, find the question they mean, and answer it directly: the answer first, then at most a short explanation or ` +
     `working. For multiple choice, name the choice and say why. If you can't tell which question they mean, say what you see and ask. ` +
-    `A later question about the screen needs a new look.` +
+    `A later question about the screen needs a new look. If the user has allowed looking without asking, just look whenever it helps; do not ask first or announce it at length.` +
     `\n\nCalendar: for birthdays, appointments or plans, use search_calendar with just the person's name or a keyword (like "Sam", ` +
     `not "Sam's birthday"). State the date plainly with its weekday. If nothing matches, say so and suggest another spelling or a ` +
     `nickname; never invent a date. To put something on their calendar use add_calendar_event; for "remind me in 20 minutes" use set_reminder.` +
     `\n\nWeb: to look something up or read a page, use fetch_url (for example https://duckduckgo.com/html/?q=search+words) and answer from what you read, ` +
-    `naming the site; use open_url only when the user wants the page opened on screen.`;
+    `naming the site; use open_url only when the user wants the page opened on screen.` +
+    `\n\nSearching: for "search up X" or "google X", use open_url with https://www.google.com/search?q=... (no approval needed) unless the user names a box or app to search in (for example "search X on YouTube" or "in the search bar"). ` +
+    `In that case use find_ui to find the search box, then type_text with press_enter true and the box's [number] as target. Short one-line text like a search can be typed without a card if the user allowed it, so say in one short line what you typed.`;
   if (!settings.fullAccess) {
     r += `\n\nRunning commands, pressing keys, closing apps and reaching files outside the work folder are switched off in settings. If the user needs those, tell them they can allow it in the Pip settings (the gear).`;
   }
@@ -466,7 +492,7 @@ function registerIpc() {
       if (typeof s.petName === 'string') patch.petName = s.petName.trim().slice(0, 20) || 'Pip';
       if (PALETTES.includes(s.palette)) patch.palette = s.palette;
       if (MODELS.includes(s.model)) patch.model = s.model;
-      for (const k of ['wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'macCalendar']) {
+      for (const k of ['wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'macCalendar']) {
         if (typeof s[k] === 'boolean') patch[k] = s[k];
       }
       if (PROVIDERS.includes(s.provider)) patch.provider = s.provider;

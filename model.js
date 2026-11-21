@@ -74,10 +74,10 @@
   function limbPose(s, g, wave) {
     const w = wave || 0;
     return {
-      sh: [s * 0.42, 0.12, 0.22],
-      hip: [s * lerp(0.38, 0.4, g), lerp(-0.4, -0.34, g), lerp(0, -0.25, g)],
-      wr: [s * lerp(0.43, 1.3, g) + s * w * 0.15 * (1 - g), lerp(-0.18, 0.32, g) + w * 0.2 * (1 - g), lerp(0.3, 0.36, g)],
-      an: [s * lerp(0.3, 1.1, g), lerp(-0.58, -0.5, g), lerp(0.1, -0.2, g)],
+      sh: [s * 0.36, 0.2, 0.14],
+      hip: [s * lerp(0.3, 0.4, g), lerp(-0.42, -0.34, g), lerp(0, -0.25, g)],
+      wr: [s * lerp(0.4, 1.3, g) + s * w * 0.15 * (1 - g), lerp(-0.12, 0.32, g) + w * 0.2 * (1 - g), lerp(0.3, 0.36, g)],
+      an: [s * lerp(0.3, 1.1, g), lerp(-0.62, -0.5, g), lerp(0.1, -0.2, g)],
     };
   }
   // The gliding membrane: a sheet from the body edge (v=0) out to the wrist-ankle edge (v=1),
@@ -92,7 +92,7 @@
       lerp(bz, oz, v),
     ];
   }
-  const MEM_NU = 8, MEM_NV = 5;
+  const MEM_NU = 12, MEM_NV = 6;
 
   /*
    * p: { t, bodyYaw, lookYaw, lookPitch, glide(0..1), crouch(0..1), blink(0..1 open),
@@ -130,8 +130,10 @@
       t: [0, -0.41 + bob - 0.14 * crouch, 0],
     };
 
-    P(B, [0, 0, 0], [0.52, 0.6, 0.5], null, C.fur);
-    P(B, [0, -0.06, 0.22], [0.36, 0.5, 0.32], null, C.belly);
+    P(B, [0, -0.02, 0], [0.44, 0.62, 0.4], null, C.fur);
+    P(B, [0, -0.36, -0.02], [0.47, 0.3, 0.42], null, C.fur);   // hips
+    P(B, [0, 0.42, 0.04], [0.36, 0.3, 0.34], null, C.fur);     // shoulders and neck
+    P(B, [0, -0.08, 0.2], [0.29, 0.5, 0.24], null, C.belly);
     P(B, [0, 0.1, -0.4], [0.06, 0.44, 0.14], null, C.dark); // back stripe
 
     // ---- limbs and the gliding membrane (one side at a time) -----------
@@ -143,9 +145,10 @@
         P(B, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2], [r, len3(d) / 2, r], basisFromY(d), color);
       };
       limb(L.sh, L.wr, 0.08, C.fur);   // arm
-      limb(L.hip, L.an, 0.1, C.fur);   // leg
-      P(B, L.wr, [0.07, 0.06, 0.08], null, C.feet, 0, 0.4); // hand
-      P(B, [L.an[0], L.an[1] - 0.02, L.an[2] + 0.05], [0.14, 0.07, 0.21], rotY(s * 0.15), C.feet, 0, 0.4); // foot
+      limb(L.hip, L.an, 0.11, C.fur);  // leg
+      P(B, [L.hip[0] * 0.95, L.hip[1] + 0.02, L.hip[2] + 0.02], [0.16, 0.24, 0.19], null, C.fur); // thigh
+      P(B, L.wr, [0.055, 0.05, 0.065], null, C.feet, 0, 0.4); // small hand
+      P(B, [L.an[0], L.an[1] - 0.02, L.an[2] + 0.07], [0.1, 0.05, 0.19], rotY(s * 0.15), C.feet, 0, 0.4); // foot
 
       for (let i = 0; i < MEM_NU; i++) {
         for (let j = 0; j < MEM_NV; j++) {
@@ -156,9 +159,10 @@
           const xa = norm(tu);
           const n = norm(cross(tu, tv));
           const za = cross(xa, n);
-          const col = v < 0.5 ? mix3(C.fur, C.membrane, v * 2) : mix3(C.membrane, C.edge, Math.pow((v - 0.5) * 2, 1.6));
-          P(B, c, [(len3(tu) / MEM_NU) * 0.72, 0.03, (len3(tv) / MEM_NV) * 0.72],
+          const col = v < 0.5 ? mix3(C.fur, C.membrane, v * 2 * (0.3 + 0.7 * glide)) : mix3(mix3(C.fur, C.membrane, 0.3 + 0.7 * glide), C.edge, Math.pow((v - 0.5) * 2, 1.6) * (0.15 + 0.85 * glide));
+          P(B, c, [(len3(tu) / MEM_NU) * 0.95, 0.03, (len3(tv) / MEM_NV) * 0.95],
             [xa[0], xa[1], xa[2], n[0], n[1], n[2], za[0], za[1], za[2]], col, 0, 1);
+          parts[parts.length - 1].shell = false; // thin sheet: no fur layers
         }
       }
     }
@@ -166,14 +170,14 @@
     // ---- tail ---------------------------------------------------------
     const tailAmp = 0.14 + 0.25 * thinking + happy * 0.1;
     const tailSpd = 1.5 + thinking * 3 + happy * 2;
-    for (let i = 0; i < 22; i++) {
-      const u = i / 21;
+    for (let i = 0; i < 28; i++) {
+      const u = i / 27;
       const sway = Math.sin(t * tailSpd - u * 2.6) * tailAmp * u;
-      const rest = [0.65 * Math.pow(u, 1.3) + sway, -0.35 + u * u, -0.42 - 0.6 * u];
-      const gld = [sway * 0.5, -0.3 - 0.1 * u, -0.45 - 1.2 * u];
+      const rest = [0.08 + 0.55 * Math.pow(u, 1.5) + sway, -0.4 + 0.75 * Math.pow(u, 1.4), -0.35 - 0.85 * u];
+      const gld = [sway * 0.5, -0.3 - 0.1 * u, -0.4 - 1.4 * u];
       const pos = [lerp(rest[0], gld[0], glide), lerp(rest[1], gld[1], glide), lerp(rest[2], gld[2], glide)];
-      const rad = 0.15 + 0.1 * Math.sin(Math.min(1, u * 1.1) * Math.PI * 0.8);
-      const col = u > 0.76 ? mix3(C.fur, C.dark, clamp((u - 0.76) / 0.18, 0, 1)) : C.fur;
+      const rad = 0.17 + 0.08 * Math.sin(Math.min(1, u * 1.15) * Math.PI * 0.85) - 0.05 * u * u;
+      const col = u > 0.72 ? mix3(C.fur, C.dark, clamp((u - 0.72) / 0.2, 0, 1)) : C.fur;
       P(B, pos, [rad, rad, rad * 1.4], null, col);
     }
 
@@ -183,32 +187,32 @@
       mul(rotY(headYaw), rotX(-(p.lookPitch || 0) - glide * 0.25 - crouch * 0.1)),
       rotZ(0.05 + thinking * 0.25 + Math.sin(t * 1.3) * 0.03 + happy * Math.sin(t * 8) * 0.06)
     );
-    const H = child(B, [0, 0.72, 0.1], headRot);
+    const H = child(B, [0, 0.66, 0.1], headRot);
 
-    P(H, [0, 0, 0], [0.62, 0.54, 0.56], null, C.fur);
-    P(H, [0, -0.12, 0.44], [0.22, 0.18, 0.22], null, C.cheek); // muzzle
+    P(H, [0, 0, 0], [0.55, 0.5, 0.52], null, C.fur);
+    P(H, [0, -0.1, 0.4], [0.17, 0.15, 0.3], rotX(-0.12), C.cheek); // pointed muzzle
     P(H, [0, 0.2, 0.3], [0.04, 0.3, 0.32], rotX(-0.3), C.dark); // nose-to-crown stripe
     P(H, [0, 0.36, -0.1], [0.05, 0.2, 0.3], rotX(0.5), C.dark);
 
     const eyeOpen = clamp(Math.min(blink, 1 - 0.8 * happy), 0, 1);
     for (const s of [-1, 1]) {
-      P(H, [s * 0.34, -0.15, 0.3], [0.15, 0.13, 0.15], null, C.cheek);
-      P(H, [s * 0.3, 0.06, 0.36], [0.22, lerp(0.05, 0.25, eyeOpen), 0.12], null, C.dark); // dark eye ring
-      P(H, [s * 0.31, 0.06, 0.4], [0.17, lerp(0.02, 0.2, eyeOpen), 0.12], null, C.eye, 1.0, 0);
+      P(H, [s * 0.3, -0.15, 0.3], [0.1, 0.09, 0.12], null, C.cheek);
+      P(H, [s * 0.3, 0.07, 0.3], [0.2, lerp(0.05, 0.23, eyeOpen), 0.13], null, C.dark); // dark eye patch
+      P(H, [s * 0.31, 0.07, 0.35], [0.155, lerp(0.02, 0.19, eyeOpen), 0.12], null, C.eye, 1.0, 0);
       if (eyeOpen > 0.5) {
-        P(H, [s * 0.27, 0.14, 0.5], [0.05, 0.055, 0.025], null, C.white, 1.0, 0);
-        P(H, [s * 0.35, 0.0, 0.48], [0.022, 0.025, 0.015], null, C.white, 1.0, 0);
+        P(H, [s * 0.27, 0.15, 0.45], [0.05, 0.055, 0.025], null, C.white, 1.0, 0);
+        P(H, [s * 0.36, 0.01, 0.43], [0.02, 0.022, 0.015], null, C.white, 1.0, 0);
       }
-      P(H, [s * 0.045, -0.2, 0.62], [0.045, 0.013, 0.03], rotZ(s * 0.45), C.mouth, 0, 0); // smile
+      P(H, [s * 0.04, -0.2, 0.6], [0.04, 0.011, 0.03], rotZ(s * 0.45), C.mouth, 0, 0); // mouth line
 
       // ears: big, thin, pinkish-grey
       const wig = Math.sin(t * (thinking > 0.1 ? 9 : 1.1) + s) * (thinking > 0.1 ? 0.1 : 0.05)
         + happy * Math.sin(t * 14 + s) * 0.08;
-      const E = child(H, [s * 0.42, 0.4, -0.02], rotZ(-s * 0.55 + s * wig));
-      P(E, [0, 0.12, 0], [0.2, 0.34, 0.05], null, C.earOut, 0, 0.5);
-      P(E, [0, 0.1, 0.03], [0.14, 0.27, 0.03], null, C.earIn, 0, 0.3);
+      const E = child(H, [s * 0.36, 0.36, -0.02], rotZ(-s * 0.5 + s * wig));
+      P(E, [0, 0.14, 0], [0.22, 0.4, 0.04], null, C.earOut, 0, 0.5);
+      P(E, [0, 0.12, 0.03], [0.15, 0.32, 0.03], null, C.earIn, 0, 0.3);
     }
-    P(H, [0, -0.08, 0.64], [0.06, 0.05, 0.05], null, C.nose, 0.6, 0.3);
+    P(H, [0, -0.1, 0.69], [0.05, 0.04, 0.04], null, C.nose, 0.6, 0.3);
 
     return parts;
   }

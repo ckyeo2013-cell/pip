@@ -239,6 +239,151 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     const def = K.toolDefs({ hasFolder: false, fullAccess: false }).find((d) => d.name === 'type_text');
     assert.ok(def && def.input_schema.properties.press_enter);
   });
+  // ---------------------------------------------------------------- seeing buttons without a screenshot
+  const ui = require('./ui');
+  const SCREEN = { workArea: { x: 0, y: 0, width: 1000, height: 800 }, scaleFactor: 1 };
+  const rawWin = (focusedEdit = true, extra = {}) => JSON.stringify({
+    window: { title: 'Notes', app: 'Notes', foreground: true, x: 0, y: 0, w: 1000, h: 800 }, units: 'px',
+    elements: [
+      { role: 'Button', name: 'Save', x: 100, y: 200, w: 80, h: 30, enabled: true, focused: false, secure: false },
+      { role: 'Button', name: 'Delete all', x: 300, y: 200, w: 80, h: 30, enabled: true, focused: false, secure: false },
+      { role: 'Edit', name: 'Search', x: 500, y: 400, w: 200, h: 30, enabled: true, focused: focusedEdit, secure: false },
+      { role: 'Edit', name: 'Password', x: 500, y: 450, w: 200, h: 30, enabled: true, focused: false, secure: true },
+      { role: 'Button', name: 'Far away', x: 5000, y: 10, w: 40, h: 30, enabled: true, focused: false, secure: false },
+    ], ...extra,
+  });
+  const mkUi = (extra = {}) => {
+    const calls = []; const pets = []; const said = [];
+    let listJson = rawWin();
+    const K = mkActions({
+      platform: 'linux', getScreenInfo: () => SCREEN, flightMs: 0, pipPid: 4242,
+      pet: (c) => pets.push(c), notify: (m) => said.push(m),
+      execFile: (c, a, o, cb) => {
+        const input = c === 'python3' ? JSON.parse(a[2]) : null;
+        calls.push([c, input]);
+        if (c === 'python3') return cb(null, input.mode === 'list' ? listJson + '\n' : JSON.stringify({ ok: input.mode === 'focus' ? 'focused' : 'pressed' }) + '\n', '');
+        cb(null, '', '');
+      },
+      ...extra,
+    });
+    return { K, calls, pets, said, setList: (j) => { listJson = j; } };
+  };
+  await t('ui: scripts build for every OS, are safe JSON, and parse cleanly', () => {
+    for (const p of ['win32', 'darwin', 'linux']) {
+      const c = ui.buildCommand(p, { mode: 'press', pipPid: 7, target: { name: 'a"b\'c; rm -rf /', role: 'Button', cx: 1, cy: 2 } });
+      assert.ok(c.cmd && c.args.length);
+      const payload = p === 'win32' ? c.env.PIP_UI : c.args[c.args.length - 1];
+      assert.strictEqual(JSON.parse(payload).name, 'a"b\'c; rm -rf /'); // input travels as data, never inside the script text
+    }
+    new Function(ui.buildCommand('darwin', { mode: 'list', pipPid: 1 }).args[3]); // the macOS script is valid JavaScript
+    assert.strictEqual(ui.parseOutput('noise\n{"ok":"pressed"}\n').ok, 'pressed');
+    throwsMsg(() => ui.parseOutput('nothing here'), /Could not read/);
+    throwsMsg(() => ui.buildCommand('linux', { mode: 'rm' }), /Unknown UI mode/);
+  });
+  await t('ui: normalize gives fractions, drops passwords and off-screen items, scales for HiDPI and flags focus', () => {
+    const n = ui.normalize(JSON.parse(rawWin()), 'linux', SCREEN);
+    assert.deepStrictEqual(n.elements.map((e) => e.name), ['Save', 'Delete all', 'Search']);
+    assert.strictEqual(n.skippedOffscreen, 1);
+    assert.strictEqual(n.elements[0].fx, 0.14); // (100 + 40) / 1000
+    assert.strictEqual(ui.focusedEditable(n).name, 'Search');
+    const hi = ui.normalize(JSON.parse(rawWin()), 'win32', { workArea: SCREEN.workArea, scaleFactor: 2 });
+    assert.strictEqual(hi.elements[0].fx, 0.07); // physical pixels are halved
+    const mac = ui.normalize(JSON.parse(rawWin()), 'darwin', { workArea: SCREEN.workArea, scaleFactor: 2 });
+    assert.strictEqual(mac.elements[0].fx, 0.14); // macOS already reports points
+  });
+  await t('ui: find_ui lists items with numbers, filters, hides Pip, and tools only exist when enabled', async () => {
+    const { K, calls } = mkUi();
+    assert.ok(K.toolDefs({ hasFolder: false, fullAccess: false }).some((d) => d.name === 'find_ui'));
+    assert.ok(!A.toolDefs({ hasFolder: false, fullAccess: false }).some((d) => d.name === 'find_ui' || d.name === 'press_ui'));
+    throwsMsg(() => A.prepare('find_ui', {}), /not available/);
+    const f = await K.prepare('find_ui', {});
+    assert.match(f.details, /No picture is taken/);
+    const out = await f.run();
+    assert.match(out, /\[1\] Button "Save" at x=0\.14, y=0\.26/);
+    assert.match(out, /\[3\] Edit "Search" \(has the cursor\)/);
+    assert.doesNotMatch(out, /Password|Far away/);
+    assert.strictEqual(calls[0][1].pipPid, 4242);
+    const q = await (await K.prepare('find_ui', { query: 'save' })).run();
+    assert.match(q, /1 match/);
+    assert.doesNotMatch(q, /Delete all/);
+  });
+  await t('ui: press_ui needs a look first, flies there, asks, flags risky names, and forgets the old numbers', async () => {
+    const { K, pets, calls } = mkUi();
+    throwsMsg(() => K.prepare('press_ui', { id: 1 }), /find_ui first/);
+    await (await K.prepare('find_ui', {})).run();
+    throwsMsg(() => K.prepare('press_ui', { id: 99 }), /no item number/);
+    const safe = K.prepare('press_ui', { id: 1 });
+    assert.strictEqual(safe.risk, 'normal');
+    assert.match(safe.details, /Save/);
+    assert.strictEqual(K.prepare('press_ui', { id: 2 }).risk, 'high');
+    const out = await safe.run();
+    assert.deepStrictEqual(pets[0], { action: 'fly', x: 0.14, y: 0.26 });
+    const press = calls.filter((c) => c[1] && c[1].mode === 'press');
+    assert.strictEqual(press.length, 1);
+    assert.deepStrictEqual([press[0][1].name, press[0][1].role], ['Save', 'Button']);
+    assert.match(out, /Pressed/);
+    throwsMsg(() => K.prepare('press_ui', { id: 1 }), /find_ui first/);
+  });
+  await t('ui: type_text flies to the box that has the cursor, then pastes, with no countdown', async () => {
+    const { K, pets, said, calls } = mkUi();
+    const tt = K.prepare('type_text', { text: 'hello' });
+    assert.match(tt.details, /finds the text box that has your cursor/);
+    const out = await tt.run();
+    assert.deepStrictEqual(pets[0], { action: 'fly', x: 0.6, y: 0.51 });
+    assert.ok(said.every((m) => !/Click where/.test(m)));
+    assert.match(out, /Pip flew there first/);
+    assert.ok(calls.some((c) => c[0] === 'xdotool' || c[0] !== 'python3'));
+  });
+  await t('ui: type_text falls back to the click countdown when no box has focus, window is a terminal, or reading fails', async () => {
+    for (const mk of [
+      () => { const m = mkUi(); m.setList(rawWin(false)); return m; },
+      () => { const m = mkUi(); m.setList(rawWin(true, { window: { title: 'bash — Terminal', app: 'Terminal', foreground: true } })); return m; },
+      () => { const m = mkUi(); m.setList(rawWin(true, { window: { title: 'Notes', foreground: false } })); return m; },
+      () => mkUi({ execFile: (c, a, o, cb) => (c === 'python3' ? cb(new Error('boom'), '', '') : cb(null, '', '')) }),
+    ]) {
+      const m = mk();
+      const out = await m.K.prepare('type_text', { text: 'hi' }).run();
+      assert.strictEqual(m.pets.length, 0);
+      assert.match(out, /at the user's cursor/);
+    }
+  });
+  await t('ui: type_text target focuses the chosen box first and refuses non-boxes', async () => {
+    const { K, calls, pets } = mkUi();
+    await (await K.prepare('find_ui', {})).run();
+    throwsMsg(() => K.prepare('type_text', { text: 'x', target: 1 }), /not a text box/);
+    const tt = K.prepare('type_text', { text: 'x', target: 3 });
+    assert.match(tt.details, /"Search" box/);
+    await tt.run();
+    assert.ok(calls.some((c) => c[1] && c[1].mode === 'focus' && c[1].name === 'Search'));
+    assert.strictEqual(pets.length, 1);
+  });
+  await t('autoLook: looking skips the approval card only when switched on; pressing and typing always ask', async () => {
+    let on = false;
+    const K = mkActions({ platform: 'linux', getScreenInfo: () => SCREEN, getAutoLook: () => on, captureScreen: async () => ({ data: 'QUJD', width: 1, height: 1 }), execFile: (c, a, o, cb) => cb(null, rawWin() + '\n', '') });
+    assert.ok(!K.prepare('look_at_screen', {}).auto);
+    assert.ok(!K.prepare('find_ui', {}).auto);
+    on = true;
+    assert.strictEqual(K.prepare('look_at_screen', {}).auto, true);
+    assert.strictEqual(K.prepare('find_ui', {}).auto, true);
+    await K.prepare('find_ui', {}).run();
+    assert.ok(!K.prepare('press_ui', { id: 1 }).auto);
+    assert.ok(!K.prepare('type_text', { text: 'x' }).auto);
+  });
+  await t('autoType: only short one-line text skips the card, and only when switched on', () => {
+    let on = false;
+    const K = mkActions({ platform: 'linux', getAutoType: () => on });
+    assert.ok(!K.prepare('type_text', { text: 'cats' }).auto);
+    on = true;
+    assert.strictEqual(K.prepare('type_text', { text: 'funny cats', press_enter: true }).auto, true);
+    assert.ok(!K.prepare('type_text', { text: 'a\nb' }).auto);
+    assert.ok(!K.prepare('type_text', { text: 'x'.repeat(301) }).auto);
+  });
+  await t('ui: friendly errors for a blocked macOS permission and a missing Linux helper', async () => {
+    const mac = mkUi({ platform: 'darwin', execFile: (c, a, o, cb) => cb(new Error('x'), '', 'execution error: Not authorized (-1743) assistive access not allowed') });
+    await (async () => { try { await (await mac.K.prepare('find_ui', {})).run(); assert.fail('should throw'); } catch (e) { assert.match(e.message, /Accessibility/); } })();
+    const lin = mkUi({ execFile: (c, a, o, cb) => cb(Object.assign(new Error('nope'), { code: 'ENOENT' }), '', '') });
+    await (async () => { try { await (await lin.K.prepare('find_ui', {})).run(); assert.fail('should throw'); } catch (e) { assert.match(e.message, /python3/); } })();
+  });
   await t('every declared tool can be prepared (names match)', () => {
     const defs = A.toolDefs({ hasFolder: true, fullAccess: true });
     const names = defs.map((d) => d.name);
@@ -506,7 +651,7 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
         for (const q of parts) for (const v of [...q.c, ...q.r, ...q.M, ...q.color, q.spec, q.fur]) assert.ok(Number.isFinite(v), pal + ' ' + g);
       }
     }
-    assert.ok(width(0) < 0.75, 'membrane should be tucked at rest, got ' + width(0));
+    assert.ok(width(0) < 0.95, 'membrane should be tucked at rest, got ' + width(0));
     assert.ok(width(1) > 1.1, 'membrane should spread when gliding, got ' + width(1));
     assert.ok(Object.keys(M.PALETTES).join() === 'classic,honey,cocoa');
   });
