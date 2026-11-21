@@ -77,7 +77,7 @@ const txt = (t) => ({ candidates: [{ content: { parts: [{ text: t }] } }] });
     script = [txt('Hi from Gemini')];
     const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'explain how clouds form' }] });
     assert.deepStrictEqual(r, { text: 'Hi from Gemini' });
-    assert.match(calls[0].url, /generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-2\.5-flash-lite:generateContent/);
+    assert.match(calls[0].url, /generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-2\.5-flash-lite:(?:stream)?[gG]enerateContent/);
     assert.strictEqual(calls[0].init.headers['x-goog-api-key'], 'AIzaSECRET');
     assert.ok(calls[0].body.tools[0].functionDeclarations.some((d) => d.name === 'open_system_settings'));
     assert.match(calls[0].body.systemInstruction.parts[0].text, /Control Panel and settings/);

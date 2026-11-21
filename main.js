@@ -23,6 +23,7 @@ const DEFAULTS = {
   actions: true,
   autoType: false,    // short one-line typing (like a search) without asking each time
   trustedSites: [],   // extra sites that open without asking
+  toolPolicy: {},     // per action group: 'never' (skip the card) or 'always' (always show it)
   trustSaid: false,   // skip the approval card when the user clearly told Pip to do exactly that (risky things still ask)
   autoPress: false,   // press ordinary buttons without asking (risky names like Delete, Send, Pay still ask)
   voiceHotkey: true,  // Ctrl/Cmd+Alt+Space starts and stops listening
@@ -297,6 +298,46 @@ let stepCount = 0;
 // those words (user_said); Pip checks the quote really is in the user's latest message, so text from web pages or
 // files can never switch it on. Risky actions and these tools always ask.
 const NEVER_SKIP = ['run_command', 'press_keys', 'quit_app', 'trash_files', 'move_files'];
+const TRUST_AUTO = ['open_app', 'open_url', 'search_site']; // plain "open X" / "search X" never needs a quote from the AI
+
+// ---- per-action approval settings + a short log of what Pip did (with undo for the easy-to-reverse ones)
+const POLICY_GROUPS = { // group -> the tools in it
+  open: ['open_app', 'open_url', 'search_site'], type: ['type_text'], press: ['press_ui'], look: ['find_ui', 'look_at_screen'],
+  chat: ['open_chat'], keys: ['press_keys'], cmd: ['run_command'], files: ['write_text_file', 'move_files', 'trash_files', 'make_folder'],
+};
+const POLICY_NO_NEVER = ['keys', 'cmd', 'files']; // these can be set to "always ask" but never to "never ask"
+const GROUP_OF = {};
+for (const [g, names] of Object.entries(POLICY_GROUPS)) for (const n of names) GROUP_OF[n] = g;
+const actionLog = [];
+const UNDO_MAP = { media_control: { volume_up: 'volume_down', volume_down: 'volume_up', mute: 'mute' }, browser: { new_tab: 'close_tab', close_tab: 'reopen_tab' } };
+function undoFor(name, input, out) {
+  const act = input && input.action;
+  if (UNDO_MAP[name] && UNDO_MAP[name][act]) return { name, input: { action: UNDO_MAP[name][act] } };
+  if (name === 'move_files') {
+    const moves = [...String(out || '').matchAll(/^Moved (.+?) -> (.+?)(?: \(.*)?$/gm)].map((m) => ({ from: m[2], to: m[1] }));
+    if (moves.length) return { name, input: { moves } };
+  }
+  return null;
+}
+// Applies the user's per-action choice, and logs the action once it has really run.
+function applyPolicy(name, r, input) {
+  if (!r) return r;
+  const p = (settings.toolPolicy || {})[GROUP_OF[name]];
+  if (p === 'always') { r.auto = false; r.forceAsk = true; }
+  else if (p === 'never' && !POLICY_NO_NEVER.includes(GROUP_OF[name]) && r.risk !== 'high' && !NEVER_SKIP.includes(name)) r.auto = true;
+  if (typeof r.run === 'function' && !r.logged) {
+    const run = r.run.bind(r);
+    r.logged = true;
+    r.run = async () => {
+      const out = await run();
+      actionLog.push({ at: Date.now(), title: String(r.title || name).slice(0, 80), undo: undoFor(name, input, typeof out === 'string' ? out : ''), undone: false });
+      if (actionLog.length > 20) actionLog.shift();
+      return out;
+    };
+  }
+  return r;
+}
+const ago = (t) => { const s = Math.round((Date.now() - t) / 1000); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`; };
 const normSaid = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
 function saidByUser(quote, latest) {
   const q = normSaid(quote);
@@ -371,7 +412,7 @@ const calendar = createCalendar({
 });
 
 // One picture of the main screen. Pip's own window is hidden first so it never blocks the view.
-async function captureScreen() {
+async function captureScreen(opts = {}) {
   if (process.platform === 'darwin') {
     const st = systemPreferences.getMediaAccessStatus('screen');
     if (st === 'denied' || st === 'restricted') {
@@ -379,13 +420,12 @@ async function captureScreen() {
     }
   }
   const wasVisible = !!(win && !win.isDestroyed() && win.isVisible());
-  if (wasVisible) win.hide();
-  await sleep(250);
+  if (wasVisible) { win.hide(); await sleep(250); } // no need to wait when the window is already out of the way
   try {
     const d = screen.getPrimaryDisplay();
     const sf = d.scaleFactor || 1;
     // ask for a smaller picture straight away (faster to capture, upload and read); 1280px is plenty to read text
-    const k0 = Math.min(1, 1280 / Math.max(d.size.width * sf, d.size.height * sf));
+    const k0 = Math.min(1, (opts.region ? 2400 : 1280) / Math.max(d.size.width * sf, d.size.height * sf));
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
       thumbnailSize: { width: Math.round(d.size.width * sf * k0), height: Math.round(d.size.height * sf * k0) },
@@ -393,8 +433,12 @@ async function captureScreen() {
     const src = sources.find((x) => String(x.display_id) === String(d.id)) || sources[0];
     if (!src || src.thumbnail.isEmpty()) throw new Error('Could not capture the screen. On a Mac, check Screen Recording permission; on Linux, this needs X11 or a desktop that allows screen capture.');
     let img = src.thumbnail;
+    if (opts.region) { // crop to the asked part first, then shrink: a small sharp picture is faster to upload and read
+      const full = img.getSize(), r = opts.region;
+      img = img.crop({ x: Math.round(r.x * full.width), y: Math.round(r.y * full.height), width: Math.max(8, Math.round(r.w * full.width)), height: Math.max(8, Math.round(r.h * full.height)) });
+    }
     const { width, height } = img.getSize();
-    const k = Math.min(1, 1280 / Math.max(width, height));
+    const k = Math.min(1, (opts.region ? 800 : 1280) / Math.max(width, height));
     if (k < 1) img = img.resize({ width: Math.round(width * k), height: Math.round(height * k), quality: 'best' });
     const size = img.getSize();
     return { data: img.toJPEG(72).toString('base64'), width: size.width, height: size.height };
@@ -504,7 +548,7 @@ function buildActionRules() {
     `nickname; never invent a date. To put something on their calendar use add_calendar_event; for "remind me in 20 minutes" use set_reminder.` +
     `\n\nWeb: to look something up or read a page, use fetch_url (for example https://duckduckgo.com/html/?q=search+words) and answer from what you read, ` +
     `naming the site; use open_url only when the user wants the page opened on screen.` +
-    `\n\nGAMES: when the user wants you to play a turn-based or puzzle game on screen (Wordle, a trivia game like Krillion, a keyboard puzzle), call start_game ONCE (they approve once), then loop with no chatter between steps: look_at_screen, decide, game_keys (text for letters or digits, keys like enter or backspace), look again. Use the game's keyboard controls, or find_ui and press_ui for real buttons. If the game needs mouse clicks on a drawing, tell the user and call end_game. ` +
+    `\n\nGAMES: when the user wants you to play a turn-based or puzzle game on screen (Wordle, a trivia game like Krillion, a keyboard puzzle), call start_game ONCE (they approve once), then loop with no chatter between steps: look_at_screen, decide, game_keys (text for letters or digits, keys like enter or backspace), look again. Use the game's keyboard controls, or find_ui and press_ui for real buttons. If the game needs mouse clicks on a drawing, tell the user and call end_game. CHESS: do not work out moves from the picture. Per move: look_at_screen with region set to just the board (fractions of the whole screen), write the position as FEN, call chess_best_move, then board_move with the same board numbers (clicks need no approval in game mode). Find the board area on your first look and reuse it. ` +
     `Wordle: open with a strong word like "crane" or "slate", then use the colours (green = right letter in the right place, yellow = in the word but elsewhere, grey = not in the word), keep a short list of what you know, never repeat a guess, only guess real 5-letter English words, and you get 6 tries. ` +
     `Rare-answer trivia like Krillion: each prompt has a short timer (about 25 seconds), so do ONE look per prompt and answer right away; a valid but less obvious answer scores more than the first one everyone thinks of, but never risk an invalid one, and spell it plainly. ` +
     `Only play single-player, practice or casual games the user asked for. Stop with end_game when it is over or stuck, and tell the user the result. If a login, payment, purchase or ad appears, stop and tell them.` +
@@ -532,7 +576,7 @@ async function runBrain(plan, hasAI) {
   try {
     for (const step of plan.steps) {
       if (stopRequested) return { text: 'Okay, I stopped.' };
-      const a = await actions.prepare(step.name, step.input); // validates, does nothing yet
+      const a = applyPolicy(step.name, await actions.prepare(step.name, step.input), step.input); // validates, does nothing yet
       send('progress', { n: outs.length + 1, title: (a && a.title) || step.name });
       const ok = a.auto ? true : await requestApproval({ title: a.title, details: a.details, risk: a.risk || 'normal' });
       if (!ok) return { text: 'Okay, I will not do that.' };
@@ -558,6 +602,18 @@ async function chat({ messages, ctx }) {
     const before = list[list.length - 2];
     const answeringQuestion = before && before.role === 'assistant' && /\?\s*$/.test(String(before.content || '')); // "which site?" -> "youtube" is for the AI
     if (last && last.role === 'user' && typeof last.content === 'string' && !answeringQuestion && !chatBusy && !(ctx && ctx.text)) {
+      const said = last.content.trim().replace(/[.!?]+$/, '');
+      if (/^(?:undo|undo (?:that|it|the last (?:thing|action)|last(?: action)?)|take that back)$/i.test(said)) {
+        const e = actionLog.length ? actionLog[actionLog.length - 1] : null;
+        if (!e) return { text: 'I have not done anything yet, so there is nothing to undo.' };
+        if (!e.undo || e.undone) return { text: `I cannot undo "${e.title}" automatically${e.undone ? ' (already undone)' : ''}. Files that went to the Trash can be restored from there.` };
+        const r = await runBrain({ steps: [e.undo], finish: () => `Undone: ${e.title}.` }, hasAI);
+        if (r) { if (/^Undone/.test(r.text)) e.undone = true; return r; }
+      }
+      if (/^(?:what did you (?:just )?do|(?:show )?(?:the |my )?action log|recent actions)$/i.test(said)) {
+        const lines = actionLog.slice(-8).reverse().map((e) => `• ${e.title} (${ago(e.at)})${e.undo && !e.undone ? ' ↩ say "undo" to reverse the latest' : ''}`);
+        return { text: lines.length ? `Here is what I did recently:\n${lines.join('\n')}` : 'I have not done anything yet.' };
+      }
       const plan = brain.think(last.content, { platform: process.platform, hasAI });
       if (plan) { const r = await runBrain(plan, hasAI); if (r) return r; }
     }
@@ -628,7 +684,7 @@ async function chat({ messages, ctx }) {
   const guard = makeLoopGuard();
   const gameGuard = makeLoopGuard({ maxSame: 60, maxPerTool: { find_ui: 30, look_at_screen: 70, press_ui: 40, game_keys: 70 } }); // playing a game means many looks and key presses
   try {
-    const common = { fetchFn: fetch, apiKey: key, system, messages: clean, tools, maxSteps: 70, prepare: (name, input) => {
+    const common = { fetchFn: fetch, apiKey: key, system, messages: clean, tools, maxSteps: 70, onText: (t) => send('chat:delta', { text: t }), prepare: (name, input) => {
         let said = null;
         if (input && typeof input === 'object' && 'user_said' in input) { said = input.user_said; input = { ...input }; delete input.user_said; }
         if (stopRequested) throw new Error('The user pressed Stop. Do nothing more and just tell them you stopped.');
@@ -640,8 +696,9 @@ async function chat({ messages, ctx }) {
         const n = ++stepCount;
         // tell the chat which step this is, so a long job never looks like Pip is just sitting there
         return Promise.resolve(a).then((r) => {
+          r = applyPolicy(name, r, input);
           send('progress', { n, title: (r && r.title) || name });
-          if (r && !r.auto && said && settings.trustSaid && !NEVER_SKIP.includes(name) && r.risk !== 'high' && saidByUser(said, clean[clean.length - 1].content)) {
+          if (r && !r.auto && !r.forceAsk && settings.trustSaid && r.risk !== 'high' && (TRUST_AUTO.includes(name) || (said && !NEVER_SKIP.includes(name) && saidByUser(said, clean[clean.length - 1].content)))) {
             r.auto = true; // the user's own words asked for this
             send('say', { text: `Doing it: ${String(r.title || name).slice(0, 50)}`, ms: 2500 });
           }
@@ -703,6 +760,14 @@ function registerIpc() {
       if (MODELS.includes(s.model)) patch.model = s.model;
       for (const k of ['wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'macCalendar']) {
         if (typeof s[k] === 'boolean') patch[k] = s[k];
+      }
+      if (s.toolPolicy && typeof s.toolPolicy === 'object') {
+        const tp = {};
+        for (const g of Object.keys(POLICY_GROUPS)) {
+          const v = s.toolPolicy[g];
+          if (v === 'always' || (v === 'never' && !POLICY_NO_NEVER.includes(g))) tp[g] = v;
+        }
+        patch.toolPolicy = tp;
       }
       if (Array.isArray(s.trustedSites)) patch.trustedSites = [...new Set(s.trustedSites.map((h) => String(h).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '')).filter((h) => /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(h)))].slice(0, 30);
       if (PROVIDERS.includes(s.provider)) patch.provider = s.provider;

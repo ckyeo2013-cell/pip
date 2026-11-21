@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('pip', {
   deleteChat: (id) => ipcRenderer.invoke('chats:delete', id),
   stopChat: () => ipcRenderer.invoke('chat:stop'),
   onProgress: (cb) => on('progress', cb),
+  onDelta: (cb) => on('chat:delta', cb),
   onApproval: (cb) => on('approve:request', cb),
   onApprovalExpired: (cb) => on('approve:expired', cb),
   onSay: (cb) => on('say', cb),

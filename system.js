@@ -158,6 +158,19 @@ function checkCommand(command, extraSecretStrings = []) {
   return { blocked: '', flags: FLAGS.filter(([re]) => re.test(command)).map(([, t]) => t) };
 }
 
+
+// Read-only lookups (finding apps, listing files, checking what is running) can run without an approval card.
+// Anything that chains commands, redirects output, or uses scripting characters still asks.
+const RO_CMDS = new Set(['where', 'which', 'whereis', 'mdfind', 'ls', 'dir', 'pwd', 'whoami', 'hostname', 'date', 'tasklist', 'get-command', 'get-startapps', 'get-childitem', 'get-process', 'test-path', 'get-appxpackage']);
+const RO_PIPES = new Set(['select-object', 'where-object', 'sort-object', 'format-table', 'format-list', 'out-string', 'head', 'tail', 'sort', 'findstr', 'grep']);
+function isReadOnlyCommand(command) {
+  if (typeof command !== 'string' || !command.trim() || command.length > 300) return false;
+  if (/[;&><`${}()\r\n]/.test(command)) return false;
+  const parts = command.split('|').map((p) => p.trim().split(/\s+/)[0].toLowerCase());
+  if (!RO_CMDS.has(parts[0])) return false;
+  return parts.slice(1).every((p) => RO_PIPES.has(p));
+}
+
 // ------------------------------------------------------------------ key presses
 const NAMED = {
   enter: { win: '{ENTER}', mac: 36, x: 'Return' },
@@ -290,9 +303,10 @@ function scrollCommands(direction, amount, platform) {
 }
 
 // Browser controls: ordinary keyboard shortcuts for the browser in front (nothing can be typed this way).
-const BROWSER_ACTIONS = ['new_tab', 'close_tab', 'reopen_tab', 'next_tab', 'previous_tab', 'go_to_tab', 'back', 'forward', 'refresh', 'address_bar', 'find'];
+const BROWSER_ACTIONS = ['bring_to_front', 'new_tab', 'close_tab', 'reopen_tab', 'next_tab', 'previous_tab', 'go_to_tab', 'back', 'forward', 'refresh', 'address_bar', 'find'];
 function browserKeys(action, platform, value) {
   if (!BROWSER_ACTIONS.includes(action)) throw new Error(`Unknown browser action "${action}". Use one of: ${BROWSER_ACTIONS.join(', ')}.`);
+  if (action === 'bring_to_front') return { combo: null, label: 'Brought the browser to the front.', cmd: null }; // no keys, just focus
   const mac = platform === 'darwin';
   const m = mac ? 'cmd' : 'ctrl';
   let n = null;
@@ -315,6 +329,79 @@ function browserKeys(action, platform, value) {
   };
   const [combo, label] = table[action];
   return { combo, label, cmd: buildKeyCommand(parseCombo(combo), platform) };
+}
+
+
+// ------------------------------------------------------------------ bringing the browser to the front
+// Tab shortcuts (and "open YouTube") only work when the browser is the window in front, and Windows will not let a
+// background app push a window forward on its own. This finds the browser (the default one first) and raises it.
+// It prints "already:<name>" (a browser is already in front, left alone), "focused:<name>" or "none".
+const BROWSER_PROCESSES = ['chrome', 'msedge', 'firefox', 'brave', 'opera', 'vivaldi', 'arc', 'zen', 'librewolf', 'waterfox'];
+const BROWSER_APPS_MAC = ['Google Chrome', 'Safari', 'Firefox', 'Microsoft Edge', 'Brave Browser', 'Arc', 'Opera', 'Vivaldi'];
+function focusBrowserCommand(platform) {
+  if (platform === 'win32') {
+    const script = `$names = @(${BROWSER_PROCESSES.map((n) => `'${n}'`).join(',')})
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public class PipWin {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+}
+'@
+$fpid = [uint32]0
+[void][PipWin]::GetWindowThreadProcessId([PipWin]::GetForegroundWindow(), [ref]$fpid)
+$fp = Get-Process -Id $fpid -ErrorAction SilentlyContinue
+if ($fp -and ($names -contains $fp.ProcessName.ToLower())) { 'already:' + $fp.ProcessName; exit 0 }
+$def = ''
+try {
+  $prog = (Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice' -ErrorAction Stop).ProgId
+  if ($prog -match 'Chrome') { $def = 'chrome' } elseif ($prog -match 'MSEdge') { $def = 'msedge' } elseif ($prog -match 'Firefox') { $def = 'firefox' }
+  elseif ($prog -match 'Brave') { $def = 'brave' } elseif ($prog -match 'Opera') { $def = 'opera' } elseif ($prog -match 'Vivaldi') { $def = 'vivaldi' }
+} catch {}
+$order = @(); if ($def) { $order += $def }; $order += @($names | Where-Object { $_ -ne $def })
+foreach ($n in $order) {
+  $p = Get-Process -Name $n -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+  if ($p) {
+    $h = $p.MainWindowHandle
+    if ([PipWin]::IsIconic($h)) { [void][PipWin]::ShowWindow($h, 9) }
+    [PipWin]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [PipWin]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+    [void][PipWin]::SetForegroundWindow($h)
+    'focused:' + $n; exit 0
+  }
+}
+'none'`;
+    return { cmd: 'powershell.exe', args: psArgs(script) };
+  }
+  if (platform === 'darwin') {
+    const lines = [
+      `set browsers to {${BROWSER_APPS_MAC.map((b) => `"${b}"`).join(', ')}}`,
+      'tell application "System Events"',
+      'set fm to name of first application process whose frontmost is true',
+      'if browsers contains fm then return "already:" & fm',
+      'set procs to name of every application process',
+      'end tell',
+      'repeat with b in browsers',
+      'if procs contains (b as text) then',
+      'tell application (b as text) to activate',
+      'return "focused:" & (b as text)',
+      'end if',
+      'end repeat',
+      'return "none"',
+    ];
+    const args = [];
+    for (const l of lines) args.push('-e', l);
+    return { cmd: 'osascript', args };
+  }
+  return null; // Linux: leave it to the window manager
+}
+// "focused:chrome" -> 'focused'; anything unexpected -> 'error'
+function parseFocusResult(out) {
+  const word = String(out || '').trim().split(/\r?\n/).pop().split(':')[0];
+  return ['focused', 'already', 'none'].includes(word) ? word : 'error';
 }
 
 // ------------------------------------------------------------------ apps
@@ -479,11 +566,36 @@ function parseStartApps(out) {
   return (Array.isArray(j) ? j : [j]).filter((a) => a && typeof a.Name === 'string' && typeof a.AppID === 'string');
 }
 const flat = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+// Number of single-letter edits between two strings (spelling slips and speech-to-text near-misses).
+function editDistance(a, b) {
+  a = String(a); b = String(b);
+  if (a === b) return 0;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[b.length];
+}
+// The app's own link, which opens it whenever it is installed, even if the Start menu list could not be read.
+const APP_PROTOCOLS = {
+  discord: 'discord://', spotify: 'spotify:', slack: 'slack://', whatsapp: 'whatsapp:', teams: 'msteams:', 'microsoft teams': 'msteams:',
+  steam: 'steam://open/main', zoom: 'zoommtg://', telegram: 'tg://', notion: 'notion://', obsidian: 'obsidian://',
+};
 // Best match for what the user called the app: exact, then starts-with, then contains. Returns { app } or { suggestions }.
 function pickStartApp(apps, query) {
   const q = flat(query);
   if (!q) return { suggestions: [] };
-  const score = (a) => { const n = flat(a.Name); return n === q ? 0 : n.startsWith(q) ? 1 : n.includes(q) ? 2 : q.includes(n) && n.length >= 4 ? 3 : 9; };
+  const score = (a) => {
+    const n = flat(a.Name);
+    if (n === q) return 0;
+    if (n.startsWith(q)) return 1;
+    if (n.includes(q)) return 2;
+    if (q.includes(n) && n.length >= 4) return 3;
+    if (q.length >= 5 && n.length >= 5 && editDistance(n, q) <= (n.length >= 8 ? 2 : 1)) return 4; // "discard" for Discord
+    return 9;
+  };
   const ranked = apps.map((a) => ({ a, s: score(a) })).filter((x) => x.s < 9).sort((x, y) => x.s - y.s || x.a.Name.length - y.a.Name.length);
   // skip uninstallers and helper entries when a real app matches
   const clean = ranked.filter((x) => !/uninstall|readme|help|license/i.test(x.a.Name));
@@ -540,11 +652,11 @@ function mediaCommand(action, platform, value) {
 }
 
 module.exports = {
-  BROWSER_ACTIONS, browserKeys,
-  START_APPS_SCRIPT, parseStartApps, pickStartApp, SCROLL_DIRS, scrollCommands, gameKeyCommand, GAME_KEYS,
+  BROWSER_ACTIONS, browserKeys, focusBrowserCommand, parseFocusResult, BROWSER_PROCESSES,
+  START_APPS_SCRIPT, parseStartApps, pickStartApp, editDistance, APP_PROTOCOLS, SCROLL_DIRS, scrollCommands, gameKeyCommand, GAME_KEYS,
   clickCommand, chatApp, CHAT_APPS, SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
   PAGES, pageNames, settingsLaunch,
-  psArgs, buildShell, shellName, checkCommand,
+  psArgs, buildShell, shellName, checkCommand, isReadOnlyCommand,
   parseCombo, buildKeyCommand,
   APP_NAME, listAppsCommand, quitAppCommand,
   OPEN_BLOCKED, isPrivateAddress, htmlToText,

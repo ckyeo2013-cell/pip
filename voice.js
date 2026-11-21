@@ -13,6 +13,11 @@ const GROQ_STT_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
 const GROQ_STT_MODEL = 'whisper-large-v3-turbo';
 const GEMINI_STT_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
+// A short hint that nudges Whisper toward how people really talk to Pip (Singlish/Manglish particles, app names),
+// so "open Discord lah" is not heard as "open Discord lot".
+const STT_HINT = 'Casual Singapore and Malaysia English. Short commands for a desktop pet: open Discord lah, open Spotify, open Chrome, ' +
+  'open YouTube lor, play lofi on YouTube, message Sam on Discord, set a timer. Particles: lah, lor, leh, meh, sia, mah.';
+
 const LABELS = { cloudflare: 'Cloudflare', groq: 'Groq', gemini: 'Google Gemini' };
 
 // "auto" means the same company as the chat brain, but only if it can transcribe. Anthropic cannot, so
@@ -52,13 +57,14 @@ async function transcribe({ fetchFn, provider, apiKey, accountId, audioB64, time
   let url, init;
   if (provider === 'cloudflare') {
     url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${CF_STT_MODEL}`;
-    init = { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ audio: audioB64, task: 'transcribe' }) };
+    init = { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ audio: audioB64, task: 'transcribe', initial_prompt: STT_HINT }) };
   } else if (provider === 'groq') {
     const form = new FormData();
     form.append('file', new Blob([Buffer.from(audioB64, 'base64')], { type: 'audio/wav' }), 'voice.wav');
     form.append('model', GROQ_STT_MODEL);
     form.append('response_format', 'json');
     form.append('temperature', '0');
+    form.append('prompt', STT_HINT);
     url = GROQ_STT_URL;
     init = { method: 'POST', headers: { authorization: `Bearer ${apiKey}` }, body: form }; // fetch sets the multipart type itself
   } else {
@@ -68,7 +74,7 @@ async function transcribe({ fetchFn, provider, apiKey, accountId, audioB64, time
       headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify({
         contents: [{ parts: [
-          { text: 'Transcribe the speech in this audio exactly as spoken. Reply with only the spoken words, nothing else. If there is no speech, reply with nothing.' },
+          { text: 'Transcribe the speech in this audio exactly as spoken. It is casual Singapore/Malaysia English, so keep slang particles such as lah, lor, leh, meh, sia and mah exactly as said (never "lot"). App names like Discord, Spotify and Chrome are common. Reply with only the spoken words, nothing else. If there is no speech, reply with nothing.' },
           { inlineData: { mimeType: 'audio/wav', data: audioB64 } },
         ] }],
       }),
@@ -99,7 +105,10 @@ async function transcribe({ fetchFn, provider, apiKey, accountId, audioB64, time
     const parts = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
     text = Array.isArray(parts) ? parts.map((p) => (p && p.text) || '').join(' ') : '';
   }
-  return { text: clean(text) };
+  text = clean(text);
+  // on near-silence Whisper sometimes parrots the hint back; never act on that
+  if (provider !== 'gemini' && text.length > 40 && STT_HINT.includes(text.slice(0, 40))) text = '';
+  return { text };
 }
 
-module.exports = { transcribe, pickProvider, STT_PROVIDERS, LABELS, MAX_AUDIO_B64 };
+module.exports = { STT_HINT, transcribe, pickProvider, STT_PROVIDERS, LABELS, MAX_AUDIO_B64 };

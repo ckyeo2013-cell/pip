@@ -793,6 +793,32 @@
     return h;
   }
 
+  const POLICY_UI = [['open', 'Open apps and websites', true], ['type', 'Type text for me', true], ['press', 'Press buttons', true], ['look', 'Look at my screen', true],
+    ['chat', 'Open a chat in a messaging app', true], ['keys', 'Press keyboard shortcuts', false], ['cmd', 'Run terminal commands', false], ['files', 'Write, move or trash files', false]];
+  function buildPolicyUi() {
+    if ($('tp-box')) return;
+    const box = document.createElement('div');
+    box.id = 'tp-box';
+    box.innerHTML = '<label style="display:block;margin-top:8px"><b>Per action</b> (overrides the switches above; "Default" keeps the normal rules)</label>';
+    for (const [g, label, canNever] of POLICY_UI) {
+      const row = document.createElement('label');
+      row.style.cssText = 'display:flex;justify-content:space-between;gap:8px;align-items:center;margin:3px 0';
+      const sel = document.createElement('select');
+      sel.id = 'tp-' + g;
+      sel.innerHTML = '<option value="">Default</option>' + (canNever ? '<option value="never">Never ask</option>' : '') + '<option value="always">Always ask</option>';
+      row.append(document.createTextNode(label), sel);
+      box.appendChild(row);
+    }
+    $('s-trustsaid').closest('label').after(box);
+  }
+  let liveEl = null; // the reply bubble that fills in word by word while the AI writes
+  pip.onDelta(({ text }) => {
+    if (!busy || !text) return;
+    if (!liveEl) { liveEl = addMsg('pet', ''); if (typingEl) msgs.appendChild(typingEl); }
+    liveEl.textContent += text;
+    msgs.scrollTop = msgs.scrollHeight;
+  });
+
   async function send(text, opts = {}) {
     text = text.trim();
     if (busy || !text) return;
@@ -807,6 +833,7 @@
     try {
       const res = await pip.chat({ messages: trimmedHistory(), ctx: convoCtx });
       typing.remove();
+      if (liveEl) { liveEl.remove(); liveEl = null; } // the final message below replaces the live one
       if (res.error === 'no_key') {
         history.pop();
         addMsg('pet', `I need ${res.provider === 'gemini' ? 'a Google Gemini key' : res.provider === 'groq' ? 'a Groq key' : res.provider === 'cloudflare' ? 'a Cloudflare token' : 'an Anthropic key'} before I can chat! Tap the ⚙ above and paste one in. (Simple things like opening sites, volume, timers, maths and coin flips work without it 🪙)`);
@@ -822,6 +849,7 @@
       }
     } catch (e) {
       typing.remove();
+      if (liveEl) { liveEl.remove(); liveEl = null; }
       history.pop();
       addMsg('pet', 'I could not reach my brain just now. Try again in a moment.');
     } finally {
@@ -1150,6 +1178,8 @@
     $('s-autopress').checked = !!settings.autoPress;
     $('s-trusted').value = (settings.trustedSites || []).join(', ');
     $('s-trustsaid').checked = !!settings.trustSaid;
+    buildPolicyUi();
+    for (const [g] of POLICY_UI) $('tp-' + g).value = (settings.toolPolicy || {})[g] || '';
     $('s-hotkey').checked = settings.voiceHotkey !== false;
     $('s-folder').textContent = settings.workFolder || 'None chosen';
     renderCals(settings.calendars || []);
@@ -1197,6 +1227,7 @@
       autoPress: $('s-autopress').checked,
       voiceHotkey: $('s-hotkey').checked,
       trustSaid: $('s-trustsaid').checked,
+      toolPolicy: Object.fromEntries(POLICY_UI.map(([g]) => [g, $('tp-' + g).value]).filter(([, v]) => v)),
       trustedSites: $('s-trusted').value.split(/[,\s]+/).filter(Boolean),
       macCalendar: $('s-maccal').checked,
     });

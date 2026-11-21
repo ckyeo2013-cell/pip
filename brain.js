@@ -41,16 +41,48 @@ const JOKES = [
 ];
 
 // ---------------------------------------------------------------- helpers
+// Slang that gets tacked onto a request ("open discord lah", "open discord lor"), and what speech-to-text often hears
+// instead of it ("open discord lot"). Safe particles are dropped from the end of any request; the ones that are also
+// real words (lot, now, man...) are only dropped right after an app name.
+const PARTICLES = ['lah', 'lahh', 'laa', 'lar', 'lor', 'leh', 'loh', 'mah', 'meh', 'sia', 'hor', 'bro', 'bruh', 'dude', 'boss', 'lol', 'ya', 'yah', 'yea'];
+const MISHEARD = ['lot', 'lots', 'lat', 'law', 'low', 'la', 'lo', 'luh', 'ah', 'eh', 'now', 'man', 'quick', 'quickly', 'first', 'ok', 'okay', 'yeah'];
+const TAIL_WORDS = new Set([...PARTICLES, ...MISHEARD]);
+const TAIL_RE = new RegExp(`(?:[\\s,]+(?:${PARTICLES.join('|')}))+$`, 'i');
+const APP_TAIL_RE = new RegExp(`\\b(${LOCAL_APPS.map((a) => a.replace(/\s+/g, '\\s+')).join('|')})(?:[\\s,]+(?:${[...TAIL_WORDS].join('|')}))+$`, 'i');
+
+// "discord lot" -> "discord", "vs codee" -> "vs code", "discard" -> "discord". Returns the app's name, or null.
+function matchApp(low) {
+  low = String(low || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!low) return null;
+  if (LOCAL_APPS.includes(low)) return low;
+  const words = low.split(' ');
+  for (let n = words.length - 1; n >= 1; n--) {
+    const head = words.slice(0, n).join(' ');
+    if (LOCAL_APPS.includes(head) && words.slice(n).every((w) => TAIL_WORDS.has(w))) return head;
+  }
+  const flat = low.replace(/ /g, '');
+  let best = null, bestD = 99;
+  for (const app of LOCAL_APPS) {
+    const f = app.replace(/ /g, '');
+    if (f.length < 5) continue; // short names (obs, word, zoom) are too easy to confuse with other words
+    const d = sys.editDistance(flat, f);
+    if (d <= (f.length >= 8 ? 2 : 1) && d < bestD) { best = app; bestD = d; }
+  }
+  return best;
+}
+
 function clean(text) {
   let t = String(text || '').trim().replace(/\s+/g, ' ');
   // greetings and politeness in front: "hey pip, can you please ..."
   for (let i = 0; i < 3; i++) {
-    t = t.replace(/^(?:hey|hi|hello|yo|ok(?:ay)?|so|um+|hmm+)[ ,]+(?=\S)/i, '')
+    t = t.replace(/^(?:hey|hi|hello|yo|ok(?:ay)?|so|um+|hmm+|eh|ei|boss|bro)[ ,]+(?=\S)/i, '')
       .replace(/^pip[ ,:]+(?=\S)/i, '')
       .replace(/^(?:please|pls|can you|could you|would you|will you|i want you to|i need you to|i'd like you to|go ahead and|just)\s+/i, '');
   }
-  t = t.replace(/\s+(?:please|pls|for me|thanks|thank you)$/i, '').replace(/[.!]+$/g, '').trim();
-  return t;
+  for (let i = 0; i < 4; i++) {
+    t = t.replace(/[.!,\s]+$/g, '').replace(/\s+(?:please|pls|for me|thanks|thank you)$/i, '').replace(TAIL_RE, '').replace(APP_TAIL_RE, '$1').trim();
+  }
+  return t.replace(/[.!]+$/g, '').trim();
 }
 
 function minutesFrom(str) {
@@ -66,13 +98,16 @@ function minutesFrom(str) {
 function safeMath(expr) {
   const e = String(expr).replace(/[x×]/gi, '*').replace(/÷/g, '/').replace(/\^/g, '**').replace(/,/g, '').trim();
   if (!/^[\d+\-*/%().\s]+$/.test(e) || !/\d/.test(e) || !/[+\-*/%]/.test(e.replace(/^\s*-/, ''))) return null;
-  if (e.length > 60 || /\*\*\s*\d{3,}/.test(e)) return null;
+  if (e.length > 120 || /\*\*\s*\d{4,}/.test(e)) return null;
   try {
-    const v = Function(`"use strict"; return (${e});`)(); // only digits and operators got through the check above
+    // Whole-number sums with no division or decimals run in BigInt so big numbers stay exact (doubles lose digits past 2^53)
+    const exact = !/[./]/.test(e);
+    const v = Function(`"use strict"; return (${exact ? e.replace(/\d+/g, '$&n') : e});`)(); // only digits and operators got through the check above
+    if (typeof v === 'bigint') return v.toString().length > 300 ? null : (v >= -9007199254740991n && v <= 9007199254740991n ? Number(v) : v);
     return typeof v === 'number' && Number.isFinite(v) ? v : null;
   } catch (_) { return null; }
 }
-const fmt = (n) => (Number.isInteger(n) ? String(n) : String(Math.round(n * 1e6) / 1e6));
+const fmt = (n) => (typeof n === 'bigint' ? n.toString() : Number.isInteger(n) && Math.abs(n) < 1e21 ? BigInt(n).toString() : Number.isInteger(n) ? String(n) : String(Math.round(n * 1e6) / 1e6));
 
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -140,6 +175,58 @@ function think(rawText, ctx = {}) {
     if ((m = /^square root of (\d+(?:\.\d+)?)$/.exec(body))) return { reply: `√${m[1]} = ${fmt(Math.sqrt(Number(m[1])))}` };
   }
 
+  // ---- unit conversions, tips, days until, clipboard (all offline)
+  {
+    const U = { // unit -> [kind, size in the base unit]
+      mm: ['len', 0.001], cm: ['len', 0.01], m: ['len', 1], km: ['len', 1000], in: ['len', 0.0254], inch: ['len', 0.0254], inches: ['len', 0.0254],
+      ft: ['len', 0.3048], foot: ['len', 0.3048], feet: ['len', 0.3048], yd: ['len', 0.9144], yard: ['len', 0.9144], yards: ['len', 0.9144],
+      mi: ['len', 1609.344], mile: ['len', 1609.344], miles: ['len', 1609.344],
+      g: ['mass', 1], kg: ['mass', 1000], oz: ['mass', 28.3495], ounce: ['mass', 28.3495], ounces: ['mass', 28.3495],
+      lb: ['mass', 453.592], lbs: ['mass', 453.592], pound: ['mass', 453.592], pounds: ['mass', 453.592],
+      ml: ['vol', 0.001], l: ['vol', 1], liter: ['vol', 1], liters: ['vol', 1], litre: ['vol', 1], litres: ['vol', 1],
+      gal: ['vol', 3.78541], gallon: ['vol', 3.78541], gallons: ['vol', 3.78541], cup: ['vol', 0.236588], cups: ['vol', 0.236588],
+      c: ['temp'], celsius: ['temp'], f: ['temp'], fahrenheit: ['temp'], k: ['temp'], kelvin: ['temp'],
+    };
+    if ((m = /^(?:convert\s+)?(-?\d+(?:\.\d+)?)\s*°?\s*([a-z]+)\s+(?:to|in|into)\s+°?([a-z]+)$/.exec(t)) && U[m[2]] && U[m[3]] && U[m[2]][0] === U[m[3]][0]) {
+      const [kind] = U[m[2]], v = Number(m[1]);
+      let out;
+      if (kind === 'temp') {
+        const tc = { c: 1, celsius: 1, f: 2, fahrenheit: 2, k: 3, kelvin: 3 };
+        const toC = tc[m[2]] === 1 ? v : tc[m[2]] === 2 ? (v - 32) * 5 / 9 : v - 273.15;
+        out = tc[m[3]] === 1 ? toC : tc[m[3]] === 2 ? toC * 9 / 5 + 32 : toC + 273.15;
+      } else out = (v * U[m[2]][1]) / U[m[3]][1];
+      return { reply: `${m[1]} ${m[2]} = ${fmt(Math.round(out * 1e4) / 1e4)} ${m[3]}` };
+    }
+    const tipM = /^(?:what(?:'s| is) )?(?:a )?(\d+(?:\.\d+)?)\s*%\s*tip (?:on|for|of) \$?(\d+(?:\.\d+)?)$/.exec(t) || /^(?:what(?:'s| is) )?(?:the )?tip (?:on|for|of) \$?(\d+(?:\.\d+)?) at (\d+(?:\.\d+)?)\s*%$/.exec(t);
+    if (tipM) {
+      const pct = /^(?:what(?:'s| is) )?(?:the )?tip/.test(t) ? Number(tipM[2]) : Number(tipM[1]);
+      const bill = /^(?:what(?:'s| is) )?(?:the )?tip/.test(t) ? Number(tipM[1]) : Number(tipM[2]);
+      const tip = Math.round(bill * pct) / 100;
+      return { reply: `A ${pct}% tip on ${bill} is ${tip.toFixed(2)}, so the total is ${(bill + tip).toFixed(2)}.` };
+    }
+    if ((m = /^(?:how many )?days (?:until|till|to|left until|left till) (?:the )?(.+?)\??$/.exec(t))) {
+      const fixed = { christmas: [11, 25], 'christmas day': [11, 25], 'new year': [0, 1], "new year's": [0, 1], 'new years': [0, 1], halloween: [9, 31], "valentine's day": [1, 14], valentines: [1, 14], "valentine's": [1, 14] };
+      const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+      let target = null, md;
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      if (fixed[m[1]]) {
+        target = new Date(today.getFullYear(), fixed[m[1]][0], fixed[m[1]][1]);
+        if (target < today) target = new Date(today.getFullYear() + 1, fixed[m[1]][0], fixed[m[1]][1]);
+      } else if ((md = /^(\d{4})-(\d{2})-(\d{2})$/.exec(m[1]))) target = new Date(Number(md[1]), Number(md[2]) - 1, Number(md[3]));
+      else if ((md = /^(?:(\d{1,2})(?:st|nd|rd|th)? (?:of )?([a-z]+)|([a-z]+) (\d{1,2})(?:st|nd|rd|th)?)$/.exec(m[1]))) {
+        const mi = MONTHS.indexOf(md[2] || md[3]), day = Number(md[1] || md[4]);
+        if (mi >= 0 && day >= 1 && day <= 31) { target = new Date(today.getFullYear(), mi, day); if (target < today) target = new Date(today.getFullYear() + 1, mi, day); }
+      }
+      if (target && !Number.isNaN(target.getTime())) {
+        const days = Math.round((target - today) / 86400000);
+        return { reply: days === 0 ? "That's today!" : `${days} day${days === 1 ? '' : 's'} to go (${ymd(target)}).` };
+      }
+    }
+    if (/^(?:(?:what(?:'s| is)|whats) (?:on|in) my clipboard|read (?:my )?clipboard|show (?:me )?my clipboard)\??$/.test(t)) {
+      return { steps: [{ name: 'read_clipboard', input: {} }], finish: (o) => String(o[0] || '').replace(/^Clipboard text[^\n]*\n+/, '') || 'Your clipboard is empty.' };
+    }
+  }
+
   // ---- timers and reminders
   if (/\b(?:timer|remind me|reminder)\b/.test(t) && /\b(?:set|start|remind|add|make)\b|^timer/.test(t)) {
     const when = minutesFrom(orig);
@@ -174,12 +261,22 @@ function think(rawText, ctx = {}) {
     return { steps: [{ name: 'scroll', input: { direction: dir, amount } }], finish: () => `Scrolled ${dir === 'top' ? 'to the top' : dir === 'bottom' ? 'to the bottom' : dir}.` };
   }
   const browserMap = [
-    [/^(?:open |make )?(?:a )?new tab$/, 'new_tab'], [/^close (?:this |the )?tab$/, 'close_tab'], [/^(?:reopen|bring back|restore) (?:the |my )?(?:last |closed )?tab$/, 'reopen_tab'],
-    [/^(?:next tab|switch tab|go to the next tab)$/, 'next_tab'], [/^(?:previous tab|last tab|go to the previous tab)$/, 'previous_tab'],
+    [/^(?:open |make )?(?:a )?new tab$/, 'new_tab'], [/^close (?:this |the |that )?tab$/, 'close_tab'], [/^(?:reopen|bring back|restore) (?:the |my )?(?:last |closed )?tab$/, 'reopen_tab'],
+    [/^(?:next tab|switch tab|tab right|(?:go|switch|move|jump|flip) to (?:the )?next tab|next one)$/, 'next_tab'],
+    [/^(?:previous tab|prev tab|last tab|tab left|(?:go|switch|move|jump|flip) to (?:the )?(?:previous|prev) tab|go to the last tab i was on)$/, 'previous_tab'],
     [/^(?:go )?back(?: a page)?$/, 'back'], [/^(?:go )?forward(?: a page)?$/, 'forward'], [/^(?:refresh|reload)(?: the| this)?(?: page)?$/, 'refresh'],
+    [/^(?:show|bring up|bring|switch to|go to|go back to|focus|open|get|show me)(?: me)? (?:the |my )?(?:web ?)?browser(?: window)?(?: to the front| forward| up)?$|^bring (?:the |my )?(?:web ?)?browser (?:to the front|forward|up)$|^browser to the front$/, 'bring_to_front'],
   ];
-  for (const [re, action] of browserMap) if (re.test(t)) return { steps: [{ name: 'browser', input: { action } }], finish: (o) => String(o[0] || 'Done.').split(' (')[0] };
-  if ((m = /^(?:go to|switch to|open) tab (\d)$/.exec(t))) return { steps: [{ name: 'browser', input: { action: 'go_to_tab', tab: Number(m[1]) } }], finish: (o) => String(o[0] || 'Done.').split(' (')[0] };
+  const browserDone = (o) => String(o[0] || 'Done.').split(' (')[0];
+  for (const [re, action] of browserMap) if (re.test(t)) return { steps: [{ name: 'browser', input: { action } }], finish: browserDone };
+  // "go to tab 3", "switch to tab three", "go to the third tab", "go to the last tab" (voice often writes numbers as words)
+  const NUM = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, last: 9, final: 9 };
+  const NUMRE = Object.keys(NUM).join('|');
+  if ((m = new RegExp(`^(?:go to|switch to|open|jump to|show|show me|flip to)\\s+(?:the\\s+)?(?:tab\\s+(?:number\\s+|no\\.?\\s*)?(\\d|${NUMRE})|(${NUMRE})\\s+tab)$`, 'i').exec(t))) {
+    const w = String(m[1] || m[2]).toLowerCase();
+    const tab = /^\d$/.test(w) ? Number(w) : NUM[w];
+    if (tab >= 1 && tab <= 9) return { steps: [{ name: 'browser', input: { action: 'go_to_tab', tab } }], finish: browserDone };
+  }
 
   // ---- search
   const siteKeys = Object.keys(sys.SEARCH_SITES);
@@ -247,13 +344,19 @@ function think(rawText, ctx = {}) {
   }
 
   // ---- open sites and apps
-  if ((m = /^(?:open|launch|start|go to|pull up|run)\s+(?:the\s+)?(.{1,50})$/i.exec(orig))) {
+  if ((m = /^(?:open|launch|start|go to|pull up|run|buka)\s+(?:the\s+)?(.{1,50})$/i.exec(orig))) {
     const what = m[1].trim().replace(/\s+(?:app|website|site)$/i, '');
     const low = what.toLowerCase();
     if (/\s(?:and|then)\s/.test(low) || low.split(' ').length > 4) return null; // a bigger job: leave it to the AI
-    if (LOCAL_APPS.includes(low)) return { steps: [{ name: 'open_app', input: { name: what } }], finish: (o) => String(o[0] || `Opened ${what}.`) };
+    const known = matchApp(low);
+    if (known) return { steps: [{ name: 'open_app', input: { name: known } }], finish: (o) => String(o[0] || `Opened ${known}.`) };
     if (sys.resolveSite(what)) return { steps: [{ name: 'open_url', input: { url: what } }], finish: () => `Opened ${what}. 🌐` };
-    if (platform === 'win32' || platform === 'darwin') return { steps: [{ name: 'open_app', input: { name: what } }], finish: (o) => String(o[0] || `Opened ${what}.`) };
+    if (platform === 'win32' || platform === 'darwin') {
+      const words = what.split(/\s+/);
+      while (words.length > 1 && TAIL_WORDS.has(words[words.length - 1].toLowerCase())) words.pop(); // "notepad++ lot"
+      const target = words.join(' ');
+      return { steps: [{ name: 'open_app', input: { name: target } }], finish: (o) => String(o[0] || `Opened ${target}.`) };
+    }
   }
 
   // ---- typing into whatever has the cursor
@@ -265,4 +368,4 @@ function think(rawText, ctx = {}) {
   return null; // not something the little brain knows
 }
 
-module.exports = { think, safeMath, clean };
+module.exports = { think, safeMath, clean, matchApp };

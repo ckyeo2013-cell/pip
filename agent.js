@@ -60,6 +60,94 @@ function dropOldScreenshots(convo) {
   }
 }
 
+// Reads Anthropic's streaming reply (server-sent events) and rebuilds the same { content, stop_reason } a normal reply has.
+async function readStream(res, onText, sepFirst) {
+  const content = [];
+  let stop = null, buf = '', sep = !!sepFirst;
+  const dec = new TextDecoder();
+  const handle = (ev) => {
+    if (ev.type === 'content_block_start') content[ev.index] = ev.content_block.type === 'tool_use' ? { ...ev.content_block, _json: '' } : { ...ev.content_block };
+    else if (ev.type === 'content_block_delta') {
+      const b = content[ev.index], d = ev.delta;
+      if (!b) return;
+      if (d.type === 'text_delta') { if (sep) { onText('\n\n'); sep = false; } b.text = (b.text || '') + d.text; onText(d.text); }
+      else if (d.type === 'input_json_delta') b._json += d.partial_json;
+    } else if (ev.type === 'message_delta' && ev.delta) stop = ev.delta.stop_reason || stop;
+    else if (ev.type === 'error') throw Object.assign(new Error(ev.error && ev.error.message || 'stream error'), { api: true });
+  };
+  try {
+    for await (const chunk of res.body) {
+      buf += dec.decode(chunk, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const raw = buf.slice(0, i); buf = buf.slice(i + 2);
+        const line = raw.split('\n').find((l) => l.startsWith('data:'));
+        if (line) { try { handle(JSON.parse(line.slice(5))); } catch (e) { if (e.api) return { error: e.message }; } }
+      }
+    }
+  } catch (e) { throw e; }
+  for (const b of content) if (b && b.type === 'tool_use') { try { b.input = b._json ? JSON.parse(b._json) : {}; } catch (_) { b.input = {}; } delete b._json; }
+  return { content: content.filter(Boolean), stop_reason: stop };
+}
+
+// Streaming for Gemini and the OpenAI-style hosts (Groq, Cloudflare): same idea as readStream, rebuilt into the normal reply shape.
+const streamable = (res) => !!(res && res.body && typeof res.body[Symbol.asyncIterator] === 'function'); // fall back to a plain reply if a host did not stream
+async function* sseData(res) {
+  const dec = new TextDecoder();
+  let buf = '';
+  for await (const chunk of res.body) {
+    buf += dec.decode(chunk, { stream: true }).replace(/\r\n/g, '\n');
+    let i;
+    while ((i = buf.indexOf('\n\n')) >= 0) {
+      const raw = buf.slice(0, i); buf = buf.slice(i + 2);
+      const line = raw.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('');
+      if (!line || line === '[DONE]') continue;
+      try { yield JSON.parse(line); } catch (_) { /* half a line: skip */ }
+    }
+  }
+}
+
+async function readGeminiStream(res, onText, sepFirst) {
+  const parts = [];
+  let finish = null, feedback = null, sep = !!sepFirst;
+  for await (const ev of sseData(res)) {
+    if (ev.promptFeedback) feedback = ev.promptFeedback;
+    const c = ev.candidates && ev.candidates[0];
+    if (!c) continue;
+    if (c.finishReason) finish = c.finishReason;
+    for (const p of (c.content && c.content.parts) || []) {
+      if (typeof p.text === 'string' && !p.thought && p.text) { if (sep) { onText('\n\n'); sep = false; } onText(p.text); }
+      const last = parts[parts.length - 1];
+      if (typeof p.text === 'string' && last && typeof last.text === 'string' && !!last.thought === !!p.thought && !p.thoughtSignature && !p.functionCall) last.text += p.text;
+      else parts.push({ ...p });
+    }
+  }
+  return { candidates: [{ content: { parts }, finishReason: finish }], promptFeedback: feedback || undefined };
+}
+
+async function readOpenAIStream(res, onText, sepFirst) {
+  let content = '', sep = !!sepFirst;
+  const calls = [];
+  for await (const ev of sseData(res)) {
+    if (ev.error) throw new Error(typeof ev.error === 'string' ? ev.error : ev.error.message || 'stream error');
+    const ch = ev.choices && ev.choices[0];
+    const d = ch && (ch.delta || ch.message);
+    if (!d) continue;
+    if (typeof d.content === 'string' && d.content) { if (sep) { onText('\n\n'); sep = false; } content += d.content; onText(d.content); }
+    for (const tc of d.tool_calls || []) {
+      if (!tc) continue;
+      const i = tc.index !== undefined ? tc.index : (tc.id ? calls.length : Math.max(0, calls.length - 1));
+      const c = calls[i] || (calls[i] = { id: '', type: 'function', function: { name: '', arguments: '' } });
+      if (tc.id) c.id = tc.id;
+      const f = tc.function || {};
+      if (f.name) c.function.name = f.name;
+      if (f.arguments !== undefined) c.function.arguments += typeof f.arguments === 'string' ? f.arguments : JSON.stringify(f.arguments);
+    }
+  }
+  const tool_calls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${i}` }));
+  return { choices: [{ message: { content, tool_calls: tool_calls.length ? tool_calls : undefined } }] };
+}
+
 async function runChat({
   fetchFn,
   apiKey,
@@ -74,6 +162,7 @@ async function runChat({
   signal = null,
   stopped = () => false,
   nudge = null,
+  onText = null,
 }) {
   const convo = messages.slice();
   const said = [];
@@ -88,6 +177,7 @@ async function runChat({
     const lastMsg = cached[cached.length - 1];
     if (lastMsg && lastMsg.content.length) lastMsg.content[lastMsg.content.length - 1].cache_control = { type: 'ephemeral' };
     const body = { model, max_tokens: 6000, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: cached };
+    if (onText) body.stream = true; // words show up as they are written
     if (tools.length) body.tools = tools.map((t, i) => (i === tools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t));
 
     const ac = new AbortController();
@@ -118,7 +208,15 @@ async function runChat({
       return { error: `API error ${res.status}${detail ? ': ' + detail : ''}` };
     }
 
-    const data = await res.json();
+    let data;
+    if (onText && streamable(res)) {
+      const rt = setTimeout(() => ac.abort(), timeoutMs);
+      try { data = await readStream(res, onText, said.length > 0); } catch (e) {
+        if (signal && signal.aborted) return { text: stopText(said) };
+        return { error: e.name === 'AbortError' ? 'The request timed out.' : `Network problem (${e.message})` };
+      } finally { clearTimeout(rt); }
+      if (data.error) return { error: `API error: ${data.error}` };
+    } else data = await res.json();
     const blocks = Array.isArray(data.content) ? data.content : [];
     const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
     if (text) said.push(text);
@@ -222,13 +320,14 @@ async function runChatGemini({
   stopped = () => false,
   sleepFn = (ms) => new Promise((r) => setTimeout(r, ms)),
   nudge = null,
+  onText = null,
 }) {
   let called = false;
   let nudged = false;
   const contents = messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
   while (contents.length && contents[0].role !== 'user') contents.shift();
   const said = [];
-  const url = `${GEMINI_BASE}${encodeURIComponent(model)}:generateContent`;
+  const url = `${GEMINI_BASE}${encodeURIComponent(model)}:${onText ? 'streamGenerateContent?alt=sse' : 'generateContent'}`;
 
   for (let step = 0; step <= maxSteps; step++) {
     if (stopped()) return { text: stopText(said) };
@@ -267,7 +366,13 @@ async function runChatGemini({
       return { error: geminiErrorMessage(res.status, detail, model) };
     }
 
-    const data = await res.json();
+    let data;
+    if (onText && streamable(res)) {
+      try { data = await readGeminiStream(res, onText, said.length > 0); } catch (e) {
+        if (signal && signal.aborted) return { text: stopText(said) };
+        return { error: e.name === 'AbortError' ? 'The request timed out.' : `Network problem (${e.message})` };
+      }
+    } else data = await res.json();
     const cand = Array.isArray(data.candidates) ? data.candidates[0] : null;
     const parts = cand && cand.content && Array.isArray(cand.content.parts) ? cand.content.parts : [];
     const text = parts.filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('').trim();
@@ -378,6 +483,7 @@ async function runChatOpenAI({
   stopped = () => false,
   sleepFn = (ms) => new Promise((r) => setTimeout(r, ms)),
   nudge = null,
+  onText = null,
 }) {
   let called = false;
   let nudged = false;
@@ -388,6 +494,7 @@ async function runChatOpenAI({
   for (let step = 0; step <= maxSteps; step++) {
     if (stopped()) return { text: stopText(said) };
     const body = { model, messages: convo, max_tokens: 8192 };
+    if (onText) body.stream = true;
     if (tools.length) { body.tools = toGroqTools(tools); body.tool_choice = 'auto'; }
 
     // The free tier has per-minute limits, so wait and retry a couple of times before giving up.
@@ -423,7 +530,13 @@ async function runChatOpenAI({
       return { error: errorMessage(res.status, detail, model) };
     }
 
-    const data = await res.json();
+    let data;
+    if (onText && streamable(res)) {
+      try { data = await readOpenAIStream(res, onText, said.length > 0); } catch (e) {
+        if (signal && signal.aborted) return { text: stopText(said) };
+        return { error: e.name === 'AbortError' ? 'The request timed out.' : `Network problem (${e.message})` };
+      }
+    } else data = await res.json();
     const msg = Array.isArray(data.choices) && data.choices[0] ? data.choices[0].message || {} : {};
     const text = typeof msg.content === 'string' ? msg.content.trim() : '';
     const calls = Array.isArray(msg.tool_calls) ? msg.tool_calls.filter((c) => c && c.function) : [];

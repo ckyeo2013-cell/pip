@@ -82,6 +82,47 @@ const step = (text, extra) => { const p = plan(text, extra); assert.ok(p && p.st
       for (const s of step(q)) { const a = await K.prepare(s.name, s.input); assert.ok(a && a.title, `${q} -> ${s.name}`); }
     }
   });
+  await t('understands slang and speech-to-text slips: "open discord lah/lor/lot" all open Discord', () => {
+    for (const q of ['open discord lah', 'Open Discord lot.', 'open discord lor', 'Hey Pip, open discord leh!', 'open discord now', 'buka discord', 'open discard', 'open Discord la']) {
+      const s = step(q);
+      assert.strictEqual(s.length, 1, q);
+      assert.deepStrictEqual([s[0].name, s[0].input.name.toLowerCase()], ['open_app', 'discord'], q);
+    }
+    assert.strictEqual(brain.matchApp('spotifi'), 'spotify');
+    assert.strictEqual(brain.matchApp('open'), null);
+    assert.strictEqual(brain.matchApp('wordpress'), null);
+    assert.strictEqual(step('open youtube lah')[0].name, 'open_url');
+    assert.ok(plan('what is the time lah').reply, 'slang after a question still gets the quick answer');
+  });
+  await t('slang on a chat request still finds the app', () => {
+    const s = step('open Sam on discord lot');
+    assert.deepStrictEqual([s[0].name, s[0].input.app, s[0].input.name], ['open_chat', 'discord', 'Sam']);
+  });
+  await t('the Start menu picker forgives a near-miss spelling', () => {
+    const apps = [{ Name: 'Discord', AppID: 'com.squirrel.Discord.Discord' }, { Name: 'Steam', AppID: 'Steam' }];
+    assert.strictEqual(sys.pickStartApp(apps, 'discard').app.Name, 'Discord');
+    assert.strictEqual(sys.pickStartApp(apps, 'discord lot').app.Name, 'Discord');
+    assert.strictEqual(sys.pickStartApp(apps, 'banana').app, undefined);
+  });
+  await t('tab and browser requests: spoken numbers, other ways of saying next/previous, and bring the browser forward', () => {
+    const browser = (q) => { const s = step(q); assert.strictEqual(s[0].name, 'browser', q); return s[0].input; };
+    assert.deepStrictEqual(browser('go to tab 3'), { action: 'go_to_tab', tab: 3 });
+    assert.deepStrictEqual(browser('Switch to tab three.'), { action: 'go_to_tab', tab: 3 });
+    assert.deepStrictEqual(browser('go to the second tab'), { action: 'go_to_tab', tab: 2 });
+    assert.deepStrictEqual(browser('go to the last tab'), { action: 'go_to_tab', tab: 9 });
+    assert.deepStrictEqual(browser('switch to the next tab lah'), { action: 'next_tab' });
+    assert.deepStrictEqual(browser('go to the previous tab'), { action: 'previous_tab' });
+    for (const q of ['show me the browser', 'bring up the browser', 'go back to the browser', 'bring the browser to the front', 'switch to browser']) assert.deepStrictEqual(browser(q), { action: 'bring_to_front' }, q);
+    assert.strictEqual(step('open chrome')[0].name, 'open_app'); // a named browser still opens that app
+  });
+  await t('browser actions are valid, need no keys for bring_to_front, and the focus scripts exist for Windows and macOS', () => {
+    assert.strictEqual(sys.browserKeys('bring_to_front', 'win32').cmd, null);
+    assert.ok(sys.browserKeys('go_to_tab', 'darwin', 3).cmd);
+    assert.strictEqual(sys.focusBrowserCommand('win32').cmd, 'powershell.exe');
+    assert.strictEqual(sys.focusBrowserCommand('darwin').cmd, 'osascript');
+    assert.strictEqual(sys.focusBrowserCommand('linux'), null);
+    assert.deepStrictEqual(['focused:chrome', 'already:msedge\r\n', 'none', '', 'boom'].map(sys.parseFocusResult), ['focused', 'already', 'none', 'error', 'error']);
+  });
   await t('works for every OS and never throws on odd input', () => {
     for (const plat of ['win32', 'darwin', 'linux']) for (const q of ['open', 'play', 'search', 'remind me', 'message on discord', '😀', '%%%', 'open   ', 'turn it', 'what is']) brain.think(q, { platform: plat });
     assert.ok(sys.pageNames('linux').length > 0);

@@ -407,14 +407,14 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     assert.ok(!K.prepare('press_ui', { id: 1 }).auto);
     assert.ok(!K.prepare('type_text', { text: 'x' }).auto);
   });
-  await t('autoType: only short one-line text skips the card, and only when switched on', () => {
+  await t('autoType: text up to 2000 characters skips the card (multi-line only where Pip can check the window), and only when switched on', () => {
     let on = false;
     const K = mkActions({ platform: 'linux', getAutoType: () => on });
     assert.ok(!K.prepare('type_text', { text: 'cats' }).auto);
     on = true;
     assert.strictEqual(K.prepare('type_text', { text: 'funny cats', press_enter: true }).auto, true);
     assert.ok(!K.prepare('type_text', { text: 'a\nb' }).auto);
-    assert.ok(!K.prepare('type_text', { text: 'x'.repeat(301) }).auto);
+    assert.ok(!K.prepare('type_text', { text: 'x'.repeat(2001) }).auto);
   });
   await t('ui: friendly errors for a blocked macOS permission and a missing Linux helper', async () => {
     const mac = mkUi({ platform: 'darwin', execFile: (c, a, o, cb) => cb(new Error('x'), '', 'execution error: Not authorized (-1743) assistive access not allowed') });
@@ -737,7 +737,7 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     assert.strictEqual(v.reqs[0].url, `https://api.cloudflare.com/client/v4/accounts/${ACCT}/ai/run/@cf/openai/whisper-large-v3-turbo`);
     assert.strictEqual(v.reqs[0].init.headers.authorization, 'Bearer K_SECRET');
     assert.ok(!v.reqs[0].url.includes('K_SECRET'));
-    assert.deepStrictEqual(JSON.parse(v.reqs[0].init.body), { audio: 'QUJD', task: 'transcribe' });
+    assert.deepStrictEqual(JSON.parse(v.reqs[0].init.body), { audio: 'QUJD', task: 'transcribe', initial_prompt: V.STT_HINT });
   });
   await t('Voice: Groq Whisper request is a multipart upload of a WAV file', async () => {
     const v = vq(okJson({ text: 'open the settings' }));
@@ -1070,16 +1070,17 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     const nt = await W.prepare('browser', { action: 'new_tab' });
     assert.strictEqual(nt.auto, true);
     assert.match(await nt.run(), /new tab/);
-    assert.match(decode(calls[0]), /SendWait\('\^t'\)/);
+    assert.match(decode(calls[0]), /PipWin/); // the browser is brought to the front first
+    assert.match(decode(calls[1]), /SendWait\('\^t'\)/);
     calls.length = 0;
     await (await W.prepare('browser', { action: 'back' })).run();
-    assert.match(decode(calls[0]), /SendWait\('%\{LEFT\}'\)/);
+    assert.match(decode(calls[1]), /SendWait\('%\{LEFT\}'\)/);
     calls.length = 0;
     await (await W.prepare('browser', { action: 'go_to_tab', tab: 3 })).run();
-    assert.match(decode(calls[0]), /SendWait\('\^3'\)/);
+    assert.match(decode(calls[1]), /SendWait\('\^3'\)/);
     calls.length = 0;
     await (await mk('darwin').prepare('browser', { action: 'refresh' })).run();
-    assert.match(calls[0][1][1], /keystroke \"r\" using \{command down\}/);
+    assert.match(calls[1][1][1], /keystroke \"r\" using \{command down\}/);
     calls.length = 0;
     await (await mk('linux').prepare('browser', { action: 'next_tab' })).run();
     assert.deepStrictEqual(calls[0][1], ['key', '--clearmodifiers', 'ctrl+Tab']);
@@ -1091,6 +1092,25 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     const sent = [];
     await (await mk('linux', { pet: (c) => sent.push(c), stageMs: 0 }).prepare('browser', { action: 'new_tab' })).run();
     assert.deepStrictEqual(sent[0], { action: 'fly', x: 0.5, y: 0.035 });
+  });
+  await t('browser: raises the browser first, still sends the keys if none is found, and bring_to_front needs no keys', async () => {
+    const calls = [];
+    let focusAnswer = 'focused:chrome';
+    const isFocus = (a) => /PipWin/.test(Buffer.from(a[a.length - 1] || '', 'base64').toString('utf16le')) || /frontmost/.test(a.join(' '));
+    const mk = (platform) => mkActions({ platform, execFile: (c, a, o, cb) => { calls.push([c, a]); cb(null, isFocus(a) ? focusAnswer : '', ''); } });
+    const W = mk('win32');
+    assert.match(await (await W.prepare('browser', { action: 'next_tab' })).run(), /next tab\.$/); // focused: a clean answer
+    assert.strictEqual(calls.length, 2);
+    calls.length = 0; focusAnswer = 'none';
+    assert.match(await (await W.prepare('browser', { action: 'next_tab' })).run(), /could not find a browser window/);
+    assert.strictEqual(calls.length, 2); // it still tried the shortcut
+    calls.length = 0; focusAnswer = 'focused:msedge';
+    assert.match(await (await W.prepare('browser', { action: 'bring_to_front' })).run(), /front/);
+    assert.strictEqual(calls.length, 1); // only the focus step, no key press
+    calls.length = 0;
+    const L = mkActions({ platform: 'linux', execFile: (c, a, o, cb) => { calls.push([c, a]); cb(null, '', ''); } });
+    await (await L.prepare('browser', { action: 'next_tab' })).run();
+    assert.strictEqual(calls.length, 1); // Linux: no focus step, just the key
   });
   await t('stop: pressing Stop ends the chat at once with a friendly message (Anthropic, Gemini, Groq)', async () => {
     const ac = new AbortController();
@@ -1184,6 +1204,19 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     const g2 = grq([gmsg({ content: null, tool_calls: [gcall('system_info', {})] }), gmsg({ content: 'ok' })], { prepare: (n, a) => P.prepare(n, a), approve });
     await g2.run();
     assert.strictEqual(asked.length, 1);
+  });
+
+  await t('chess: the engine finds mate in one, rejects a bad board, and board_move needs game mode and a valid board', async () => {
+    const P = mkActions({ pet: () => {} });
+    const a = await P.prepare('chess_best_move', { fen: '6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1', think_ms: 300 });
+    assert.ok(a.auto);
+    assert.match(await a.run(), /Best move: a1 to a8.*mate in 1/);
+    await assert.rejects(async () => (await P.prepare('chess_best_move', { fen: '8/8/8/8/8/8/8/8 w - - 0 1' })).run(), /exactly one king/);
+    await assert.rejects(async () => P.prepare('board_move', { from: 'e2', to: 'e4', board: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 } }), /start_game/);
+    await (await P.prepare('start_game', { game: 'Chess' })).run();
+    assert.ok((await P.prepare('board_move', { from: 'e2', to: 'e4', board: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 } })).auto);
+    await assert.rejects(async () => P.prepare('board_move', { from: 'e2', to: 'e2', board: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 } }), /different squares/);
+    await assert.rejects(async () => P.prepare('board_move', { from: 'e2', to: 'e4' }), /board must be/);
   });
 
   await t('game mode: needs one approval, then plain keys run without asking; it ends cleanly and rejects risky keys', async () => {
