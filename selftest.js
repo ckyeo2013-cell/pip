@@ -220,6 +220,25 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     await act.run();
     assert.deepStrictEqual(calls.map((c) => c[1][2]), ['ctrl+s', 'Return']);
   });
+  await t('type_text: pastes at the cursor, restores the clipboard, and only presses Enter when asked', async () => {
+    const calls = [];
+    const K = mkActions({ execFile: (c, a, o, cb) => { calls.push([c, a]); cb(null, '', ''); }, platform: 'linux' });
+    const plain = await K.prepare('type_text', { text: 'weather in Paris' });
+    assert.strictEqual(plain.title, 'Type this text for you');
+    assert.doesNotMatch(plain.details, /Enter is pressed/);
+    await plain.run();
+    assert.deepStrictEqual(calls.map((c) => c[1][2]), ['ctrl+v']);
+    calls.length = 0;
+    const submit = await K.prepare('type_text', { text: 'weather in Paris', press_enter: true });
+    assert.strictEqual(submit.title, 'Type this and press Enter');
+    assert.match(submit.details, /weather in Paris/);
+    assert.match(submit.details, /Then Enter is pressed/);
+    assert.match(await submit.run(), /pressed Enter/);
+    assert.deepStrictEqual(calls.map((c) => c[1][2]), ['ctrl+v', 'Return']);
+    throwsMsg(() => K.prepare('type_text', { text: '' }), /No text/);
+    const def = K.toolDefs({ hasFolder: false, fullAccess: false }).find((d) => d.name === 'type_text');
+    assert.ok(def && def.input_schema.properties.press_enter);
+  });
   await t('every declared tool can be prepared (names match)', () => {
     const defs = A.toolDefs({ hasFolder: true, fullAccess: true });
     const names = defs.map((d) => d.name);
@@ -460,6 +479,36 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     throwsMsg(() => P.prepare('pet_do', { action: 'go', where: '../../etc' }), /where must be one of/);
     throwsMsg(() => mkActions().prepare('pet_do', { action: 'hop' }), /cannot move/);
     for (const full of [true, false]) assert.ok(P.toolDefs({ hasFolder: false, fullAccess: full }).some((d) => d.name === 'pet_do'));
+  });
+  await t('pet_do: fly and land are validated, need no approval, and reach the pet', async () => {
+    const sent = [];
+    const P = mkActions({ pet: (c) => sent.push(c) });
+    const fly = await P.prepare('pet_do', { action: 'fly', x: 0.25, y: 0.1 });
+    assert.strictEqual(fly.auto, true);
+    assert.match(await fly.run(), /flying/);
+    assert.deepStrictEqual(sent[0], { action: 'fly', x: 0.25, y: 0.1 });
+    await (await P.prepare('pet_do', { action: 'land' })).run();
+    assert.deepStrictEqual(sent[1], { action: 'land' });
+    for (const bad of [{}, { x: 2, y: 0.5 }, { x: 0.5, y: -1 }, { x: 'a', y: 'b' }, { x: 0.5 }]) {
+      throwsMsg(() => P.prepare('pet_do', Object.assign({ action: 'fly' }, bad)), /fly needs x and y/);
+    }
+    const def = P.toolDefs({ hasFolder: false, fullAccess: false }).find((d) => d.name === 'pet_do');
+    assert.ok(def.input_schema.properties.action.enum.includes('fly'));
+    assert.ok(def.input_schema.properties.x && def.input_schema.properties.y);
+  });
+  await t('model: realistic Pip is well formed; the membrane is tucked at rest and spreads when gliding', async () => {
+    const M = require('./model.js');
+    const width = (g) => Math.max(...M.buildParts({ t: 0, bodyYaw: 0, glide: g, palette: 'classic' }).map((q) => Math.abs(q.c[0])));
+    for (const pal of Object.keys(M.PALETTES)) {
+      for (const g of [0, 0.5, 1]) {
+        const parts = M.buildParts({ t: 3.3, bodyYaw: 0.7, lookYaw: 0.2, lookPitch: -0.2, glide: g, crouch: 0.6, blink: 0, happy: 1, thinking: 1, palette: pal });
+        assert.ok(parts.length > 100 && parts.length < 220, 'part count ' + parts.length);
+        for (const q of parts) for (const v of [...q.c, ...q.r, ...q.M, ...q.color, q.spec, q.fur]) assert.ok(Number.isFinite(v), pal + ' ' + g);
+      }
+    }
+    assert.ok(width(0) < 0.75, 'membrane should be tucked at rest, got ' + width(0));
+    assert.ok(width(1) > 1.1, 'membrane should spread when gliding, got ' + width(1));
+    assert.ok(Object.keys(M.PALETTES).join() === 'classic,honey,cocoa');
   });
   await t('pet_do: no approval card is shown on any provider, but other tools still ask', async () => {
     const asked = [];

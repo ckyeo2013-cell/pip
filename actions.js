@@ -27,7 +27,7 @@ const sys = require('./system');
 const MAX_TEXT = 20000;
 const MAX_WRITE = 200000;
 const MAX_ITEMS = 100;
-const PET_ACTIONS = ['hop', 'dance', 'cheer', 'go', 'stay', 'roam'];
+const PET_ACTIONS = ['hop', 'dance', 'cheer', 'go', 'fly', 'land', 'stay', 'roam'];
 const PET_PLACES = ['left', 'right', 'middle', 'cursor'];
 const MAX_LIST = 200;
 const MAX_READ = 20000;
@@ -238,9 +238,10 @@ function createActions({
       const text = input && input.text;
       if (typeof text !== 'string' || !text.length) throw new Error('No text to type.');
       if (text.length > MAX_TEXT) throw new Error(`Text is too long (max ${MAX_TEXT} characters).`);
+      const enter = !!(input && input.press_enter);
       return {
-        title: 'Type this text for you',
-        details: `${text}\n\n(After you approve, you will have ${countdown} seconds to click the exact spot where it should be typed.)`,
+        title: enter ? 'Type this and press Enter' : 'Type this text for you',
+        details: `${text}${enter ? '\n\n(Then Enter is pressed, for example to run a search.)' : ''}\n\n(After you approve, you will have ${countdown} seconds to click the exact spot where it should be typed.${enter ? ' Do not approve this if a password box or a terminal could be the one in focus.' : ''})`,
         async run() {
           hidePanel();
           blurWindow();
@@ -258,7 +259,16 @@ function createActions({
             if (oldImage && !oldImage.isEmpty()) clipboard.writeImage(oldImage);
             else clipboard.writeText(oldText);
           }
-          return "Typed the text at the user's cursor.";
+          if (enter) {
+            await sleep(250);
+            const c = sys.buildKeyCommand(sys.parseCombo('enter'), platform);
+            await new Promise((resolve, reject) => execFile(c.cmd, c.args, { timeout: 10000, windowsHide: true }, (err, _o, stderr) => {
+              if (!err) return resolve();
+              if (platform === 'darwin' && /not allowed|1002|assistive/i.test(String(stderr))) return reject(new Error('The text was typed, but macOS blocked pressing Enter. Allow Pip (or Electron) in System Settings > Privacy & Security > Accessibility.'));
+              reject(new Error('The text was typed, but pressing Enter failed: ' + (err.message || 'unknown error')));
+            }));
+          }
+          return enter ? "Typed the text at the user's cursor and pressed Enter." : "Typed the text at the user's cursor.";
         },
       };
     },
@@ -672,13 +682,19 @@ function createActions({
         if (!PET_PLACES.includes(where)) throw new Error(`where must be one of: ${PET_PLACES.join(', ')}.`);
         cmd.where = where;
       }
+      if (action === 'fly') {
+        const x = Number(input.x), y = Number(input.y);
+        if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) throw new Error('fly needs x and y between 0 and 1 (fractions of the screen from the top-left corner).');
+        cmd.x = x;
+        cmd.y = y;
+      }
       return {
         auto: true, // only moves Pip's own body, so no approval card
         title: 'Move Pip',
         details: action,
         async run() {
           pet(cmd);
-          return ({ hop: 'Pip hopped.', dance: 'Pip is dancing.', cheer: 'Pip looks happy.', go: `Pip is heading ${cmd.where === 'cursor' ? 'to the mouse cursor' : 'to the ' + cmd.where}.`, stay: 'Pip will stay where it is until told otherwise.', roam: 'Pip is free to wander again.' })[action];
+          return ({ hop: 'Pip hopped.', dance: 'Pip is dancing.', cheer: 'Pip looks happy.', go: `Pip is flying ${cmd.where === 'cursor' ? 'to the mouse cursor' : 'to the ' + cmd.where} and will perch on a branch there.`, fly: 'Pip is flying to that spot and will perch on a branch next to it.', land: 'Pip is gliding back down to the floor.', stay: 'Pip will stay where it is until told otherwise.', roam: 'Pip is free to wander again.' })[action];
         },
       };
     },
@@ -735,8 +751,8 @@ function createActions({
     const defs = [
       {
         name: 'pet_do',
-        description: "Move Pip's own body on the screen. Needs no approval. action: hop (jump in place, optionally 'times' 1-5), dance, cheer (look happy), go (walk or glide to 'where': left, right, middle of the screen, or cursor = next to the mouse), stay (stop wandering around and stay put), roam (wander around again). Use it when the user asks Pip to do one of these, for example 'jump', 'dance', 'come here', 'go to the left' or 'stay there'.",
-        input_schema: { type: 'object', properties: { action: { type: 'string', enum: PET_ACTIONS }, times: { type: 'number', description: 'For hop: how many hops (1 to 5).' }, where: { type: 'string', enum: PET_PLACES, description: 'For go: where to go.' } }, required: ['action'] },
+        description: "Move Pip's own body on the screen. Needs no approval. action: hop (jump in place, optionally 'times' 1-5), dance, cheer (look happy), go (fly to 'where': left, right, middle of the screen, or cursor = next to the mouse; a branch grows there for Pip to perch on), fly (fly to a spot given by x and y, each 0 to 1 measured from the top-left corner of the screen; a branch grows just there and Pip perches on it), land (glide back down to the floor), stay (stop wandering around and stay put), roam (wander around again). Use fly when the user needs you at a particular place, for example 'help me click this' or 'help me open that': take a look at the screen first if you do not know where the thing is, then fly to it. Use go cursor for 'come here'.",
+        input_schema: { type: 'object', properties: { action: { type: 'string', enum: PET_ACTIONS }, times: { type: 'number', description: 'For hop: how many hops (1 to 5).' }, where: { type: 'string', enum: PET_PLACES, description: 'For go: where to go.' }, x: { type: 'number', description: 'For fly: horizontal position, 0 = left edge of the screen, 1 = right edge.' }, y: { type: 'number', description: 'For fly: vertical position, 0 = top edge of the screen, 1 = bottom edge.' } }, required: ['action'] },
       },
       {
         name: 'look_at_screen',
@@ -777,8 +793,8 @@ function createActions({
       },
       {
         name: 'type_text',
-        description: "Type (paste) text into whatever app the user is using, at their cursor. The user approves first, then clicks the spot where the text should go. Use it when they ask you to write or type something for them.",
-        input_schema: { type: 'object', properties: { text: str('The exact text to type (max 20000 characters). Code is fine, including multi-line.') }, required: ['text'] },
+        description: "Type (paste) text into whatever app the user is using, at their cursor: a search bar, a form, a document, a chat. The user approves first (they see the exact text), then clicks the spot where the text should go; you cannot click for them, so tell them which box to click (fly next to it first if you know where it is). Use it when they ask you to write or type something for them. Set press_enter true only when they want it submitted, like running a search. Never type passwords or secrets, and never type commands into a terminal (use run_command so they can review it properly).",
+        input_schema: { type: 'object', properties: { text: str('The exact text to type (max 20000 characters). Code is fine, including multi-line.'), press_enter: { type: 'boolean', description: 'Press Enter afterwards, e.g. to run a search (default false).' } }, required: ['text'] },
       },
       {
         name: 'open_url',

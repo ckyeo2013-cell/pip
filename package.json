@@ -1,6 +1,6 @@
 {
   "name": "pip-desktop",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Pip the sugar glider: a friendly 3D desktop pet that chats, helps you decide and does things on your computer (asks first)",
   "main": "main.js",
   "author": "You <you@example.com>",
@@ -8,7 +8,7 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder",
-    "test": "node selftest.js && node selftest-main.js"
+    "test": "node selftest.js && node selftest-main.js && node selftest-flight.js"
   },
   "devDependencies": {
     "electron": "^39.0.0",
@@ -17,9 +17,31 @@
   "build": {
     "appId": "com.example.pip",
     "productName": "Pip",
-    "files": ["main.js", "actions.js", "system.js", "agent.js", "calendar.js", "preload.js", "index.html", "style.css", "renderer.js", "model.js", "icon.png", "tray.png", "package.json"],
-    "win": { "target": "nsis" },
-    "mac": { "target": "dmg", "category": "public.app-category.entertainment" },
-    "linux": { "target": "AppImage", "category": "Utility" }
+    "files": [
+      "main.js",
+      "actions.js",
+      "system.js",
+      "agent.js",
+      "calendar.js",
+      "preload.js",
+      "index.html",
+      "style.css",
+      "renderer.js",
+      "model.js",
+      "icon.png",
+      "tray.png",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.entertainment"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Utility"
+    }
   }
 }

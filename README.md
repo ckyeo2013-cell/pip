@@ -1,6 +1,6 @@
 # Pip the Sugar Glider: desktop pet 🐾
 
-A friendly 3D sugar glider that lives on your desktop, outside any browser. It hops and glides around your screen, follows your cursor with its eyes, and chats when you click it.
+A realistic 3D sugar glider that lives on your desktop, outside any browser. It hops, flies up to wherever it is needed and perches on a branch, follows your cursor with its eyes, and chats when you click it.
 
 ## Run it
 
@@ -16,10 +16,12 @@ Pip appears at the bottom-right of your screen. A tray/menu-bar icon appears too
 
 ## Use
 
-- **Click Pip** to chat. **Drag Pip** anywhere; it glides back down to the bottom of the screen when you let go.
+- **Click Pip** to chat. **Drag Pip** anywhere (he spreads his gliding membrane while you carry him). Drop him up in the air and a branch grows under him so he stays there for a good while; drop him near the floor and he settles down.
 - **Right-click Pip** (or use the tray icon) for the menu: chat, hide, stay still, launch at login, **Quit**.
 - Chat shortcuts: Help me decide, Flip a coin, Fun fact, **What I copied** (summarizes or explains whatever text is on your clipboard), Cheer me up.
-- Pip walks, hops, and sometimes does a long glide across the desktop. It only blocks clicks where Pip itself is; everything else on your screen works normally.
+- Pip hops around the floor. When he is needed somewhere (see below) he crouches, launches, glides there with his membrane stretched out, and a leafy branch grows for him to land on and sit. After a while, or when you drag him, the branch shrinks away and he glides home.
+- At rest his gliding membrane is tucked against his sides, like a real sugar glider's.
+- Pip only blocks clicks where he is himself; everything else on your screen works normally.
 
 ## Pip as a general helper
 
@@ -27,7 +29,7 @@ Pip isn't just for chit-chat: ask it to write or fix code in any language, expla
 
 ## Tell Pip to move
 
-Pip can control its own body from the chat, with no approval card because it touches nothing else on your computer. Try: "hop three times", "dance", "come here", "go to the left", "go to the middle", "stay there", "go back to wandering". This works even if you switch off "do things on my computer" in settings.
+Pip can control its own body from the chat, with no approval card because it touches nothing else on your computer. Try: "hop three times", "dance", "come here" (he flies to your cursor and perches there), "go to the left", "go to the middle", "stay there", "go back to wandering". When you ask for help opening or clicking something ("help me click Save"), Pip looks at your screen if you approve it, flies to land right next to the thing, and tells you what to do. He cannot click for you. This works even if you switch off "do things on my computer" in settings.
 
 ## Safe browsing (no approval needed)
 
@@ -39,7 +41,7 @@ Pip can now help with almost anything on your computer. **Every single action sh
 
 **Always available (when "Let Pip do things for me" is on):**
 - **Control Panel and Settings:** "open the control panel", "open Wi-Fi settings", "where do I uninstall apps?", "open Device Manager". Pip opens the right window (Windows Control Panel, Settings pages, Device Manager, Services, Task Manager and more; System Settings on macOS; GNOME/KDE settings on Linux). It only opens the window, you make the changes.
-- **Type for you:** after you approve, you get 5 seconds to click the exact spot where the text should go, then Pip pastes it there. (Your clipboard is restored afterwards.)
+- **Type for you:** works in search bars, forms, documents and chats. After you approve (you see the exact text), you get 5 seconds to click the exact spot where the text should go, then Pip pastes it there. (Your clipboard is restored afterwards.) If you want a search submitted, Pip can press Enter too, and the card says so. Pip can't click the box for you.
 - **Look at your screen:** "what's the answer to this question?" Pip takes one picture of your main screen (Pip and the chat hide first), reads it, and answers. Never saved.
 - **Read the web:** Pip can download and read a public web page (or a search results page) to look something up. Public sites only; it never reaches into your own network or local services. Or it can open a page on screen.
 - **Calendar:** search it (read only), add an event (opens in your default calendar app and you click Save), or set a reminder ("remind me in 20 minutes").
@@ -95,7 +97,7 @@ Click the ⚙ in the chat panel and choose an **AI brain provider**:
 
 Both keys are kept separately, so you can switch providers any time without pasting again. Hopping, cursor-following and coin flips work without any key.
 
-Settings also let you rename Pip, change fur colour (grey-blue, honey, cocoa), and toggle wandering, nudges and launch at login.
+Settings also let you rename Pip, change fur colour (natural grey, honey, cocoa), and toggle wandering, nudges and launch at login.
 
 ## Build a normal installer (optional)
 

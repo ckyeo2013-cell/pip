@@ -8,7 +8,7 @@
   const pip = window.pip;
 
   const SIZE = 220;
-  const FEET = 0.78; // where the feet sit inside the 220px square (fraction of height)
+  const FEET = 0.8; // where the feet sit inside the 220px square (fraction of height)
   const settings = { petName: 'Pip', palette: 'classic', wander: true, quips: true, seenIntro: false, hasKey: false };
   const area = { w: window.innerWidth, h: window.innerHeight };
 
@@ -37,46 +37,47 @@
 
   // ---------------------------------------------------------------- WebGL
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  canvas.width = canvas.height = Math.round(SIZE * dpr);
-  const gl = canvas.getContext('webgl', { alpha: true, antialias: true, premultipliedAlpha: true });
-  let sphereCount = 0;
-  const U = {};
+  const VS = `
+    attribute vec3 aP;
+    uniform vec3 uC; uniform vec3 uR; uniform mat3 uM; uniform float uScale;
+    varying vec3 vN; varying vec3 vL;
+    void main() {
+      vec3 wp = uM * (aP * uR) + uC;
+      vN = normalize(uM * (aP / uR));
+      vL = aP;
+      gl_Position = vec4(wp.x * uScale, wp.y * uScale, -wp.z * 0.25 * uScale, 1.0);
+    }`;
+  const FS = `
+    precision mediump float;
+    varying vec3 vN; varying vec3 vL;
+    uniform vec3 uColor; uniform float uSpec; uniform float uFur;
+    float hash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+    void main() {
+      vec3 n = normalize(vN);
+      vec3 L = normalize(vec3(-0.45, 0.75, 0.75));
+      float d = smoothstep(0.08, 0.95, dot(n, L) * 0.5 + 0.5);
+      vec3 shade = mix(uColor * 0.58 * vec3(0.92, 0.93, 1.05), uColor * 1.08, d);
+      float rim = pow(1.0 - clamp(n.z, 0.0, 1.0), 2.2);
+      shade += vec3(1.0, 0.93, 0.85) * rim * 0.2 * uFur;
+      shade *= 1.0 + (hash(floor(vL * 34.0)) - 0.5) * 0.07 * uFur;
+      vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
+      shade += vec3(pow(max(dot(n, H), 0.0), 60.0) * uSpec);
+      gl_FragColor = vec4(shade, 1.0);
+    }`;
 
-  if (gl) {
-    const VS = `
-      attribute vec3 aP;
-      uniform vec3 uC; uniform vec3 uR; uniform mat3 uM; uniform float uScale;
-      varying vec3 vN; varying vec3 vL;
-      void main() {
-        vec3 wp = uM * (aP * uR) + uC;
-        vN = normalize(uM * (aP / uR));
-        vL = aP;
-        gl_Position = vec4(wp.x * uScale, wp.y * uScale, -wp.z * 0.25 * uScale, 1.0);
-      }`;
-    const FS = `
-      precision mediump float;
-      varying vec3 vN; varying vec3 vL;
-      uniform vec3 uColor; uniform float uSpec; uniform float uFur;
-      float hash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
-      void main() {
-        vec3 n = normalize(vN);
-        vec3 L = normalize(vec3(-0.45, 0.75, 0.75));
-        float d = smoothstep(0.08, 0.95, dot(n, L) * 0.5 + 0.5);
-        vec3 shade = mix(uColor * 0.58 * vec3(0.92, 0.93, 1.05), uColor * 1.08, d);
-        float rim = pow(1.0 - clamp(n.z, 0.0, 1.0), 2.2);
-        shade += vec3(1.0, 0.93, 0.85) * rim * 0.2 * uFur;
-        shade *= 1.0 + (hash(floor(vL * 34.0)) - 0.5) * 0.07 * uFur;
-        vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
-        shade += vec3(pow(max(dot(n, H), 0.0), 60.0) * uSpec);
-        gl_FragColor = vec4(shade, 1.0);
-      }`;
-    const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
-    const prog = gl.createProgram();
-    gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
-    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
-    gl.linkProgram(prog);
-    gl.useProgram(prog);
-    for (const n of ['C', 'R', 'M', 'Color', 'Spec', 'Fur', 'Scale']) U[n] = gl.getUniformLocation(prog, 'u' + n);
+  // One tiny ellipsoid renderer per canvas (Pip has one, the branch he perches on has another).
+  function createStage(cv) {
+    cv.width = cv.height = Math.round(SIZE * dpr);
+    const g = cv.getContext('webgl', { alpha: true, antialias: true, premultipliedAlpha: true });
+    if (!g) return null;
+    const U = {};
+    const sh = (type, src) => { const x = g.createShader(type); g.shaderSource(x, src); g.compileShader(x); return x; };
+    const prog = g.createProgram();
+    g.attachShader(prog, sh(g.VERTEX_SHADER, VS));
+    g.attachShader(prog, sh(g.FRAGMENT_SHADER, FS));
+    g.linkProgram(prog);
+    g.useProgram(prog);
+    for (const n of ['C', 'R', 'M', 'Color', 'Spec', 'Fur', 'Scale']) U[n] = g.getUniformLocation(prog, 'u' + n);
 
     const lat = 20, lon = 28, pos = [], idx = [];
     for (let i = 0; i <= lat; i++) {
@@ -91,35 +92,97 @@
         const a = i * (lon + 1) + j, b = a + lon + 1;
         idx.push(a, b, a + 1, b, b + 1, a + 1);
       }
-    sphereCount = idx.length;
-    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pos), gl.STATIC_DRAW);
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), gl.STATIC_DRAW);
-    const loc = gl.getAttribLocation(prog, 'aP');
-    gl.enableVertexAttribArray(loc);
-    gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
-    gl.enable(gl.DEPTH_TEST);
-    gl.depthFunc(gl.LEQUAL);
-    gl.clearColor(0, 0, 0, 0);
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    gl.uniform1f(U.Scale, 1 / 1.8);
-  } else {
+    const count = idx.length;
+    g.bindBuffer(g.ARRAY_BUFFER, g.createBuffer());
+    g.bufferData(g.ARRAY_BUFFER, new Float32Array(pos), g.STATIC_DRAW);
+    g.bindBuffer(g.ELEMENT_ARRAY_BUFFER, g.createBuffer());
+    g.bufferData(g.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), g.STATIC_DRAW);
+    const loc = g.getAttribLocation(prog, 'aP');
+    g.enableVertexAttribArray(loc);
+    g.vertexAttribPointer(loc, 3, g.FLOAT, false, 0, 0);
+    g.enable(g.DEPTH_TEST);
+    g.depthFunc(g.LEQUAL);
+    g.clearColor(0, 0, 0, 0);
+    g.viewport(0, 0, cv.width, cv.height);
+    g.uniform1f(U.Scale, 1 / 1.8);
+    return {
+      draw(parts) {
+        g.clear(g.COLOR_BUFFER_BIT | g.DEPTH_BUFFER_BIT);
+        for (const p of parts) {
+          g.uniform3fv(U.C, p.c);
+          g.uniform3fv(U.R, p.r);
+          g.uniformMatrix3fv(U.M, false, p.M);
+          g.uniform3fv(U.Color, p.color);
+          g.uniform1f(U.Spec, p.spec);
+          g.uniform1f(U.Fur, p.fur);
+          g.drawElements(g.TRIANGLES, count, g.UNSIGNED_SHORT, 0);
+        }
+      },
+    };
+  }
+
+  const petStage = createStage(canvas);
+  const gl = petStage; // truthy when WebGL works
+  if (!petStage) {
     canvas.style.display = 'none';
     $('fallback').style.display = 'block';
   }
+  function draw(parts) { petStage.draw(parts); }
 
-  function draw(parts) {
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    for (const p of parts) {
-      gl.uniform3fv(U.C, p.c);
-      gl.uniform3fv(U.R, p.r);
-      gl.uniformMatrix3fv(U.M, false, p.M);
-      gl.uniform3fv(U.Color, p.color);
-      gl.uniform1f(U.Spec, p.spec);
-      gl.uniform1f(U.Fur, p.fur);
-      gl.drawElements(gl.TRIANGLES, sphereCount, gl.UNSIGNED_SHORT, 0);
+  // The branch Pip perches on: built from the same ellipsoids, drawn in its own canvas
+  // that sits exactly under Pip's canvas (same size and scale), so his feet meet the wood.
+  const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const rotZm = (a) => { const c = Math.cos(a), s = Math.sin(a); return [c, s, 0, -s, c, 0, 0, 0, 1]; };
+  const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+  const BRANCH_TOP = -1.08; // model-space height of the wood's top surface = Pip's feet
+  function branchParts(g, t) {
+    const parts = [];
+    const WOOD = [[0.4, 0.29, 0.19], [0.33, 0.23, 0.15]];
+    const LEAF = [[0.45, 0.7, 0.38], [0.36, 0.6, 0.33]];
+    const X0 = -1.55, X1 = 1.5, N = 16;
+    const rad = (s) => lerp(0.13, 0.05, s);
+    const yc = (s) => BRANCH_TOP - rad(s) - 0.25 * (s - 0.508);
+    const xAt = (s) => lerp(X0, X1, s);
+    const kAt = (d, w = 0.2) => easeOut(clamp((g - d) / w, 0, 1));
+    for (let i = 0; i < N; i++) {
+      const s = i / (N - 1), k = kAt(s * 0.8);
+      if (k > 0.01) parts.push({ c: [xAt(s), yc(s), 0], r: [0.15 * k, rad(s) * k, rad(s) * k * 0.95], M: I3, color: WOOD[i % 2], spec: 0, fur: 0.5 });
     }
+    const twigs = [[0.16, 0.95, 0.55, -0.1], [0.3, 1.25, 0.5, -0.15], [0.72, 0.75, 0.6, -0.1], [0.9, -0.45, 0.4, 0]];
+    let li = 0;
+    const leaf = (x, y, z, ang, d, size) => {
+      const k = kAt(d, 0.22);
+      if (k < 0.01) { li++; return; }
+      const pop = k * (1 + 0.2 * Math.sin(k * Math.PI)) * size;
+      parts.push({ c: [x, y, z], r: [0.19 * pop, 0.085 * pop, 0.035 * pop], M: rotZm(ang + Math.sin(t * 1.4 + li) * 0.12 * k),
+        color: LEAF[li % 2], spec: 0.1, fur: 0.4 });
+      li++;
+    };
+    for (const [s, a, len, z] of twigs) {
+      const bx = xAt(s), by = yc(s) + rad(s) * 0.6, d = s * 0.8 + 0.05, k = kAt(d, 0.2);
+      if (k > 0.01) {
+        for (let j = 0; j < 3; j++) {
+          const f = (j + 0.5) / 3;
+          parts.push({ c: [bx + Math.cos(a) * len * f * k, by + Math.sin(a) * len * f * k, z], r: [(len / 6) * 1.3 * k, 0.03 * k, 0.03 * k], M: rotZm(a), color: WOOD[1], spec: 0, fur: 0.5 });
+        }
+      }
+      const ex = bx + Math.cos(a) * len, ey = by + Math.sin(a) * len;
+      leaf(ex, ey, z - 0.05, a + 0.3, d + 0.12, 1);
+      leaf(ex - 0.12, ey - 0.04, z + 0.04, a - 0.5, d + 0.16, 0.85);
+      leaf(ex + 0.1, ey + 0.1, z - 0.1, a + 0.9, d + 0.2, 0.8);
+    }
+    for (let j = 0; j < 5; j++) leaf(X0 + 0.1 + j * 0.07, BRANCH_TOP + 0.05 + (j % 3) * 0.1, -0.15 + (j % 2) * 0.2, 0.6 + j * 0.5, 0.05 + j * 0.03, 1.2);
+    for (let j = 0; j < 3; j++) leaf(X1 - 0.05 - j * 0.12, BRANCH_TOP - 0.08 + j * 0.06, -0.1 + j * 0.1, 0.2 - j * 0.7, 0.85 + j * 0.03, 1);
+    return parts;
+  }
+  let branchEl = null, branchStage = null;
+  function ensureBranchStage() {
+    if (branchStage || !petStage) return branchStage;
+    branchEl = document.createElement('canvas');
+    branchEl.id = 'branch';
+    document.body.insertBefore(branchEl, petEl);
+    branchStage = createStage(branchEl);
+    return branchStage;
   }
 
   // ---------------------------------------------------------------- state
@@ -133,6 +196,12 @@
     lookPitch: 0,
     hop: null,
     glide: 0,
+    crouch: 0,    // squat before take-off and after landing
+    tilt: 0,      // body tilt (radians) while flying
+    flight: null, // a glide up to (or down from) a perch
+    perch: null,  // set while Pip sits on his branch
+    landT: 0,
+    pendingCmd: null,
     hopY: 0,
     happy: 0,
     thinking: 0,
@@ -167,6 +236,112 @@
     if (dx > 10) st.face = tx > st.x ? 1 : -1;
   }
 
+  // ---------------------------------------------------------------- flying and perching
+  let br = null;   // the branch that is on screen: { x, y, g, state: 'grow' | 'hold' | 'shrink' }
+  let pend = null; // a branch about to grow at the landing spot: { x, y, t0 }
+  const minPetX = () => 8, maxPetX = () => Math.max(8, area.w - SIZE - 8);
+
+  // Where Pip should sit to be "at" a point on the screen: on a branch just above it,
+  // or beside it when the point is too close to the top of the screen.
+  function perchSpot(px, py) {
+    let x = px - SIZE / 2;
+    let feetY = py - 26;
+    if (feetY - SIZE * 0.7 < 0) {
+      feetY = Math.max(SIZE * 0.75, py + 20);
+      x += px < area.w / 2 ? 150 : -150;
+    }
+    return { x, y: feetY - SIZE * FEET };
+  }
+
+  function leavePerch() {
+    st.perch = null;
+    pend = null;
+    if (br && br.state !== 'shrink') br.state = 'shrink';
+  }
+
+  // Glide to (tx, ty) (top-left of Pip's square). With opts.branch a branch grows there to land on.
+  function startFlight(tx, ty, opts) {
+    opts = opts || {};
+    const now = performance.now();
+    tx = clamp(tx, minPetX(), maxPetX());
+    ty = clamp(ty, -20, floorY());
+    const dx = tx - st.x, dy = ty - st.y, dist = Math.hypot(dx, dy);
+    if (dist < 40) { cheer(900); return false; }
+    leavePerch();
+    const lift = opts.branch ? clamp(dist * 0.32, 80, 300) : clamp(dist * 0.12, 30, 120);
+    const crouch = 260;
+    const dur = clamp(900 + dist * 1.1, 1300, 3000);
+    st.flight = {
+      t0: now, crouch, dur, fx: st.x, fy: st.y, tx, ty,
+      cx: st.x + dx * 0.3, cy: Math.max(-30, Math.min(st.y, ty) - lift),
+      branch: !!opts.branch, face: dx >= 0 ? 1 : -1,
+    };
+    if (Math.abs(dx) > 10) st.face = st.flight.face;
+    st.hop = null;
+    st.hopY = 0; // a hop in progress must not leave its height behind
+    st.queue = [];
+    // the branch finishes growing about when Pip arrives
+    if (opts.branch) pend = { x: tx, y: ty, t0: now + Math.max(650, crouch + dur * 0.85 - 1100) };
+    return true;
+  }
+
+  function updateFlight(now) {
+    let fp = 0;
+    const F = st.flight;
+    if (F) {
+      const el = now - F.t0;
+      if (el < F.crouch) {
+        st.crouch = Math.sin((el / F.crouch) * Math.PI / 2) * 0.9;
+        st.glide = 0;
+      } else {
+        const p = Math.min(1, (el - F.crouch) / F.dur);
+        fp = p;
+        const sm = p * p * (3 - 2 * p), u = 1 - sm;
+        st.x = u * u * F.fx + 2 * u * sm * F.cx + sm * sm * F.tx;
+        st.y = u * u * F.fy + 2 * u * sm * F.cy + sm * sm * F.ty;
+        const vx = 2 * u * (F.cx - F.fx) + 2 * sm * (F.tx - F.cx);
+        const vy = 2 * u * (F.cy - F.fy) + 2 * sm * (F.ty - F.cy);
+        st.tiltTarget = clamp(F.face * Math.atan2(vy, Math.abs(vx) + 1e-3) * 0.5, -0.55, 0.55) * (1 - clamp((p - 0.75) / 0.25, 0, 1));
+        st.glide = p < 0.15 ? p / 0.15 : p < 0.8 ? 1 : 1 - ((p - 0.8) / 0.2) * 0.85;
+        st.crouch = p < 0.12 ? 0.9 * (1 - p / 0.12) : 0;
+        if (p >= 1) {
+          st.x = F.tx;
+          st.y = F.ty;
+          st.flight = null;
+          st.glide = 0.15;
+          st.landT = now;
+          st.tiltTarget = 0;
+          if (F.branch) st.perch = { until: now + 40000 };
+          cheer(1100);
+          if (st.pendingCmd) { const c = st.pendingCmd; st.pendingCmd = null; petCommand(c); }
+        }
+      }
+    } else {
+      st.tiltTarget = 0;
+      if (!st.hop && !st.dragging) st.glide *= 0.85;
+      const lt = (now - st.landT) / 320;
+      st.crouch = lt < 1 ? Math.sin(Math.min(1, lt * 2) * Math.PI) * (1 - lt) * 0.6 : st.crouch * 0.8;
+    }
+    st.tilt += ((st.tiltTarget || 0) - st.tilt) * 0.2;
+    return fp;
+  }
+
+  let lastBranchT = 0;
+  function updateBranch(now) {
+    const dt = clamp(now - (lastBranchT || now), 0, 100);
+    lastBranchT = now;
+    if (br && br.state === 'shrink') { br.g -= dt / 500; if (br.g <= 0) br = null; }
+    if (!br && pend && now >= pend.t0) { br = { x: pend.x, y: pend.y, g: 0, state: 'grow' }; pend = null; }
+    if (br && br.state === 'grow') { br.g = Math.min(1, br.g + dt / 1100); if (br.g >= 1) br.state = 'hold'; }
+    if (br && ensureBranchStage()) {
+      branchEl.style.display = 'block';
+      branchEl.style.transform = `translate(${br.x.toFixed(1)}px, ${br.y.toFixed(1)}px)`;
+      branchStage.draw(branchParts(br.g, now / 1000));
+    } else if (branchEl) {
+      branchEl.style.display = 'none';
+    }
+  }
+
   function showBubble(text, ms = 5000) {
     bubble.textContent = text;
     bubble.classList.add('show');
@@ -175,29 +350,46 @@
   }
   function cheer(ms = 1300) { happyUntil = performance.now() + ms; }
 
-  // Commands from the chat (the pet_do tool): hop, dance, cheer, go somewhere, stay, roam.
+  // Commands from the chat (the pet_do tool): hop, dance, cheer, go/fly somewhere, land, stay, roam.
   function petCommand(c) {
     if (!c || typeof c !== 'object' || st.dragging) return;
-    const minX = 8, maxX = Math.max(8, area.w - SIZE - 8);
+    // already flying: do the new move once Pip has landed
+    if (st.flight && ['go', 'fly', 'land', 'hop', 'dance'].includes(c.action)) { st.pendingCmd = c; return; }
+    const minX = minPetX(), maxX = maxPetX();
     const at = (x) => clamp(x, minX, maxX);
     const x0 = st.x;
     st.queue = [];
+    // fly to a point on screen: perch on a branch just above it (or glide down if it is at floor level)
+    const flyTo = (px, py) => {
+      const sp = perchSpot(px, py);
+      const onFloor = sp.y >= floorY() - 30;
+      if (!startFlight(sp.x, onFloor ? floorY() : sp.y, { branch: !onFloor })) cheer(1200);
+    };
     switch (c.action) {
       case 'hop':
         for (let i = 0; i < clamp(Math.round(Number(c.times)) || 1, 1, 5); i++) st.queue.push({ tx: x0, h: 70, cheer: 900 });
         break;
       case 'dance':
-        for (const dx of [70, -70, 70, -70, 0]) st.queue.push({ tx: at(x0 + dx), h: 55, cheer: 1500 });
+        // on a branch he dances in place; on the floor he hops side to side
+        for (const dx of [70, -70, 70, -70, 0]) st.queue.push({ tx: st.perch ? x0 : at(x0 + dx), h: 55, cheer: 1500 });
         break;
       case 'cheer':
         cheer(2500);
         break;
       case 'go': {
-        const tx = c.where === 'left' ? minX : c.where === 'right' ? maxX : c.where === 'middle' ? at((area.w - SIZE) / 2) : at(mouse.x - SIZE / 2);
-        if (Math.abs(tx - x0) > 20) st.queue.push({ tx, h: Math.abs(tx - x0) > 300 ? 150 : 70, cheer: 1200 });
-        else cheer(1200);
+        const w = c.where;
+        if (w === 'left') flyTo(area.w * 0.12, area.h * 0.45);
+        else if (w === 'right') flyTo(area.w * 0.88, area.h * 0.45);
+        else if (w === 'middle') flyTo(area.w * 0.5, area.h * 0.45);
+        else flyTo(mouse.x, mouse.y);
         break;
       }
+      case 'fly':
+        flyTo(clamp(Number(c.x), 0, 1) * area.w, clamp(Number(c.y), 0, 1) * area.h);
+        break;
+      case 'land':
+        if (!startFlight(st.x, floorY(), { branch: false })) cheer(1000);
+        break;
       case 'stay':
         st.stay = true;
         break;
@@ -216,7 +408,12 @@
     lastRender = now;
 
     // wandering: hops, plus the occasional long glide across the desktop
-    if (!st.hop && !st.dragging && !st.chatOpen && settings.wander && !st.stay && now > st.nextHop) {
+    const fp = updateFlight(now);
+    if (st.perch && !st.flight && !st.stay) {
+      if (st.chatOpen) st.perch.until = Math.max(st.perch.until, now + 15000);
+      else if (now > st.perch.until) startFlight(st.x, floorY(), { branch: false }); // time to glide home
+    }
+    if (!st.hop && !st.flight && !st.perch && !st.dragging && !st.chatOpen && settings.wander && !st.stay && now > st.nextHop) {
       const dir = Math.random() < 0.5 ? -1 : 1;
       const big = Math.random() < 0.3;
       const span = big ? rand(500, Math.max(600, area.w * 0.5)) : rand(120, 380);
@@ -225,7 +422,7 @@
       if (Math.abs(tx - st.x) >= 90) startHop(tx, big ? 150 : 60);
       st.nextHop = now + rand(10000, 24000);
     }
-    if (!st.hop && !st.dragging && st.queue.length) {
+    if (!st.hop && !st.flight && !st.dragging && st.queue.length) {
       const q = st.queue.shift();
       startHop(q.tx, q.h);
       if (q.cheer) cheer(q.cheer);
@@ -254,7 +451,8 @@
     st.lookYaw += (tYaw - st.lookYaw) * 0.12;
     st.lookPitch += (tPitch - st.lookPitch) * 0.12;
 
-    const tBody = st.hop && st.hop.far ? st.face * 1.15 : st.face * 0.45;
+    const flying = st.flight && now - st.flight.t0 > st.flight.crouch && fp < 0.9;
+    const tBody = (st.hop && st.hop.far) || flying ? st.face * 1.15 : st.perch ? st.face * 0.3 : st.face * 0.45;
     st.bodyYaw += (tBody - st.bodyYaw) * 0.14;
 
     let blink = 1;
@@ -275,6 +473,7 @@
         lookYaw: st.lookYaw,
         lookPitch: st.lookPitch,
         glide: st.glide,
+        crouch: st.crouch,
         blink,
         happy: st.happy,
         thinking: st.thinking,
@@ -282,11 +481,12 @@
       }));
     }
 
-    petEl.style.transform = `translate(${st.x.toFixed(1)}px, ${(st.y + st.hopY).toFixed(1)}px)`;
-    const feetY = st.y + SIZE * FEET;
-    const sc = clamp(1 + st.hopY / 260, 0.5, 1);
-    shEl.style.transform = `translate(${(st.x + SIZE / 2 - 42).toFixed(1)}px, ${(feetY - 6).toFixed(1)}px) scale(${sc.toFixed(2)})`;
-    shEl.style.opacity = String(clamp(1 + st.hopY / 140, 0.3, 1));
+    petEl.style.transform = `translate(${st.x.toFixed(1)}px, ${(st.y + st.hopY).toFixed(1)}px) rotate(${st.tilt.toFixed(3)}rad)`;
+    updateBranch(now);
+    const above = floorY() - (st.y + st.hopY); // how high above the floor Pip is
+    const sc = clamp(1 + st.hopY / 260 - above / 900, 0.4, 1);
+    shEl.style.transform = `translate(${(st.x + SIZE / 2 - 42).toFixed(1)}px, ${(floorY() + SIZE * FEET - 6).toFixed(1)}px) scale(${sc.toFixed(2)})`;
+    shEl.style.opacity = String(st.perch ? 0 : clamp(1 + st.hopY / 140 - above / 500, 0.15, 1));
 
     if (settings.quips && !st.chatOpen && !st.dragging && now > st.nextQuip) {
       showBubble(QUIPS[Math.floor(Math.random() * QUIPS.length)], 6000);
@@ -299,8 +499,8 @@
 
   // ---------------------------------------------------------------- mouse
   function overPet(x, y) {
-    const dx = (x - (st.x + SIZE / 2)) / (SIZE * 0.3);
-    const dy = (y - (st.y + st.hopY + SIZE * 0.55)) / (SIZE * 0.4);
+    const dx = (x - (st.x + SIZE / 2)) / (SIZE * 0.36);
+    const dy = (y - (st.y + st.hopY + SIZE * 0.55)) / (SIZE * 0.46);
     return dx * dx + dy * dy < 1;
   }
   function overPanel(x, y) {
@@ -336,6 +536,9 @@
     if (!drag.moved && Math.hypot(dx, dy) > 4) {
       drag.moved = true;
       st.dragging = true;
+      leavePerch();
+      st.flight = null;
+      st.pendingCmd = null;
       st.hop = null;
       st.hopY = 0;
       st.glide = 0.6;
@@ -357,7 +560,14 @@
     try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
     if (wasDrag) {
       // glide back down to the desktop floor like a proper sugar glider
-      if (Math.abs(st.y - floorY()) > 4) startHop(st.x, 25, floorY());
+      if (floorY() - st.y > 40) {
+        // dropped up in the air: a branch grows right under him and he stays there
+        const now = performance.now();
+        pend = { x: st.x, y: st.y, t0: now };
+        st.perch = { until: now + 90000 };
+        st.landT = now;
+        cheer(900);
+      } else if (Math.abs(st.y - floorY()) > 4) startHop(st.x, 25, floorY());
       pip.savePos(st.x);
       st.nextHop = performance.now() + rand(8000, 16000);
     } else {
@@ -374,7 +584,8 @@
     area.w = a.w;
     area.h = a.h;
     clampX();
-    if (!st.hop && !st.dragging) st.y = floorY();
+    if (!st.hop && !st.dragging && !st.perch && !st.flight) st.y = floorY();
+    else st.y = Math.min(st.y, floorY());
   });
 
   // ---------------------------------------------------------------- chat
