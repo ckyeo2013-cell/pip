@@ -45,6 +45,21 @@ function makeLoopGuard({ maxSame = 2, maxPerTool = { find_ui: 4, look_at_screen:
   };
 }
 
+// Only the newest screenshot is worth sending again: older ones just cost tokens (a game takes many looks).
+function dropOldScreenshots(convo) {
+  let seenNewest = false;
+  for (let i = convo.length - 1; i >= 0; i--) {
+    const m = convo[i];
+    if (m.role !== 'user' || !Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (b.type !== 'tool_result' || !Array.isArray(b.content)) continue;
+      if (!b.content.some((c) => c.type === 'image')) continue;
+      if (!seenNewest) { seenNewest = true; continue; }
+      b.content = b.content.filter((c) => c.type !== 'image').concat([{ type: 'text', text: '(older screenshot removed)' }]);
+    }
+  }
+}
+
 async function runChat({
   fetchFn,
   apiKey,
@@ -120,6 +135,7 @@ async function runChat({
     const results = [];
     for (const call of calls) results.push(await handleCall(call));
     convo.push({ role: 'user', content: results });
+    dropOldScreenshots(convo);
   }
 
   return { text: (said.join('\n\n') + '\n\nThat was a lot of steps, so I stopped here. Ask me to continue if you want more!').trim() };

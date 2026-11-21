@@ -217,6 +217,31 @@ function buildKeyCommand(combo, platform) {
   return { cmd: 'xdotool', args: ['key', '--clearmodifiers', x.join('+')] };
 }
 
+// Game input: plain letters/digits plus a few named keys, sent in ONE command (no modifiers, nothing risky).
+const GAME_KEYS = ['enter', 'backspace', 'tab', 'space', 'up', 'down', 'left', 'right'];
+function gameKeyCommand(text, keys, platform) {
+  const t = String(text || '').toLowerCase();
+  const k = (Array.isArray(keys) ? keys : []).map((x) => String(x).toLowerCase().trim());
+  if (!/^[a-z0-9 ]{0,40}$/.test(t)) throw new Error('game_keys text can only be letters, digits and spaces (max 40).');
+  if (k.length > 10 || k.some((x) => !GAME_KEYS.includes(x))) throw new Error(`game_keys keys must be up to 10 of: ${GAME_KEYS.join(', ')}.`);
+  if (!t && !k.length) throw new Error('Nothing to press.');
+  if (platform === 'win32') {
+    const send = t + k.map((x) => NAMED[x].win).join('');
+    return { cmd: 'powershell.exe', args: psArgs(`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${send}')`) };
+  }
+  if (platform === 'darwin') {
+    const lines = ['tell application "System Events"'];
+    if (t) lines.push(`keystroke "${t}"`);
+    for (const x of k) lines.push(`key code ${NAMED[x].mac}`);
+    lines.push('end tell');
+    return { cmd: 'osascript', args: lines.flatMap((l) => ['-e', l]) };
+  }
+  const args = [];
+  if (t) args.push('type', '--delay', '40', '--', t);
+  if (k.length) args.push('key', ...k.map((x) => NAMED[x].x));
+  return { cmd: 'xdotool', args };
+}
+
 // Scrolling the page in front, using only Page Up/Down and Home/End (nothing can be typed this way).
 const SCROLL_DIRS = ['down', 'up', 'top', 'bottom'];
 function scrollCommands(direction, amount, platform) {
@@ -464,7 +489,7 @@ function mediaCommand(action, platform, value) {
 
 module.exports = {
   BROWSER_ACTIONS, browserKeys,
-  SCROLL_DIRS, scrollCommands,
+  SCROLL_DIRS, scrollCommands, gameKeyCommand, GAME_KEYS,
   SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
   PAGES, pageNames, settingsLaunch,
   psArgs, buildShell, shellName, checkCommand,

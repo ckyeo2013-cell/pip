@@ -68,6 +68,9 @@ function createActions({
   calendar = null,        // { search(input), describe() }
   getFull = () => false,  // is full access on?
   getAutoType = () => false, // may Pip type short one-line text (like a search) without a card each time?
+  getTrusted = () => [],   // extra website hostnames the user trusts: they open without a card
+  getAutoPress = () => false, // may Pip press ordinary (not risky) buttons without a card each time?
+  store = null,           // memory notes + saved routines (store.js)
   getAutoLook = () => false, // may Pip look at the screen (picture or button finder) without a card each time?
   protectedPaths = [],    // extra paths Pip may never touch (its own settings)
   remind = null,          // (minutes, message) => Date
@@ -273,6 +276,23 @@ function createActions({
   }
 
   // ------------------------------------------------------------ tools
+  // Game mode: one approval lets Pip look, type plain keys and press ordinary buttons for the rest of THIS request only.
+  let gameOn = false, gameBudget = 0;
+  const autoLook = () => gameOn || !!getAutoLook();
+  const autoType = () => gameOn || !!getAutoType();
+  const autoPress = () => gameOn || !!getAutoPress();
+  const safeUrl = (u) => isSafeUrl(u) || (u.protocol === 'https:' && !u.username && !u.password && !u.port &&
+    getTrusted().some((h) => { const host = u.hostname.toLowerCase().replace(/\.$/, ''); return host === h || host.endsWith('.' + h); }));
+  // one routine step: "gmail" / a web address, "app:Slack", or "search:youtube:lofi beats"
+  const routineCard = (x) => {
+    const m = /^(app|search)\s*:\s*(.+)$/i.exec(String(x).trim());
+    if (!m) return tools.open_url({ url: x });
+    if (m[1].toLowerCase() === 'app') return tools.open_app({ name: m[2].trim() });
+    const q = /^([a-z]+)\s*:\s*(.+)$/i.exec(m[2]);
+    if (!q) throw new Error('A search step looks like "search:youtube:lofi beats".');
+    return tools.search_site({ site: q[1], query: q[2] });
+  };
+
   const tools = {
     type_text(input) {
       const text = input && input.text;
@@ -295,7 +315,7 @@ function createActions({
           ? `(Pip flies to the ${targetEl.name ? `"${targetEl.name}" ` : ''}box, puts the cursor in it and types there. If that does not work you will have ${countdown} seconds to click the spot yourself.${enterNote})`
           : `(After you approve, Pip finds the text box that has your cursor, flies there so you can see where, and types into it. If he cannot find one you will have ${countdown} seconds to click the exact spot yourself.${enterNote})`;
       // short, single-line text only: longer text or code still shows the card so you can read it first
-      const quiet = !!getAutoType() && text.length <= 300 && !/[\r\n]/.test(text);
+      const quiet = !!autoType() && text.length <= 300 && !/[\r\n]/.test(text);
       return {
         auto: quiet,
         title: enter ? 'Type this and press Enter' : 'Type this text for you',
@@ -361,7 +381,7 @@ function createActions({
       if (!uiOn) throw new Error('Finding buttons is not available here.');
       const query = typeof (input && input.query) === 'string' ? input.query.trim().slice(0, 60).toLowerCase() : '';
       return {
-        auto: !!getAutoLook(),
+        auto: !!autoLook(),
         title: 'Find the buttons and boxes in the front window',
         details: `Pip reads the names and positions of the buttons, boxes, links and menus in the window at the front${query ? ` (only ones matching "${query}")` : ''}. No picture is taken, and nothing you typed into a box is read; password boxes are skipped.\n\n(The names are shared with Pip's AI so it can find the right one.)`,
         async run() {
@@ -390,11 +410,13 @@ function createActions({
       const risky = action === 'press' && ui.isRisky(el.name);
       const label = `${el.role} ${el.name ? `"${el.name}"` : '(unnamed)'}`;
       return {
-        title: action === 'focus' ? 'Put the cursor in this box' : 'Press this for you',
+        auto: !!autoPress() && !risky, // ordinary buttons go straight through when allowed; risky names (Delete, Send, Pay...) always ask
+        title: action === 'focus' ? `Click into "${String(el.name || 'box').slice(0, 24)}"` : `Press "${String(el.name || el.role).slice(0, 26)}"`,
         risk: risky ? 'high' : 'normal',
         details: `${label}\nin the window "${String(norm.window.title || '').slice(0, 100)}"\n\nPip flies next to it, then ${action === 'focus' ? 'puts the cursor in it' : 'presses it'} using your computer's accessibility controls (no mouse).${risky ? '\n\nThis one sounds hard to undo. Read the name carefully before you approve.' : ''}`,
         async run() {
           flyTo(el);
+          if (autoPress() && !risky) notify(`${action === 'focus' ? 'Clicking into' : 'Pressing'}: ${String(el.name || el.role).slice(0, 40)}`, 3000);
           await sleep(flightMs);
           const done = await runUi(action, targetOf(el));
           lastUi = null; // the screen has changed: look again before the next step
@@ -407,7 +429,7 @@ function createActions({
     look_at_screen() {
       if (!captureScreen) throw new Error('Looking at the screen is not available here.');
       return {
-        auto: !!getAutoLook(),
+        auto: !!autoLook(),
         title: 'Look at your screen',
         details: 'Pip will take one picture of your main screen and share it with Pip\'s AI (Anthropic) so it can read what is on it.\n\nPip and this chat hide for a second so they do not block the view. Anything visible on the screen is included, so close private things first.',
         async run() {
@@ -448,7 +470,7 @@ function createActions({
       }
       if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('Only http and https links can be opened.');
       return {
-        auto: isSafeUrl(u), // allowlisted safe sites open straight away; everything else asks
+        auto: safeUrl(u), // allowlisted safe sites open straight away; everything else asks
         title: 'Open this web page',
         details: u.href,
         async run() { await shell.openExternal(u.href); return `Opened ${u.hostname} in the default browser. It is on the user's screen now.`; },
@@ -463,7 +485,7 @@ function createActions({
       const results = new URL(sys.SEARCH_SITES[site](query));
       const play = !!(input && input.play) && site === 'youtube';
       return {
-        auto: isSafeUrl(results),
+        auto: safeUrl(results),
         title: play ? 'Play this on YouTube' : `Search ${site} for "${query}"`,
         details: play ? `Finds the top YouTube result for "${query}" and plays it in your browser.\n${results.href}` : results.href,
         async run() {
@@ -528,6 +550,82 @@ function createActions({
           }
           return `Scrolled ${label}. To see what is there now, use look_at_screen.`;
         },
+      };
+    },
+
+    remember(input) {
+      if (!store) throw new Error('Memory is not available here.');
+      const t = String((input && input.note) || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+      if (!t) throw new Error('There is nothing to remember.');
+      return { auto: true, title: 'Remember this', details: t, async run() { store.remember(t); return 'Remembered.'; } };
+    },
+
+    forget(input) {
+      if (!store) throw new Error('Memory is not available here.');
+      const q = String((input && input.query) || '');
+      return { auto: true, title: 'Forget this', details: q, async run() { const n = store.forget(q); return n ? `Forgot ${n} note${n === 1 ? '' : 's'}.` : 'No note matched.'; } };
+    },
+
+    start_game(input) {
+      const game = String((input && input.game) || 'a game').replace(/\s+/g, ' ').trim().slice(0, 60);
+      const steps = Math.max(10, Math.min(60, Math.round(Number(input && input.max_steps) || 30)));
+      return {
+        title: `Play ${game}`,
+        details: `For this one request, Pip will look at your screen, type letters and Enter, and press ordinary buttons without asking each time, for up to ${steps} steps.\n\nIt stops when the game is over or you press Stop. Buttons that sound risky (Delete, Send, Pay...) still ask. Pip cannot use the mouse, so the game must work with the keyboard or normal buttons.\n\nPip sends screenshots of your main screen to its AI while playing, so close private things first.`,
+        async run() { gameOn = true; gameBudget = steps; return `Game mode is on for up to ${steps} steps. Play with look_at_screen and game_keys. Call end_game when done.`; },
+      };
+    },
+
+    end_game() {
+      return { auto: true, title: 'Finish the game', details: 'Back to asking before each action.', async run() { gameOn = false; gameBudget = 0; return 'Game mode is off.'; } };
+    },
+
+    game_keys(input) {
+      if (!gameOn) throw new Error('Start a game first with start_game (the user approves once).');
+      const cmd = sys.gameKeyCommand(input && input.text, input && input.keys, platform); // validates
+      const shown = `${input.text || ''}${input.keys && input.keys.length ? ' [' + input.keys.join(', ') + ']' : ''}`;
+      return {
+        auto: true,
+        title: `Type ${shown}`.slice(0, 40),
+        details: shown,
+        async run() {
+          hidePanel();
+          blurWindow();
+          await sleep(500); // let the game get the keyboard back
+          await new Promise((resolve, reject) => execFile(cmd.cmd, cmd.args, { timeout: 15000, windowsHide: true }, (err, _o, stderr) => {
+            if (!err) return resolve();
+            if (platform === 'darwin' && /not allowed|1002|assistive/i.test(String(stderr))) return reject(new Error('macOS blocked key presses. Allow Pip (or Electron) in System Settings > Privacy & Security > Accessibility.'));
+            if (err.code === 'ENOENT') return reject(new Error(platform === 'win32' || platform === 'darwin' ? 'The key press tool is missing.' : 'Key presses on Linux need "xdotool" (X11 only).'));
+            reject(new Error('Could not press the keys: ' + (err.message || 'unknown error')));
+          }));
+          return `Sent ${shown}. Use look_at_screen to see what happened.`;
+        },
+      };
+    },
+
+    async save_routine(input) {
+      if (!store) throw new Error('Routines are not available here.');
+      const name = input && input.name, steps = input && input.steps;
+      await Promise.all((Array.isArray(steps) ? steps : []).map((x) => routineCard(x))); // every step must be valid
+      return { auto: true, title: 'Save a routine', details: `${name}: ${(steps || []).join(', ')}`, async run() { const r = store.saveRoutine(name, steps); return `Saved routine "${r.name}" with ${r.steps.length} step${r.steps.length === 1 ? '' : 's'}.`; } };
+    },
+
+    delete_routine(input) {
+      if (!store) throw new Error('Routines are not available here.');
+      const name = input && input.name;
+      return { auto: true, title: 'Delete a routine', details: String(name || ''), async run() { return store.deleteRoutine(name) ? 'Deleted that routine.' : 'There is no routine with that name.'; } };
+    },
+
+    async run_routine(input) {
+      if (!store) throw new Error('Routines are not available here.');
+      const steps = store.getRoutine(input && input.name);
+      if (!steps) throw new Error(`There is no routine called "${input && input.name}". Saved routines: ${Object.keys(store.routines()).join(', ') || 'none'}.`);
+      const cards = await Promise.all(steps.map((x) => routineCard(x)));
+      return {
+        auto: cards.every((c) => c.auto), // all safe sites: just open them; any other site makes the whole routine ask once
+        title: `Run the "${String(input.name).slice(0, 30)}" routine`,
+        details: cards.map((c) => c.details).join('\n'),
+        async run() { for (const c of cards) { await c.run(); await sleep(600); } return `Ran ${cards.length} step${cards.length === 1 ? '' : 's'} of the routine.`; },
       };
     },
 
@@ -1093,6 +1191,46 @@ function createActions({
         input_schema: { type: 'object', properties: { site: { type: 'string', enum: Object.keys(sys.SEARCH_SITES), description: 'Which site to search' }, query: str('What to search for'), play: { type: 'boolean', description: 'YouTube only: open and play the top result instead of showing results.' } }, required: ['site', 'query'] },
       },
       {
+        name: 'start_game',
+        description: "Start game mode before playing a turn-based or puzzle game on screen (Wordle, a trivia game like Krillion, a keyboard puzzle). The user approves ONCE; then looking, game_keys and ordinary buttons need no approval until the request ends or they press Stop. Call it once at the start, never for real-time action games, online ranked play, anything with money, or accounts.",
+        input_schema: { type: 'object', properties: { game: str("Name of the game, like 'Wordle'."), max_steps: { type: 'number', description: 'Most steps to allow (10 to 60, default 30). A Wordle needs about 15; a 7-prompt trivia round about 25.' } }, required: ['game'] },
+      },
+      {
+        name: 'end_game',
+        description: 'Turn game mode off when the game is over, you are stuck, or something unexpected appears (a login, payment or pop-up).',
+        input_schema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'game_keys',
+        description: "Press plain keys in the game in front, fast, no approval (only works after start_game). 'text' is letters, digits and spaces (max 40), typed first; 'keys' are then pressed in order: enter, backspace, tab, space, up, down, left, right. Example for Wordle: text 'crane', keys ['enter']. The game page must be the window in front. Then call look_at_screen to see the result.",
+        input_schema: { type: 'object', properties: { text: str('Letters, digits and spaces to type.'), keys: strs('Named keys to press after the text.') } },
+      },
+      {
+        name: 'remember',
+        description: "Save one short lasting fact about the user (their usual browser, favourite sites, interests, preferred search site, how they like things done). Use it ONLY when they ask you to remember something or clearly state a lasting preference, never for passing remarks, secrets or passwords. No approval needed.",
+        input_schema: { type: 'object', properties: { note: str('One short plain sentence, max 160 characters.') }, required: ['note'] },
+      },
+      {
+        name: 'forget',
+        description: "Delete remembered notes that contain the given words, or pass 'all' to clear every note. Use when the user asks you to forget something.",
+        input_schema: { type: 'object', properties: { query: str("Words from the note, or 'all'.") }, required: ['query'] },
+      },
+      {
+        name: 'save_routine',
+        description: "Save a named routine: a list of steps (max 8) that 'run_routine' does together. Each step is a website name like 'gmail' or a full https:// address, or 'app:Slack' to open an app, or 'search:youtube:lofi beats' to search a site. Use it for 'set up a morning routine that opens Gmail and the news'. Saving again with the same name replaces it.",
+        input_schema: { type: 'object', properties: { name: str("Short name, like 'morning'."), steps: strs("Steps in order, e.g. ['gmail', 'app:Slack', 'search:youtube:lofi'].") }, required: ['name', 'steps'] },
+      },
+      {
+        name: 'delete_routine',
+        description: 'Delete a saved routine by name.',
+        input_schema: { type: 'object', properties: { name: str('Routine name.') }, required: ['name'] },
+      },
+      {
+        name: 'run_routine',
+        description: "Run a saved routine: does all its steps in one go. Use it for 'do my morning routine'. Safe steps need no approval; anything else asks once.",
+        input_schema: { type: 'object', properties: { name: str('Routine name.') }, required: ['name'] },
+      },
+      {
         name: 'scroll',
         description: "Scroll the page or window in front, no approval needed (it only presses Page Up/Down/Home/End). direction: down, up, top, bottom. 'amount' is how many screenfuls (1-8, default 1) for down/up. Use it for 'scroll down', 'keep scrolling', 'go back up', 'jump to the bottom of the page', 'back to the top'. Afterwards use look_at_screen if you need to read what is now showing. The user's cursor does not need to be anywhere special, but the page they mean must be the window in front.",
         input_schema: { type: 'object', properties: { direction: { type: 'string', enum: sys.SCROLL_DIRS }, amount: { type: 'number', description: 'Screenfuls to scroll for down/up (1 to 8).' } }, required: ['direction'] },
@@ -1228,7 +1366,7 @@ function createActions({
     return uiOn ? defs : defs.filter((d) => d.name !== 'find_ui' && d.name !== 'press_ui');
   }
 
-  return { prepare, toolDefs };
+  return { prepare, toolDefs, endGame() { gameOn = false; gameBudget = 0; }, gameActive: () => gameOn, gameLimit: () => (gameOn ? gameBudget + 3 : 0) };
 }
 
 module.exports = { createActions };

@@ -150,3 +150,12 @@ This makes an installer for the OS you run it on (Windows .exe, macOS .dmg, Linu
 - Pip lives on your main display only.
 - Transparent windows need a compositing desktop. Windows and macOS are fine; on Linux it works on most modern desktops (GNOME, KDE) but not on every setup.
 - If the tray icon does not show on your Linux desktop, right-click Pip to quit.
+
+## Routines, memory, voice shortcut, auto-press
+- **Routines**: "set up a morning routine with Gmail and the news" saves a list of sites; "do my morning routine" opens them all. Safe sites open without a card; any other site makes the routine ask once.
+- **Memory**: "remember my usual browser is Firefox" saves a short note (max 30) that Pip sees in every chat. "Forget that" removes it. Stored in `memory.json` in the app's data folder.
+- **Voice shortcut**: Ctrl/Cmd+Alt+Space starts listening, press again to finish (can be switched off in settings).
+- **Press ordinary buttons without asking**: opt-in setting; Delete, Send, Pay, Install and similar still ask.
+
+## Games
+Say "play Wordle" (or a keyboard-only trivia/puzzle game like Krillion). Pip asks once, then for that one request looks at the screen, types plain letters and Enter, and presses ordinary buttons without asking. It ends when the game is over, at the step limit, or when you press Stop. Pip has no mouse, so games that need clicking on a drawing won't work.

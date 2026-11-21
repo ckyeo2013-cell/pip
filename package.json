@@ -26,6 +26,7 @@
       "calendar.js",
       "voice.js",
       "voice-client.js",
+      "store.js",
       "preload.js",
       "index.html",
       "style.css",

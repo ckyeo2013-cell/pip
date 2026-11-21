@@ -536,7 +536,7 @@
   function updateInteractive() {
     const hot = overPet(mouse.x, mouse.y);
     canvas.classList.toggle('hot', hot);
-    const want = st.dragging || !!panelDrag || hot || overPanel(mouse.x, mouse.y);
+    const want = st.dragging || !!panelDrag || !!resizing || hot || overPanel(mouse.x, mouse.y);
     if (want !== interactive) {
       interactive = want;
       pip.setInteractive(want);
@@ -615,6 +615,8 @@
 
   // ---------------------------------------------------------------- chat
   let history = [];
+  let chatId = null;      // which saved chat this conversation is stored under
+  const chatsEl = $('chats');
   let convoCtx = null;
   let busy = false;
   let typingEl = null;   // the "working..." bubble, so step updates can reach it
@@ -622,12 +624,14 @@
   let rec = null;        // the recording in progress (voice chat)
   let micBusy = false;   // from tapping the mic until the words have been sent
   let wide = false;
+  let customSize = null; // { w, h } once the user has dragged the resize corner
+  let resizing = null;
   let reopenAfter = false; // reopen the chat after an action that needed the panel out of the way
   const cards = new Map(); // pending approval cards by id
 
   function positionPanel() {
-    const W = wide ? Math.min(620, area.w - 24) : 330;
-    const H = Math.min(wide ? 680 : 440, area.h - 24);
+    const W = customSize ? Math.min(customSize.w, area.w - 24) : wide ? Math.min(620, area.w - 24) : 330;
+    const H = customSize ? Math.min(customSize.h, area.h - 24) : Math.min(wide ? 680 : 440, area.h - 24);
     panel.style.width = W + 'px';
     panel.style.height = H + 'px';
     let left, top;
@@ -646,6 +650,30 @@
     lastPanel = { left, top };
     panel.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
   }
+
+  // Drag the bottom-right corner to resize the chat. The top-left corner stays where it is.
+  const rz = $('rz');
+  rz.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    panelPos = { left: lastPanel.left, top: lastPanel.top };
+    const r = panel.getBoundingClientRect();
+    resizing = { x: e.clientX, y: e.clientY, w: r.width, h: r.height };
+    rz.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    updateInteractive();
+  });
+  rz.addEventListener('pointermove', (e) => {
+    if (!resizing) return;
+    customSize = {
+      w: clamp(resizing.w + e.clientX - resizing.x, 280, Math.max(280, area.w - lastPanel.left - 12)),
+      h: clamp(resizing.h + e.clientY - resizing.y, 300, Math.max(300, area.h - lastPanel.top - 12)),
+    };
+    positionPanel();
+    msgs.scrollTop = msgs.scrollHeight;
+  });
+  const endResize = () => { resizing = null; updateInteractive(); };
+  rz.addEventListener('pointerup', endResize);
+  rz.addEventListener('pointercancel', endResize);
 
   // Drag the chat window by its top bar; double-click the bar to put it back next to Pip.
   const hd = panel.querySelector('.hd');
@@ -787,6 +815,7 @@
         addMsg('pet', 'Oops, something went wrong: ' + res.error);
       } else {
         history.push({ role: 'assistant', content: res.text });
+        saveHistory();
         addMsg('pet', res.text);
         cheer(1100);
         if (settings.voiceReply === 'always' || (settings.voiceReply !== 'never' && opts.voice)) PipVoice.speak(res.text);
@@ -921,6 +950,7 @@
     }
   }
   mic.addEventListener('click', onMic);
+  pip.onVoiceHotkey(() => { if (!st.chatOpen) openChat(); onMic(); });
 
   function onSubmit() {
     const v = inp.value;
@@ -940,15 +970,54 @@
   window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && st.chatOpen) closeChat(); });
 
   $('close').addEventListener('click', closeChat);
-  $('expand').addEventListener('click', () => { wide = !wide; $('expand').classList.toggle('wide', wide); $('expand').title = wide ? 'Smaller window' : 'Bigger window'; positionPanel(); });
+  $('expand').addEventListener('click', () => { wide = !wide; customSize = null; $('expand').classList.toggle('wide', wide); $('expand').title = wide ? 'Smaller window' : 'Bigger window'; positionPanel(); });
   $('reset').addEventListener('click', () => {
     PipVoice.stopSpeaking();
     if (rec) rec.cancel();
     history = [];
+    chatId = null;
     convoCtx = null;
     msgs.textContent = '';
+    chatsEl.classList.remove('open');
     greet();
   });
+
+  // ---------------------------------------------------------------- saved chats
+  function saveHistory() {
+    if (!history.length) return;
+    if (!chatId) chatId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    pip.saveChat(chatId, history);
+  }
+  async function showChats() {
+    settingsEl.classList.remove('open');
+    chatsEl.classList.add('open');
+    const box = $('chat-list');
+    box.textContent = '';
+    const list = await pip.listChats();
+    if (!list.length) { const n = document.createElement('div'); n.className = 'none'; n.textContent = 'No saved chats yet. Your conversations are saved here automatically.'; box.appendChild(n); return; }
+    for (const c of list) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const t = document.createElement('span'); t.className = 't'; t.textContent = c.title;
+      const d = document.createElement('span'); d.className = 'd'; d.textContent = new Date(c.updated).toLocaleDateString();
+      const x = document.createElement('button'); x.textContent = '×'; x.title = 'Delete this chat';
+      x.addEventListener('click', async (e) => { e.stopPropagation(); await pip.deleteChat(c.id); if (c.id === chatId) chatId = null; showChats(); });
+      row.addEventListener('click', async () => {
+        if (busy) return;
+        const full = await pip.getChat(c.id);
+        if (!full) return;
+        history = full.messages.map((m) => ({ role: m.role, content: m.content }));
+        chatId = full.id;
+        convoCtx = null;
+        msgs.textContent = '';
+        for (const m of history) addMsg(m.role === 'user' ? 'user' : 'pet', m.content);
+        chatsEl.classList.remove('open');
+      });
+      row.append(t, d, x);
+      box.appendChild(row);
+    }
+  }
+  $('hist').addEventListener('click', () => (chatsEl.classList.contains('open') ? chatsEl.classList.remove('open') : showChats()));
 
   document.querySelector('.chips').addEventListener('click', async (e) => {
     const b = e.target.closest('button');
@@ -1078,6 +1147,10 @@
     $('s-full').checked = settings.fullAccess !== false;
     $('s-autolook').checked = !!settings.autoLook;
     $('s-autotype').checked = !!settings.autoType;
+    $('s-autopress').checked = !!settings.autoPress;
+    $('s-trusted').value = (settings.trustedSites || []).join(', ');
+    $('s-trustsaid').checked = !!settings.trustSaid;
+    $('s-hotkey').checked = settings.voiceHotkey !== false;
     $('s-folder').textContent = settings.workFolder || 'None chosen';
     renderCals(settings.calendars || []);
     $('s-maccal-wrap').classList.toggle('hidden', settings.platform !== 'darwin');
@@ -1086,7 +1159,7 @@
     $('s-status').textContent = '';
     settingsEl.classList.add('open');
   }
-  $('gear').addEventListener('click', () => (settingsEl.classList.contains('open') ? settingsEl.classList.remove('open') : openSettings()));
+  $('gear').addEventListener('click', () => (chatsEl.classList.remove('open'), settingsEl.classList.contains('open') ? settingsEl.classList.remove('open') : openSettings()));
   $('s-cancel').addEventListener('click', () => settingsEl.classList.remove('open'));
   $('s-choose').addEventListener('click', async () => {
     const f = await pip.chooseFolder();
@@ -1121,6 +1194,10 @@
       fullAccess: $('s-full').checked,
       autoLook: $('s-autolook').checked,
       autoType: $('s-autotype').checked,
+      autoPress: $('s-autopress').checked,
+      voiceHotkey: $('s-hotkey').checked,
+      trustSaid: $('s-trustsaid').checked,
+      trustedSites: $('s-trusted').value.split(/[,\s]+/).filter(Boolean),
       macCalendar: $('s-maccal').checked,
     });
     Object.assign(settings, saved);

@@ -23,6 +23,10 @@ contextBridge.exposeInMainWorld('pip', {
   addCalendarUrl: (label, url) => ipcRenderer.invoke('cal:addUrl', { label, url }),
   addCalendarFile: () => ipcRenderer.invoke('cal:addFile'),
   removeCalendar: (id) => ipcRenderer.invoke('cal:remove', id),
+  listChats: () => ipcRenderer.invoke('chats:list'),
+  getChat: (id) => ipcRenderer.invoke('chats:get', id),
+  saveChat: (id, messages) => ipcRenderer.invoke('chats:save', id, messages),
+  deleteChat: (id) => ipcRenderer.invoke('chats:delete', id),
   stopChat: () => ipcRenderer.invoke('chat:stop'),
   onProgress: (cb) => on('progress', cb),
   onApproval: (cb) => on('approve:request', cb),
@@ -32,6 +36,7 @@ contextBridge.exposeInMainWorld('pip', {
   onHidePanel: (cb) => on('panel:hide', cb),
   onCursor: (cb) => on('cursor', cb),
   onSettings: (cb) => on('settings', cb),
+  onVoiceHotkey: (cb) => on('voice-hotkey', cb),
   onOpenChat: (cb) => on('open-chat', cb),
   onArea: (cb) => on('area', cb),
 });

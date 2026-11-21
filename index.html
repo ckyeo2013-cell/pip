@@ -15,8 +15,10 @@
   </div>
 
   <div id="panel" role="dialog" aria-label="Chat">
+    <div id="rz" title="Drag to resize"></div>
     <div class="hd" title="Drag to move. Double-click to put it back.">
       <span class="dot"></span><b id="nm">Pip</b><span class="sp"></span>
+      <button id="hist" title="Past chats"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
       <button id="reset" title="New chat"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
       <button id="expand" title="Bigger window"><svg class="i-big" viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg><svg class="i-small" viewBox="0 0 24 24"><path d="M14 10h6V4M10 14H4v6M20 4l-6 6M4 20l6-6"/></svg></button>
       <button id="gear" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
@@ -39,6 +41,8 @@
       <button id="stop" title="Stop (Ctrl/Cmd+Alt+X works even when I am hiding)" aria-label="Stop" hidden><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
       <button id="go" title="Send"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
     </div>
+
+    <div id="chats"><div class="ch-h">Past chats</div><div id="chat-list"></div></div>
 
     <div id="settings">
       <label for="s-provider">AI brain provider</label>
@@ -128,12 +132,21 @@
         <option value="classic">Classic grey-blue</option>
         <option value="honey">Honey</option>
         <option value="cocoa">Cocoa</option>
+        <option value="snow">Snow</option>
+        <option value="midnight">Midnight</option>
+        <option value="sakura">Sakura</option>
+        <option value="mint">Mint</option>
+        <option value="lavender">Lavender</option>
       </select>
       <label class="check"><input id="s-wander" type="checkbox"> Hop and glide around on its own</label>
       <label class="check"><input id="s-quips" type="checkbox"> Friendly nudges (water, stretch...)</label>
       <label class="check"><input id="s-login" type="checkbox"> Launch at login</label>
       <label class="check"><input id="s-actions" type="checkbox"> Let Pip do things for me (always asks first)</label>
       <label class="check"><input id="s-autotype" type="checkbox"> Let Pip type short one-line things (like a search) without asking each time. Longer text and code still ask first. Never into a terminal or password box.</label>
+      <label class="check"><input id="s-autopress" type="checkbox"> Let Pip press ordinary buttons without asking each time. Buttons that sound hard to undo (Delete, Send, Pay, Install...) still ask first.</label>
+      <label class="check"><input id="s-trustsaid" type="checkbox"> Skip the approval card when I clearly tell Pip to do exactly that thing (like "open YouTube"). Pip must quote my words, and risky things (commands, key presses, closing apps, moving or deleting files) still ask.</label>
+      <label class="check"><input id="s-hotkey" type="checkbox"> Voice shortcut: Ctrl/Cmd+Alt+Space starts listening, press again to finish. Pip only listens after you press it.</label>
+      <label>Sites you trust (they open without asking; separate with commas)<input id="s-trusted" type="text" placeholder="example.com, notion.so"></label>
       <label class="check"><input id="s-autolook" type="checkbox"> Let Pip look at my screen without asking each time (screenshots and the button finder; pressing and typing still ask)</label>
       <label class="check"><input id="s-full" type="checkbox"> Full access: run commands, press keys, close apps, use files anywhere (every action still asks first)</label>
       <div class="hint">With this on, Pip can do almost anything on your computer, one approved step at a time. Risky steps show in red with the exact command. Turn it off to keep Pip to its own folder, the Control Panel and settings pages, web pages, reminders and calendar.</div>

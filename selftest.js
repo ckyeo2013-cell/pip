@@ -1115,7 +1115,7 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     }
     assert.ok(width(0) < 0.95, 'membrane should be tucked at rest, got ' + width(0));
     assert.ok(width(1) > 1.1, 'membrane should spread when gliding, got ' + width(1));
-    assert.ok(Object.keys(M.PALETTES).join() === 'classic,honey,cocoa');
+    assert.deepStrictEqual(Object.keys(M.PALETTES).sort(), ['classic', 'cocoa', 'honey', 'lavender', 'midnight', 'mint', 'sakura', 'snow']);
   });
   await t('pet_do: no approval card is shown on any provider, but other tools still ask', async () => {
     const asked = [];
@@ -1131,6 +1131,20 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     const g2 = grq([gmsg({ content: null, tool_calls: [gcall('system_info', {})] }), gmsg({ content: 'ok' })], { prepare: (n, a) => P.prepare(n, a), approve });
     await g2.run();
     assert.strictEqual(asked.length, 1);
+  });
+
+  await t('game mode: needs one approval, then plain keys run without asking; it ends cleanly and rejects risky keys', async () => {
+    const sys = require('./system.js');
+    const P = mkActions({ pet: () => {} });
+    await assert.rejects(async () => P.prepare('game_keys', { text: 'crane' }), /start_game/);
+    const st = await P.prepare('start_game', { game: 'Wordle' });
+    assert.ok(!st.auto, 'starting a game must ask');
+    await st.run();
+    assert.ok((await P.prepare('game_keys', { text: 'crane', keys: ['enter'] })).auto);
+    assert.throws(() => sys.gameKeyCommand('ctrl+c', [], 'linux'));
+    assert.throws(() => sys.gameKeyCommand('a', ['f5'], 'linux'));
+    P.endGame();
+    await assert.rejects(async () => P.prepare('game_keys', { text: 'x' }), /start_game/);
   });
 
   fs.rmSync(tmp, { recursive: true, force: true });
