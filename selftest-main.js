@@ -8,8 +8,9 @@ const Module = require('module');
 
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pipmain-'));
 const handlers = {}, listeners = {}, sent = [];
+const perm = {};
 class Win {
-  constructor() { this.webContents = { send: (c, p) => sent.push([c, p]), on() {}, setWindowOpenHandler() {} }; }
+  constructor() { this.webContents = { send: (c, p) => sent.push([c, p]), on() {}, setWindowOpenHandler() {}, session: { setPermissionRequestHandler: (f) => { perm.req = f; }, setPermissionCheckHandler: (f) => { perm.check = f; } } }; }
   setIgnoreMouseEvents() {} setAlwaysOnTop() {} setVisibleOnAllWorkspaces() {} loadFile() {} once() {} on() {} showInactive() {}
   isVisible() { return true; } isDestroyed() { return false; } setBounds() {} hide() {} blur() {} focus() {}
 }
@@ -144,9 +145,99 @@ const txt = (t) => ({ candidates: [{ content: { parts: [{ text: t }] } }] });
     assert.match(calls[calls.length - 1].body.messages.slice(-1)[0].content, /turned off/);
     await handlers['settings:save']({}, { actions: true });
   });
-  await t('only the three key pages can be opened', () => {
-    listeners['link:open']({}, 'gemini'); listeners['link:open']({}, 'anthropic'); listeners['link:open']({}, 'groq'); listeners['link:open']({}, 'https://evil.example');
-    assert.deepStrictEqual(opened, ['https://aistudio.google.com/apikey', 'https://console.anthropic.com/settings/keys', 'https://console.groq.com/keys']);
+  await t('Cloudflare: token + account ID + model are saved safely, and chat goes to the account URL', async () => {
+    const ACCT = '0123456789abcdef0123456789abcdef';
+    let saved = await handlers['settings:save']({}, { provider: 'cloudflare', cloudflareKey: 'cf_SECRET', cloudflareAccountId: ' ' + ACCT + ' ', cloudflareModel: ' @cf/google/gemma-4-26b-a4b-it ' });
+    assert.strictEqual(saved.provider, 'cloudflare');
+    assert.strictEqual(saved.hasCloudflareKey, true);
+    assert.strictEqual(saved.cloudflareAccountId, ACCT);
+    assert.ok(!JSON.stringify(saved).includes('cf_SECRET'));
+    assert.ok(!('cloudflareKeyPlain' in saved) && !('cloudflareKeyEnc' in saved));
+    saved = await handlers['settings:save']({}, { cloudflareModel: '../../x?y', cloudflareAccountId: 'not-an-id/../' });
+    assert.strictEqual(saved.cloudflareModel, '@cf/google/gemma-4-26b-a4b-it');
+    assert.strictEqual(saved.cloudflareAccountId, ACCT);
+    script = [{ choices: [{ message: { content: 'Hi from Cloudflare' } }] }];
+    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'hello' }] });
+    assert.deepStrictEqual(r, { text: 'Hi from Cloudflare' });
+    const c = calls[calls.length - 1];
+    assert.strictEqual(c.url, `https://api.cloudflare.com/client/v4/accounts/${ACCT}/ai/v1/chat/completions`);
+    assert.strictEqual(c.init.headers.authorization, 'Bearer cf_SECRET');
+    assert.strictEqual(c.body.model, '@cf/google/gemma-4-26b-a4b-it');
+  });
+  await t('Cloudflare: without an account ID the chat says so; approval cards name Cloudflare', async () => {
+    await handlers['settings:save']({}, { cloudflareAccountId: '' });
+    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'hello' }] });
+    assert.match(r.error, /Account ID/);
+    await handlers['settings:save']({}, { cloudflareAccountId: '0123456789abcdef0123456789abcdef' });
+    sent.length = 0;
+    script = [{ choices: [{ message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'look_at_screen', arguments: '{}' } }] } }] }, { choices: [{ message: { content: 'Okay, not looking.' } }] }];
+    const p = handlers.chat({}, { messages: [{ role: 'user', content: 'what is on my screen' }] });
+    await new Promise((r2) => setTimeout(r2, 50));
+    const req = sent.find((m) => m[0] === 'approve:request');
+    assert.ok(req, 'approval request was sent');
+    assert.match(req[1].details, /Cloudflare's AI service/);
+    assert.ok(!/Anthropic|Gemini|Groq/.test(req[1].details));
+    listeners['approve:response']({}, { id: req[1].id, ok: false });
+    assert.deepStrictEqual(await p, { text: 'Okay, not looking.' });
+  });
+  await t('Voice: the page may use the microphone and nothing else (no camera, no other permissions)', () => {
+    const ask = (permission, details) => { let out; perm.req({}, permission, (v) => { out = v; }, details); return out; };
+    assert.strictEqual(ask('media', { mediaTypes: ['audio'] }), true);
+    assert.strictEqual(ask('media', { mediaTypes: ['audio', 'video'] }), false);
+    assert.strictEqual(ask('media', { mediaTypes: ['video'] }), false);
+    assert.strictEqual(ask('media', {}), false);
+    for (const p of ['geolocation', 'notifications', 'clipboard-read', 'display-capture']) assert.strictEqual(ask(p, { mediaTypes: ['audio'] }), false, p);
+    assert.strictEqual(perm.check({}, 'media', 'file://', { mediaType: 'audio' }), true);
+    assert.strictEqual(perm.check({}, 'media', 'file://', { mediaType: 'video' }), false);
+    assert.strictEqual(perm.check({}, 'notifications', 'file://', {}), false);
+  });
+  await t('Voice: settings only accept known values', async () => {
+    let s = await handlers['settings:get']();
+    assert.strictEqual(s.voiceProvider, 'auto');
+    assert.strictEqual(s.voiceReply, 'voice');
+    s = await handlers['settings:save']({}, { voiceProvider: 'evil', voiceReply: 'loud' });
+    assert.strictEqual(s.voiceProvider, 'auto');
+    assert.strictEqual(s.voiceReply, 'voice');
+    s = await handlers['settings:save']({}, { voiceProvider: 'groq', voiceReply: 'always' });
+    assert.strictEqual(s.voiceProvider, 'groq');
+    assert.strictEqual(s.voiceReply, 'always');
+    await handlers['settings:save']({}, { voiceProvider: 'auto', voiceReply: 'voice' });
+  });
+  await t('Voice: status explains what is missing (Anthropic cannot hear; Cloudflare needs its Account ID)', async () => {
+    await handlers['settings:save']({}, { provider: 'anthropic', voiceProvider: 'auto' });
+    let st = await handlers['voice:status']();
+    assert.strictEqual(st.ok, false);
+    assert.match(st.reason, /Cloudflare, Groq or Gemini key/);
+    await handlers['settings:save']({}, { voiceProvider: 'cloudflare', cloudflareAccountId: '' });
+    st = await handlers['voice:status']();
+    assert.strictEqual(st.ok, false);
+    assert.match(st.reason, /Account ID/);
+    await handlers['settings:save']({}, { cloudflareAccountId: '0123456789abcdef0123456789abcdef' });
+    st = await handlers['voice:status']();
+    assert.deepStrictEqual(st, { ok: true, provider: 'cloudflare' });
+  });
+  await t('Voice: a recording goes to the chosen provider with that provider\'s key and comes back as words', async () => {
+    script = [{ success: true, result: { text: 'hello pip' } }];
+    const before = calls.length;
+    const r = await handlers['voice:transcribe']({}, 'QUJD');
+    assert.deepStrictEqual(r, { text: 'hello pip' });
+    const c = calls[before];
+    assert.strictEqual(c.url, 'https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/run/@cf/openai/whisper-large-v3-turbo');
+    assert.strictEqual(c.init.headers.authorization, 'Bearer cf_SECRET');
+    assert.strictEqual(c.body.audio, 'QUJD');
+    const bad = await handlers['voice:transcribe']({}, { not: 'a string' });
+    assert.match(bad.error, /not usable/);
+    assert.strictEqual(calls.length, before + 1, 'nothing was sent for the bad recording');
+    await handlers['settings:save']({}, { voiceProvider: 'auto' });
+    assert.match((await handlers['voice:transcribe']({}, 'QUJD')).error, /Cloudflare, Groq or Gemini key/);
+    assert.strictEqual(calls.length, before + 1, 'and nothing is sent when no hearing provider is set');
+  });
+  await t('Voice: microphone access check passes on systems with no mic prompt of their own', async () => {
+    if (process.platform !== 'darwin') assert.deepStrictEqual(await handlers['voice:mic'](), { ok: true });
+  });
+  await t('only the four key pages can be opened', () => {
+    listeners['link:open']({}, 'gemini'); listeners['link:open']({}, 'anthropic'); listeners['link:open']({}, 'groq'); listeners['link:open']({}, 'cloudflare'); listeners['link:open']({}, 'https://evil.example');
+    assert.deepStrictEqual(opened, ['https://aistudio.google.com/apikey', 'https://console.anthropic.com/settings/keys', 'https://console.groq.com/keys', 'https://dash.cloudflare.com/profile/api-tokens']);
   });
   console.log(`\n${n} main-process checks passed${process.exitCode ? ' (some FAILED)' : ''}`);
   clearTimeout(intervalKillers);

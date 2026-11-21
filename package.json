@@ -1,6 +1,6 @@
 {
   "name": "pip-desktop",
-  "version": "1.7.5",
+  "version": "1.9.0",
   "description": "Pip the sugar glider: a friendly 3D desktop pet that chats, helps you decide and does things on your computer (asks first)",
   "main": "main.js",
   "author": "You <you@example.com>",
@@ -24,6 +24,8 @@
       "ui.js",
       "agent.js",
       "calendar.js",
+      "voice.js",
+      "voice-client.js",
       "preload.js",
       "index.html",
       "style.css",
@@ -38,7 +40,10 @@
     },
     "mac": {
       "target": "dmg",
-      "category": "public.app-category.entertainment"
+      "category": "public.app-category.entertainment",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Pip listens only when you tap the microphone button, so you can talk to it."
+      }
     },
     "linux": {
       "target": "AppImage",

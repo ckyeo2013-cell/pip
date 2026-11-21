@@ -617,6 +617,8 @@
   let history = [];
   let convoCtx = null;
   let busy = false;
+  let rec = null;        // the recording in progress (voice chat)
+  let micBusy = false;   // from tapping the mic until the words have been sent
   let wide = false;
   let reopenAfter = false; // reopen the chat after an action that needed the panel out of the way
   const cards = new Map(); // pending approval cards by id
@@ -745,6 +747,8 @@
     updateInteractive();
   }
   function closeChat() {
+    PipVoice.stopSpeaking();
+    if (rec) rec.cancel();
     st.chatOpen = false;
     settingsEl.classList.remove('open');
     panel.classList.remove('open');
@@ -761,6 +765,7 @@
   async function send(text, opts = {}) {
     text = text.trim();
     if (busy || !text) return;
+    PipVoice.stopSpeaking();
     addMsg('user', text);
     if (opts.ctx) convoCtx = opts.ctx;
     history.push({ role: 'user', content: text });
@@ -772,7 +777,7 @@
       typing.remove();
       if (res.error === 'no_key') {
         history.pop();
-        addMsg('pet', `I need ${res.provider === 'gemini' ? 'a Google Gemini key' : res.provider === 'groq' ? 'a Groq key' : 'an Anthropic key'} before I can chat! Tap the ⚙ above and paste one in. (Coin flips work without it 🪙)`);
+        addMsg('pet', `I need ${res.provider === 'gemini' ? 'a Google Gemini key' : res.provider === 'groq' ? 'a Groq key' : res.provider === 'cloudflare' ? 'a Cloudflare token' : 'an Anthropic key'} before I can chat! Tap the ⚙ above and paste one in. (Coin flips work without it 🪙)`);
       } else if (res.error) {
         history.pop();
         addMsg('pet', 'Oops, something went wrong: ' + res.error);
@@ -780,6 +785,7 @@
         history.push({ role: 'assistant', content: res.text });
         addMsg('pet', res.text);
         cheer(1100);
+        if (settings.voiceReply === 'always' || (settings.voiceReply !== 'never' && opts.voice)) PipVoice.speak(res.text);
       }
     } catch (e) {
       typing.remove();
@@ -841,6 +847,67 @@
     cheer(1100);
   }
 
+  // ---------------------------------------------------------------- voice chat
+  const mic = $('mic');
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) mic.classList.add('hidden');
+  const DEFAULT_HINT = 'Say something...';
+  let hintTimer = null;
+  function hint(text, ms) {
+    clearTimeout(hintTimer);
+    inp.placeholder = text || DEFAULT_HINT;
+    if (text && ms) hintTimer = setTimeout(() => { inp.placeholder = DEFAULT_HINT; }, ms);
+  }
+  function micUi(state) {
+    mic.classList.toggle('on', state === 'listening');
+    mic.classList.toggle('busy', state === 'working');
+    mic.title = state === 'listening' ? 'Tap to stop and send' : state === 'working' ? 'Working on it...' : 'Talk to me';
+    if (state !== 'listening') mic.style.removeProperty('--lvl');
+  }
+  async function onMic() {
+    if (rec) { rec.stop(); return; }              // second tap: finish now
+    if (micBusy || busy) return;
+    PipVoice.stopSpeaking();                      // tapping while Pip talks interrupts it and starts listening
+    micBusy = true;
+    try {
+      const status = await pip.voiceStatus();
+      if (!status.ok) { addMsg('pet', status.reason); return; }
+      const access = await pip.voiceMic();
+      if (!access.ok) { addMsg('pet', access.reason); return; }
+      try {
+        rec = await PipVoice.record({ onLevel: (l) => mic.style.setProperty('--lvl', Math.min(1, l * 8).toFixed(2)) });
+      } catch (e) {
+        const denied = /NotAllowed|denied|permission/i.test(String((e && e.name) || '') + String((e && e.message) || ''));
+        addMsg('pet', denied
+          ? "I can't use the microphone. Check that it is allowed for Pip in your system's privacy settings, then tap the mic again."
+          : "I couldn't open a microphone. Is one plugged in?");
+        return;
+      }
+      micUi('listening');
+      hint('Listening... tap the mic when you are done');
+      const r = await rec.done;
+      rec = null;
+      if (!r.heard) {
+        micUi('idle');
+        hint(r.reason === 'cancel' ? '' : "I didn't hear anything. Tap the mic and try again.", 4000);
+        return;
+      }
+      micUi('working');
+      hint('Turning your voice into text...');
+      const t = await pip.transcribe(r.audio);
+      if (t.error) { addMsg('pet', t.error); return; }
+      if (!t.text) { hint("I couldn't make out any words. Try again.", 4000); return; }
+      micUi('idle');
+      hint('');
+      await send(t.text, { voice: true });
+    } finally {
+      rec = null;
+      micBusy = false;
+      micUi('idle');
+      if (/^(Listening|Turning)/.test(inp.placeholder)) hint('');
+    }
+  }
+  mic.addEventListener('click', onMic);
+
   function onSubmit() {
     const v = inp.value;
     inp.value = '';
@@ -861,6 +928,8 @@
   $('close').addEventListener('click', closeChat);
   $('expand').addEventListener('click', () => { wide = !wide; $('expand').classList.toggle('wide', wide); $('expand').title = wide ? 'Smaller window' : 'Bigger window'; positionPanel(); });
   $('reset').addEventListener('click', () => {
+    PipVoice.stopSpeaking();
+    if (rec) rec.cancel();
     history = [];
     convoCtx = null;
     msgs.textContent = '';
@@ -959,12 +1028,14 @@
     const v = $('s-provider').value;
     $('s-gem').classList.toggle('hidden', v !== 'gemini');
     $('s-groq').classList.toggle('hidden', v !== 'groq');
-    $('s-anth').classList.toggle('hidden', v === 'gemini' || v === 'groq');
+    $('s-cf').classList.toggle('hidden', v !== 'cloudflare');
+    $('s-anth').classList.toggle('hidden', v === 'gemini' || v === 'groq' || v === 'cloudflare');
   }
   $('s-provider').addEventListener('change', showProvider);
   $('s-getkey-a').addEventListener('click', () => pip.openKeyPage('anthropic'));
   $('s-getkey-g').addEventListener('click', () => pip.openKeyPage('gemini'));
   $('s-getkey-gr').addEventListener('click', () => pip.openKeyPage('groq'));
+  $('s-getkey-cf').addEventListener('click', () => pip.openKeyPage('cloudflare'));
 
   function openSettings() {
     $('s-key').value = '';
@@ -974,7 +1045,13 @@
     $('s-grkey').value = '';
     $('s-grkey').placeholder = settings.hasGroqKey ? 'Key saved ✓ (type to replace)' : 'gsk_...';
     $('s-grmodel').value = settings.groqModel || 'openai/gpt-oss-120b';
+    $('s-cfkey').value = '';
+    $('s-cfkey').placeholder = settings.hasCloudflareKey ? 'Token saved ✓ (type to replace)' : 'API token';
+    $('s-cfacct').value = settings.cloudflareAccountId || '';
+    $('s-cfmodel').value = settings.cloudflareModel || '@cf/google/gemma-4-26b-a4b-it';
     $('s-provider').value = settings.provider || 'anthropic';
+    $('s-voiceprov').value = settings.voiceProvider || 'auto';
+    $('s-voicereply').value = settings.voiceReply || 'voice';
     $('s-gmodel').value = settings.geminiModel || 'gemini-2.5-flash';
     showProvider();
     $('s-name').value = settings.petName;
@@ -1012,9 +1089,14 @@
       apiKey: $('s-key').value,
       geminiKey: $('s-gkey').value,
       provider: $('s-provider').value,
+      voiceProvider: $('s-voiceprov').value,
+      voiceReply: $('s-voicereply').value,
       geminiModel: $('s-gmodel').value,
       groqKey: $('s-grkey').value,
       groqModel: $('s-grmodel').value,
+      cloudflareKey: $('s-cfkey').value,
+      cloudflareAccountId: $('s-cfacct').value,
+      cloudflareModel: $('s-cfmodel').value,
       petName: $('s-name').value,
       palette: $('s-palette').value,
       model: $('s-model').value,

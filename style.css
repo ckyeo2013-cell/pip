@@ -70,6 +70,12 @@ textarea::placeholder { color: var(--sub); }
 textarea:focus { background: var(--bg); border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
 #go { all: unset; cursor: pointer; flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--blue); color: var(--on-blue); display: flex; align-items: center; justify-content: center; }
 #go:hover { background: var(--blue-h); }
+#mic { all: unset; cursor: pointer; flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--surface); color: var(--text); display: flex; align-items: center; justify-content: center; }
+#mic:hover { background: var(--hover); }
+#mic:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+#mic svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+#mic.on { background: var(--red); color: #fff; box-shadow: 0 0 0 calc(2px + 8px * var(--lvl, 0)) var(--red-soft); transition: box-shadow .08s linear; }
+#mic.busy { opacity: .55; cursor: progress; }
 #go svg { width: 20px; height: 20px; }
 
 #settings { position: absolute; left: 0; right: 0; top: 52px; bottom: 0; background: var(--bg); padding: 4px 18px 16px; overflow-y: auto; display: none; scrollbar-width: thin; }

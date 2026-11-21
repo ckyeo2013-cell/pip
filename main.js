@@ -11,8 +11,9 @@ const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
 const { createActions } = require('./actions');
-const { runChat, runChatGemini, runChatGroq } = require('./agent');
+const { runChat, runChatGemini, runChatGroq, runChatCloudflare } = require('./agent');
 const { createCalendar } = require('./calendar');
+const voice = require('./voice');
 
 const DEFAULTS = {
   actions: true,
@@ -23,13 +24,19 @@ const DEFAULTS = {
   petName: 'Pip',
   palette: 'classic',
   model: 'claude-haiku-5-5',
-  provider: 'anthropic',            // 'anthropic' | 'gemini' | 'groq'
+  provider: 'anthropic',            // 'anthropic' | 'gemini' | 'groq' | 'cloudflare'
   geminiModel: 'gemini-2.5-flash',
   geminiKeyEnc: '',
   geminiKeyPlain: '',
   groqModel: 'openai/gpt-oss-120b',
   groqKeyEnc: '',
   groqKeyPlain: '',
+  cloudflareModel: '@cf/google/gemma-4-26b-a4b-it',
+  cloudflareAccountId: '',   // not secret (it is in the request URL), so it is stored as plain text
+  cloudflareKeyEnc: '',
+  cloudflareKeyPlain: '',
+  voiceProvider: 'auto',      // who turns speech into text: 'auto' (same as chat brain) | 'cloudflare' | 'groq' | 'gemini'
+  voiceReply: 'voice',        // Pip talks back: 'voice' (after I talked) | 'always' | 'never'
   wander: true,
   quips: true,
   openAtLogin: false,
@@ -60,6 +67,8 @@ function loadSettings() {
   }
   if (!Array.isArray(settings.calendars)) settings.calendars = [];
   if (!PROVIDERS.includes(settings.provider)) settings.provider = 'anthropic';
+  if (!VOICE_PROVIDERS.includes(settings.voiceProvider)) settings.voiceProvider = 'auto';
+  if (!VOICE_REPLIES.includes(settings.voiceReply)) settings.voiceReply = 'voice';
   // Groq moved this model to enterprise-only, so older saved settings are switched to the current free-friendly default.
   if (settings.groqModel === 'llama-3.3-70b-versatile') settings.groqModel = DEFAULTS.groqModel;
 }
@@ -71,8 +80,10 @@ function persist() {
     console.error('Could not save settings', e);
   }
 }
-const PROVIDERS = ['anthropic', 'gemini', 'groq'];
-const keyFields = (p) => (p === 'gemini' ? ['geminiKeyEnc', 'geminiKeyPlain'] : p === 'groq' ? ['groqKeyEnc', 'groqKeyPlain'] : ['apiKeyEnc', 'apiKeyPlain']);
+const PROVIDERS = ['anthropic', 'gemini', 'groq', 'cloudflare'];
+const VOICE_PROVIDERS = ['auto', ...voice.STT_PROVIDERS];
+const VOICE_REPLIES = ['voice', 'always', 'never'];
+const keyFields = (p) => (p === 'gemini' ? ['geminiKeyEnc', 'geminiKeyPlain'] : p === 'groq' ? ['groqKeyEnc', 'groqKeyPlain'] : p === 'cloudflare' ? ['cloudflareKeyEnc', 'cloudflareKeyPlain'] : ['apiKeyEnc', 'apiKeyPlain']);
 function getKey(provider = settings.provider) {
   const [encF, plainF] = keyFields(provider);
   try {
@@ -106,10 +117,10 @@ function unseal(o) {
 const publicCalendars = () => settings.calendars.map(({ id, label, kind }) => ({ id, label, kind }));
 
 function publicSettings() {
-  const { apiKeyEnc, apiKeyPlain, geminiKeyEnc, geminiKeyPlain, groqKeyEnc, groqKeyPlain, calendars, ...rest } = settings;
+  const { apiKeyEnc, apiKeyPlain, geminiKeyEnc, geminiKeyPlain, groqKeyEnc, groqKeyPlain, cloudflareKeyEnc, cloudflareKeyPlain, calendars, ...rest } = settings;
   return {
     ...rest, calendars: publicCalendars(), platform: process.platform,
-    hasKey: !!getKey(), hasAnthropicKey: !!getKey('anthropic'), hasGeminiKey: !!getKey('gemini'), hasGroqKey: !!getKey('groq'),
+    hasKey: !!getKey(), hasAnthropicKey: !!getKey('anthropic'), hasGeminiKey: !!getKey('gemini'), hasGroqKey: !!getKey('groq'), hasCloudflareKey: !!getKey('cloudflare'),
   };
 }
 function broadcastSettings() {
@@ -128,6 +139,18 @@ function update(patch) {
 // ------------------------------------------------------------ window
 function workArea() {
   return screen.getPrimaryDisplay().workArea;
+}
+
+// The page may use the microphone (for voice chat, only after a tap) and nothing else: no camera, no other permissions.
+function allowOnlyMic(w) {
+  try {
+    const ses = w.webContents.session;
+    ses.setPermissionRequestHandler((_wc, permission, cb, details) => {
+      const types = details && Array.isArray(details.mediaTypes) ? details.mediaTypes : [];
+      cb(permission === 'media' && types.length > 0 && types.every((t) => t === 'audio'));
+    });
+    ses.setPermissionCheckHandler((_wc, permission, _origin, details) => permission === 'media' && !!details && details.mediaType === 'audio');
+  } catch (_) { /* older Electron or a test stand-in: the defaults stay */ }
 }
 
 function createWindow() {
@@ -153,6 +176,7 @@ function createWindow() {
     },
   });
 
+  allowOnlyMic(win);
   win.setIgnoreMouseEvents(true, { forward: true });
   try { win.setAlwaysOnTop(true, 'screen-saver'); } catch (_) {}
   if (process.platform === 'darwin') {
@@ -263,6 +287,9 @@ function aiWording(text) {
   const t = String(text || '');
   if (settings.provider === 'groq') {
     return t.replace(/Pip's AI \(Anthropic\)/g, "Groq's AI service").replace(/Pip's AI/g, "Groq's AI service");
+  }
+  if (settings.provider === 'cloudflare') {
+    return t.replace(/Pip's AI \(Anthropic\)/g, "Cloudflare's AI service (Workers AI)").replace(/Pip's AI/g, "Cloudflare's AI service (Workers AI)");
   }
   if (settings.provider !== 'gemini') return t;
   return t.replace(/Pip's AI \(Anthropic\)/g, "Google's Gemini (free tier: Google may use and review it)").replace(/Pip's AI/g, "Google's Gemini (free tier: Google may use and review it)");
@@ -420,6 +447,9 @@ async function chat({ messages, ctx }) {
   const provider = settings.provider;
   const key = getKey(provider);
   if (!key) return { error: 'no_key', provider };
+  if (provider === 'cloudflare' && !/^[0-9a-f]{32}$/i.test(settings.cloudflareAccountId || '')) {
+    return { error: 'Cloudflare also needs your Account ID (32 letters and numbers). Tap the ⚙ and paste it in under Cloudflare.' };
+  }
   if (chatBusy) return { error: 'I am still working on your last request.' };
   const clean = (Array.isArray(messages) ? messages : [])
     .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
@@ -468,6 +498,9 @@ async function chat({ messages, ctx }) {
   chatBusy = true;
   try {
     const common = { fetchFn: fetch, apiKey: key, system, messages: clean, tools, prepare: (name, input) => { if (!actions || (!full && name !== 'pet_do')) throw new Error('Actions are turned off.'); return actions.prepare(name, input); }, approve: requestApproval };
+    if (provider === 'cloudflare') {
+      return await runChatCloudflare({ ...common, accountId: settings.cloudflareAccountId, model: settings.cloudflareModel || DEFAULTS.cloudflareModel });
+    }
     if (provider === 'groq') {
       return await runChatGroq({ ...common, model: settings.groqModel || DEFAULTS.groqModel });
     }
@@ -480,6 +513,15 @@ async function chat({ messages, ctx }) {
   } finally {
     chatBusy = false;
   }
+}
+
+// ------------------------------------------------------------ voice
+function voiceStatus() {
+  const provider = voice.pickProvider(settings.voiceProvider, settings.provider);
+  if (!provider) return { ok: false, reason: "To hear you, Pip needs a Cloudflare, Groq or Gemini key (Anthropic can't turn speech into text). Tap the ⚙, open Voice, and pick one." };
+  if (!getKey(provider)) return { ok: false, reason: `Add your ${voice.LABELS[provider]} key in the ⚙ first, so I can hear you.` };
+  if (provider === 'cloudflare' && !/^[0-9a-f]{32}$/i.test(settings.cloudflareAccountId || '')) return { ok: false, reason: 'Cloudflare also needs your Account ID. Tap the ⚙ and paste it in under Cloudflare.' };
+  return { ok: true, provider };
 }
 
 // ------------------------------------------------------------ IPC
@@ -496,6 +538,8 @@ function registerIpc() {
         if (typeof s[k] === 'boolean') patch[k] = s[k];
       }
       if (PROVIDERS.includes(s.provider)) patch.provider = s.provider;
+      if (VOICE_PROVIDERS.includes(s.voiceProvider)) patch.voiceProvider = s.voiceProvider;
+      if (VOICE_REPLIES.includes(s.voiceReply)) patch.voiceReply = s.voiceReply;
       if (typeof s.geminiModel === 'string') {
         const m = s.geminiModel.trim().replace(/^models\//, '');
         if (/^[A-Za-z0-9._-]{1,60}$/.test(m)) patch.geminiModel = m;
@@ -504,6 +548,15 @@ function registerIpc() {
         const m = s.groqModel.trim();
         if (/^[A-Za-z0-9._\/-]{1,80}$/.test(m) && !m.includes('..')) patch.groqModel = m;
       }
+      if (typeof s.cloudflareModel === 'string') {
+        const m = s.cloudflareModel.trim();
+        if (/^[A-Za-z0-9@._\/-]{1,100}$/.test(m) && !m.includes('..')) patch.cloudflareModel = m;
+      }
+      if (typeof s.cloudflareAccountId === 'string') {
+        const a = s.cloudflareAccountId.trim();
+        if (a === '' || /^[0-9a-f]{32}$/i.test(a)) patch.cloudflareAccountId = a;
+      }
+      if (typeof s.cloudflareKey === 'string' && s.cloudflareKey.trim()) setKey(s.cloudflareKey.trim(), 'cloudflare');
       if (typeof s.groqKey === 'string' && s.groqKey.trim()) setKey(s.groqKey.trim(), 'groq');
       if (typeof s.apiKey === 'string' && s.apiKey.trim()) setKey(s.apiKey.trim(), 'anthropic');
       if (typeof s.geminiKey === 'string' && s.geminiKey.trim()) setKey(s.geminiKey.trim(), 'gemini');
@@ -513,6 +566,33 @@ function registerIpc() {
   });
 
   ipcMain.handle('chat', (_e, payload) => chat(payload || {}));
+
+  // ---- voice chat: the page records only after a tap; the words come back from the chosen provider
+  ipcMain.handle('voice:status', () => voiceStatus());
+  ipcMain.handle('voice:mic', async () => {
+    if (process.platform !== 'darwin') return { ok: true };
+    const denied = { ok: false, reason: 'macOS has not allowed the microphone for Pip. Turn it on in System Settings > Privacy & Security > Microphone, then quit and reopen Pip.' };
+    try {
+      const st = systemPreferences.getMediaAccessStatus('microphone');
+      if (st === 'granted') return { ok: true };
+      if (st === 'not-determined') return (await systemPreferences.askForMediaAccess('microphone')) ? { ok: true } : denied;
+      return denied;
+    } catch (_) { return { ok: true }; }
+  });
+  let voiceBusy = false;
+  ipcMain.handle('voice:transcribe', async (_e, audio) => {
+    const st = voiceStatus();
+    if (!st.ok) return { error: st.reason };
+    if (voiceBusy) return { error: 'I am still working on the last recording.' };
+    voiceBusy = true;
+    try {
+      return await voice.transcribe({ fetchFn: fetch, provider: st.provider, apiKey: getKey(st.provider), accountId: settings.cloudflareAccountId, audioB64: audio });
+    } catch (e) {
+      return { error: `Something went wrong (${e.message})` };
+    } finally {
+      voiceBusy = false;
+    }
+  });
 
   ipcMain.on('approve:response', (_e, r) => {
     const done = r && pendingApprovals.get(r.id);
@@ -565,8 +645,8 @@ function registerIpc() {
     broadcastSettings();
     return publicCalendars();
   });
-  // Only these two pages can be opened from the settings screen.
-  const KEY_PAGES = { anthropic: 'https://console.anthropic.com/settings/keys', gemini: 'https://aistudio.google.com/apikey', groq: 'https://console.groq.com/keys' };
+  // Only these pages can be opened from the settings screen.
+  const KEY_PAGES = { anthropic: 'https://console.anthropic.com/settings/keys', gemini: 'https://aistudio.google.com/apikey', groq: 'https://console.groq.com/keys', cloudflare: 'https://dash.cloudflare.com/profile/api-tokens' };
   ipcMain.on('link:open', (_e, which) => { if (Object.prototype.hasOwnProperty.call(KEY_PAGES, which)) shell.openExternal(KEY_PAGES[which]); });
   ipcMain.on('clipboard:write', (_e, t) => { if (typeof t === 'string') clipboard.writeText(t.slice(0, 200000)); });
   ipcMain.handle('clipboard:read', () => clipboard.readText().slice(0, 7000));

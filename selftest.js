@@ -7,7 +7,9 @@ const path = require('path');
 const sys = require('./system');
 const { createActions } = require('./actions');
 const { execFile } = require('child_process');
-const { runChatGemini, toGeminiTools, runChatGroq, toGroqTools } = require('./agent');
+const PV = require('./voice-client');
+const V = require('./voice');
+const { runChatGemini, toGeminiTools, runChatGroq, toGroqTools, runChatCloudflare, cloudflareUrl } = require('./agent');
 
 let passed = 0;
 const t = async (name, fn) => { try { await fn(); passed++; console.log('ok   ' + name); } catch (e) { console.error('FAIL ' + name + '\n     ' + e.message); process.exitCode = 1; } };
@@ -580,6 +582,220 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     const g = grq([gmsg({ content: null, tool_calls: [gcall('system_info', {})] })], { maxSteps: 3, prepare: (n, a) => A.prepare(n, a) });
     assert.match((await g.run()).text, /stopped here/);
     assert.strictEqual(g.reqs.length, 4);
+  });
+
+
+  // ---------------------------------------------------------------- Cloudflare Workers AI
+  const ACCT = '0123456789abcdef0123456789abcdef';
+  const cfr = (fetches, over = {}) => {
+    const reqs = [];
+    let i = 0;
+    const fetchFn = async (url, init) => { reqs.push({ url, init, body: JSON.parse(init.body) }); const r = fetches[Math.min(i++, fetches.length - 1)]; return typeof r === 'function' ? r() : r; };
+    const base = { fetchFn, apiKey: 'cf_TEST', accountId: ACCT, model: '@cf/google/gemma-4-26b-a4b-it', system: 'sys', messages: [{ role: 'user', content: 'hi' }], tools: [], sleepFn: async () => {}, prepare: () => { throw new Error('no tools'); }, approve: async () => true };
+    return { reqs, run: () => runChatCloudflare({ ...base, ...over }) };
+  };
+  const shotAction = { prepare: async () => ({ title: 'T', details: 'D', run: async () => ({ content: [{ type: 'image', source: { media_type: 'image/jpeg', data: 'QUJD' } }, { type: 'text', text: 'Screenshot (10x10)' }] }) }) };
+
+  await t('Cloudflare: goes to the account URL with a Bearer header (key never in the URL)', async () => {
+    const c = cfr([gmsg({ content: 'Hi from Cloudflare' })]);
+    assert.deepStrictEqual(await c.run(), { text: 'Hi from Cloudflare' });
+    assert.strictEqual(c.reqs[0].url, `https://api.cloudflare.com/client/v4/accounts/${ACCT}/ai/v1/chat/completions`);
+    assert.strictEqual(c.reqs[0].init.headers.authorization, 'Bearer cf_TEST');
+    assert.ok(!c.reqs[0].url.includes('cf_TEST'));
+    assert.strictEqual(c.reqs[0].body.messages[0].role, 'system');
+    assert.strictEqual(cloudflareUrl('a/b'), 'https://api.cloudflare.com/client/v4/accounts/a%2Fb/ai/v1/chat/completions');
+  });
+  await t('Cloudflare: a screenshot is passed back as a real image the model can read', async () => {
+    const c = cfr([gmsg({ content: null, tool_calls: [gcall('look_at_screen', {})] }), gmsg({ content: 'I see ABC.' })], shotAction);
+    assert.deepStrictEqual(await c.run(), { text: 'I see ABC.' });
+    const msgs = c.reqs[1].body.messages;
+    const tool = msgs.find((m) => m.role === 'tool');
+    assert.match(tool.content, /Screenshot \(10x10\)/);
+    assert.ok(!tool.content.includes('QUJD'), 'the picture itself is not stuffed into the tool text');
+    const img = msgs[msgs.length - 1];
+    assert.strictEqual(img.role, 'user');
+    assert.strictEqual(img.content.find((p) => p.type === 'image_url').image_url.url, 'data:image/jpeg;base64,QUJD');
+    assert.ok(msgs.indexOf(tool) < msgs.indexOf(img), 'tool result comes before the picture');
+  });
+  await t('Cloudflare: only the newest screenshot is kept in the conversation', async () => {
+    const c = cfr([gmsg({ content: null, tool_calls: [gcall('look_at_screen', {}, 'c1')] }), gmsg({ content: null, tool_calls: [gcall('look_at_screen', {}, 'c2')] }), gmsg({ content: 'done' })], shotAction);
+    await c.run();
+    const imgs = c.reqs[2].body.messages.filter((m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'));
+    assert.strictEqual(imgs.length, 1);
+    assert.ok(c.reqs[2].body.messages.some((m) => m.content === '(An older screenshot was removed.)'));
+  });
+  await t('Cloudflare: only standard OpenAI message fields are sent', async () => {
+    const c = cfr([gmsg({ content: null, tool_calls: [gcall('look_at_screen', {})] }), gmsg({ content: 'ok' })], shotAction);
+    await c.run();
+    const allowed = new Set(['role', 'content', 'tool_calls', 'tool_call_id']);
+    for (const m of c.reqs[1].body.messages) for (const k of Object.keys(m)) assert.ok(allowed.has(k), 'unexpected field ' + k);
+  });
+  await t('Cloudflare: tool arguments that arrive as an object still work', async () => {
+    const seen = [];
+    const c = cfr([gmsg({ content: null, tool_calls: [{ id: 'x1', type: 'function', function: { name: 'pet_do', arguments: { action: 'hop' } } }] }), gmsg({ content: 'Hop!' })], {
+      prepare: async (n, a) => { seen.push([n, a]); return { auto: true, run: async () => 'ok' }; },
+    });
+    assert.deepStrictEqual(await c.run(), { text: 'Hop!' });
+    assert.deepStrictEqual(seen, [['pet_do', { action: 'hop' }]]);
+    assert.strictEqual(typeof c.reqs[1].body.messages.find((m) => m.role === 'assistant').tool_calls[0].function.arguments, 'string');
+  });
+  await t('Cloudflare: clear errors for bad token, daily limit, unknown model, empty answer and no network', async () => {
+    assert.match((await cfr([jres(401, { errors: [{ message: 'Authentication error' }] })]).run()).error, /did not accept that API token.*Authentication error/);
+    assert.match((await cfr([jres(403, { error: { message: 'nope' } })]).run()).error, /refused the request.*Account ID/);
+    assert.match((await cfr([jres(429, {})]).run()).error, /free daily allowance/);
+    assert.match((await cfr([jres(404, {})]).run()).error, /does not know the model "@cf\/google\/gemma-4-26b-a4b-it"/);
+    assert.match((await cfr([jres(200, { choices: [{ message: { content: '' } }] })]).run()).error, /Cloudflare sent back an empty answer/);
+    assert.match((await cfr([() => { throw new Error('offline'); }]).run()).error, /Network problem/);
+  });
+  await t('Groq still says it cannot see images (only Cloudflare passes them on)', async () => {
+    const g = grq([gmsg({ content: null, tool_calls: [gcall('look_at_screen', {})] }), gmsg({ content: 'Sorry.' })], shotAction);
+    await g.run();
+    assert.ok(!JSON.stringify(g.reqs[1].body).includes('image_url'));
+  });
+
+
+  // ---------------------------------------------------------------- voice chat
+  await t('Voice: audio helpers (silence level, downsampling, clamping, base64)', () => {
+    assert.strictEqual(PV.rms(new Float32Array(100)), 0);
+    assert.ok(Math.abs(PV.rms(new Float32Array(100).fill(0.5)) - 0.5) < 1e-6);
+    const ds = PV.downsample(Float32Array.from([1, 1, 1, 0, 0, 0, 1, 1, 1]), 48000, 16000);
+    assert.deepStrictEqual(Array.from(ds), [1, 0, 1]);
+    assert.strictEqual(PV.downsample(new Float32Array(5), 16000, 16000).length, 5);
+    assert.deepStrictEqual(Array.from(PV.floatTo16(Float32Array.from([0, 1, -1, 5, -5]))), [0, 32767, -32768, 32767, -32768]);
+    assert.strictEqual(Buffer.from(PV.toBase64(new Uint8Array(70000).fill(65)), 'base64').length, 70000);
+  });
+  await t('Voice: WAV file has a correct 16 kHz mono 16-bit header', () => {
+    const wav = PV.encodeWav(Int16Array.from([1, -2, 3, 4]), 16000);
+    const b = Buffer.from(wav);
+    assert.strictEqual(b.length, 44 + 8);
+    assert.strictEqual(b.toString('ascii', 0, 4), 'RIFF');
+    assert.strictEqual(b.toString('ascii', 8, 12), 'WAVE');
+    assert.strictEqual(b.toString('ascii', 36, 40), 'data');
+    assert.strictEqual(b.readUInt32LE(4), 36 + 8);
+    assert.strictEqual(b.readUInt16LE(20), 1);      // PCM
+    assert.strictEqual(b.readUInt16LE(22), 1);      // mono
+    assert.strictEqual(b.readUInt32LE(24), 16000);  // rate
+    assert.strictEqual(b.readUInt16LE(34), 16);     // bits
+    assert.strictEqual(b.readUInt32LE(40), 8);
+    assert.strictEqual(b.readInt16LE(46), -2);
+  });
+  await t('Voice: replies are cleaned for speaking (no code, links, markdown or emoji; long ones are cut)', () => {
+    assert.strictEqual(PV.speechText('**Sure!** Try `npm start` 🎉 and see https://example.com/x for more.'), 'Sure! Try npm start and see a link for more.');
+    assert.strictEqual(PV.speechText('Here you go:\n```js\nconsole.log(1)\n```\nThat prints one.'), 'Here you go: That prints one. I put the code in the chat.');
+    assert.strictEqual(PV.speechText('# Title\n- one\n- two\n1. three'), 'Title one two three');
+    assert.strictEqual(PV.speechText('🎉🎉'), '');
+    const long = PV.speechText('This is a sentence. '.repeat(100));
+    assert.ok(long.length < 760 && long.endsWith('The rest is in the chat.'), long.length);
+    assert.ok(!/\.\. /.test(long));
+    assert.strictEqual(PV.canSpeak(), false); // no speech engine in Node
+  });
+  const okJson = (body) => ({ ok: true, status: 200, json: async () => body });
+  const vq = (res, over = {}) => {
+    const reqs = [];
+    const fetchFn = async (url, init) => { reqs.push({ url, init }); return typeof res === 'function' ? res() : res; };
+    return { reqs, run: (o = {}) => V.transcribe({ fetchFn, provider: 'cloudflare', apiKey: 'K_SECRET', accountId: ACCT, audioB64: 'QUJD', ...over, ...o }) };
+  };
+  await t('Voice: Cloudflare Whisper request (account URL, Bearer header, base64 audio) and answer', async () => {
+    const v = vq(okJson({ success: true, result: { text: '  hello   pip \n' } }));
+    assert.deepStrictEqual(await v.run(), { text: 'hello pip' });
+    assert.strictEqual(v.reqs[0].url, `https://api.cloudflare.com/client/v4/accounts/${ACCT}/ai/run/@cf/openai/whisper-large-v3-turbo`);
+    assert.strictEqual(v.reqs[0].init.headers.authorization, 'Bearer K_SECRET');
+    assert.ok(!v.reqs[0].url.includes('K_SECRET'));
+    assert.deepStrictEqual(JSON.parse(v.reqs[0].init.body), { audio: 'QUJD', task: 'transcribe' });
+  });
+  await t('Voice: Groq Whisper request is a multipart upload of a WAV file', async () => {
+    const v = vq(okJson({ text: 'open the settings' }));
+    assert.deepStrictEqual(await v.run({ provider: 'groq' }), { text: 'open the settings' });
+    const r = v.reqs[0];
+    assert.strictEqual(r.url, 'https://api.groq.com/openai/v1/audio/transcriptions');
+    assert.strictEqual(r.init.headers.authorization, 'Bearer K_SECRET');
+    assert.ok(!('content-type' in r.init.headers), 'fetch must set the multipart boundary itself');
+    assert.ok(r.init.body instanceof FormData);
+    assert.strictEqual(r.init.body.get('model'), 'whisper-large-v3-turbo');
+    const f = r.init.body.get('file');
+    assert.strictEqual(f.type, 'audio/wav');
+    assert.strictEqual(Buffer.from(await f.arrayBuffer()).toString(), 'ABC');
+  });
+  await t('Voice: Gemini request sends the audio inline, key in a header', async () => {
+    const v = vq(okJson({ candidates: [{ content: { parts: [{ text: 'what is ' }, { text: 'on my screen' }] } }] }));
+    assert.deepStrictEqual(await v.run({ provider: 'gemini' }), { text: 'what is on my screen' });
+    const r = v.reqs[0];
+    assert.match(r.url, /generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-2\.5-flash:generateContent$/);
+    assert.strictEqual(r.init.headers['x-goog-api-key'], 'K_SECRET');
+    assert.ok(!r.url.includes('K_SECRET'));
+    const parts = JSON.parse(r.init.body).contents[0].parts;
+    assert.deepStrictEqual(parts[1], { inlineData: { mimeType: 'audio/wav', data: 'QUJD' } });
+    assert.deepStrictEqual(await vq(okJson({ candidates: [] })).run({ provider: 'gemini' }), { text: '' });
+  });
+  await t('Voice: bad recordings never leave the computer; errors are clear and never show the key', async () => {
+    const v = vq(okJson({}));
+    for (const bad of ['', 'not base64!', 123, 'A'.repeat(V.MAX_AUDIO_B64 + 1)]) assert.match((await v.run({ audioB64: bad })).error, /not usable/);
+    assert.match((await v.run({ provider: 'anthropic' })).error, /No hearing provider/);
+    assert.strictEqual(v.reqs.length, 0);
+    assert.match((await vq({ ok: false, status: 401, json: async () => ({ errors: [{ message: 'bad token' }] }) }).run()).error, /Cloudflare did not accept.*bad token/);
+    assert.match((await vq({ ok: false, status: 429, json: async () => ({}) }).run({ provider: 'groq' })).error, /Groq says the free limit/);
+    assert.match((await vq({ ok: false, status: 500, json: async () => { throw new Error('x'); } }).run({ provider: 'gemini' })).error, /Google Gemini had a problem/);
+    assert.match((await vq(() => { throw new Error('offline'); }).run()).error, /Network problem/);
+    assert.ok(!JSON.stringify(await vq({ ok: false, status: 401, json: async () => ({}) }).run()).includes('K_SECRET'));
+  });
+  await t('Voice: the recorder stops by itself after you stop talking, trims the silence, and lets go of the mic', async () => {
+    const perfDesc = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+    let now = 0, proc = null, trackStops = 0, closed = 0;
+    Object.defineProperty(globalThis, 'performance', { value: { now: () => now }, configurable: true, writable: true });
+    globalThis.AudioContext = function () {
+      return { sampleRate: 48000, destination: {}, close() { closed++; }, createMediaStreamSource() { return { connect() {}, disconnect() {} }; }, createScriptProcessor() { proc = { connect() {}, disconnect() {} }; return proc; } };
+    };
+    navigator.mediaDevices = { getUserMedia: async () => ({ getTracks: () => [{ stop() { trackStops++; } }] }) };
+    const feed = (level, n) => { for (let i = 0; i < n; i++) { now += 85; if (proc.onaudioprocess) proc.onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(4096).fill(level) } }); } };
+    try {
+      // 10 quiet chunks, 8 chunks of talking, then quiet: it should stop on its own (~1.4 s of quiet)
+      let rec = await PV.record();
+      feed(0, 10); feed(0.3, 8); feed(0, 20);
+      let r = await rec.done;
+      assert.strictEqual(r.heard, true);
+      assert.strictEqual(r.reason, 'silence');
+      assert.ok(r.ms > 1200 && r.ms < 1350, 'kept the 8 spoken chunks plus a little quiet either side (about 1.28 s): ' + r.ms);
+      const wav = Buffer.from(r.audio, 'base64');
+      assert.strictEqual(wav.toString('ascii', 0, 4), 'RIFF');
+      assert.strictEqual(wav.readUInt32LE(24), 16000);
+      assert.strictEqual(trackStops, 1, 'microphone released');
+      assert.strictEqual(closed, 1);
+      // never talked: gives up after 8 s and reports nothing heard
+      rec = await PV.record();
+      feed(0, 100);
+      r = await rec.done;
+      assert.deepStrictEqual(r, { heard: false, reason: 'nospeech' });
+      assert.strictEqual(trackStops, 2);
+      // tapping again while talking sends what was said so far
+      rec = await PV.record();
+      feed(0.3, 5);
+      rec.stop();
+      r = await rec.done;
+      assert.strictEqual(r.heard, true);
+      assert.strictEqual(r.reason, 'manual');
+      // closing the chat cancels: nothing is kept or sent
+      rec = await PV.record();
+      feed(0.3, 5);
+      rec.cancel();
+      assert.deepStrictEqual(await rec.done, { heard: false, reason: 'cancel' });
+      assert.strictEqual(trackStops, 4);
+      // 60 s limit even if someone keeps talking
+      rec = await PV.record();
+      feed(0.3, 800);
+      assert.strictEqual((await rec.done).reason, 'max');
+    } finally {
+      if (perfDesc) Object.defineProperty(globalThis, 'performance', perfDesc);
+      delete globalThis.AudioContext;
+      delete navigator.mediaDevices;
+    }
+  });
+  await t('Voice: "same as my brain" only works for companies that can hear (not Anthropic)', () => {
+    assert.strictEqual(V.pickProvider('auto', 'groq'), 'groq');
+    assert.strictEqual(V.pickProvider('auto', 'cloudflare'), 'cloudflare');
+    assert.strictEqual(V.pickProvider('auto', 'gemini'), 'gemini');
+    assert.strictEqual(V.pickProvider('auto', 'anthropic'), null);
+    assert.strictEqual(V.pickProvider('groq', 'anthropic'), 'groq');
+    assert.strictEqual(V.pickProvider('evil', 'anthropic'), null);
   });
 
 

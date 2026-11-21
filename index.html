@@ -35,6 +35,7 @@
     </div>
     <div class="in">
       <textarea id="inp" rows="1" placeholder="Say something..."></textarea>
+      <button id="mic" title="Talk to me" aria-label="Talk"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
       <button id="go" title="Send"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
     </div>
 
@@ -44,6 +45,7 @@
         <option value="anthropic">Anthropic Claude (paid, very capable)</option>
         <option value="gemini">Google Gemini (free tier available)</option>
         <option value="groq">Groq (free, no card needed)</option>
+        <option value="cloudflare">Cloudflare Workers AI (free, can see your screen)</option>
       </select>
       <div id="s-anth">
         <label for="s-key">Anthropic API key</label>
@@ -87,6 +89,37 @@
         <div class="hint">The 120b model is smarter; the 20b one is faster. If a name is rejected, Groq may have renamed it: check console.groq.com/docs/models. These models read text only, so "look at my screen" won't work (use Gemini or Claude for that). Free limits are small, so long jobs may pause and retry.</div>
         <div class="hint warnbox">Privacy: what Pip sends (your chats, and anything you approve sharing, like files and command output) goes to Groq. Free services can have different data rules from paid ones, so check Groq's privacy policy and don't use it for private things.</div>
       </div>
+      <div id="s-cf" class="hidden">
+        <label for="s-cfkey">Cloudflare API token</label>
+        <input id="s-cfkey" type="password" autocomplete="off" placeholder="API token">
+        <div class="hint">Stored encrypted on this computer, sent only to Cloudflare (api.cloudflare.com). Click "Get a free key", sign up (no card needed), then create an API token from the "Workers AI" template and paste it here.</div>
+        <div class="row tight"><button id="s-getkey-cf" class="ghost">Get a free key</button></div>
+        <label for="s-cfacct">Cloudflare Account ID</label>
+        <input id="s-cfacct" type="text" maxlength="32" autocomplete="off" placeholder="32 letters and numbers">
+        <div class="hint">Find it in the Cloudflare dashboard: Workers AI page, or the end of the address when you are logged in (dash.cloudflare.com/ACCOUNT-ID).</div>
+        <label for="s-cfmodel">Cloudflare model</label>
+        <input id="s-cfmodel" type="text" list="s-cfmodels" maxlength="100" autocomplete="off" placeholder="@cf/google/gemma-4-26b-a4b-it">
+        <datalist id="s-cfmodels">
+          <option value="@cf/google/gemma-4-26b-a4b-it"></option>
+          <option value="@cf/moonshotai/kimi-k2.6"></option>
+        </datalist>
+        <div class="hint">The default reads pictures (so "look at my screen" works) and can use tools. The free allowance is 10,000 neurons a day; bigger models like Kimi use it up much faster. If a name is rejected, check developers.cloudflare.com/workers-ai/models.</div>
+        <div class="hint warnbox">Privacy: what Pip sends (your chats, and anything you approve sharing, like screenshots, files and command output) goes to Cloudflare. Free services can have different data rules from paid ones, so check Cloudflare's privacy policy and don't use it for private things.</div>
+      </div>
+      <label for="s-voiceprov">Voice chat: who turns my speech into text</label>
+      <select id="s-voiceprov">
+        <option value="auto">Same as my AI brain (Gemini, Groq or Cloudflare)</option>
+        <option value="cloudflare">Cloudflare (Whisper)</option>
+        <option value="groq">Groq (Whisper)</option>
+        <option value="gemini">Google Gemini</option>
+      </select>
+      <div class="hint">Tap the microphone in the chat to talk. Pip only listens after you tap, stops when you stop talking, and sends that one short recording to the company you pick here (it uses that company's key; Anthropic can't do speech, so pick another one). Free tiers can have different data rules from paid ones: on Google's free tier, Google may review what it gets. Pip's spoken replies use your computer's own voices and send nothing.</div>
+      <label for="s-voicereply">Pip talks back</label>
+      <select id="s-voicereply">
+        <option value="voice">After I talk to it</option>
+        <option value="always">Always</option>
+        <option value="never">Never</option>
+      </select>
       <label for="s-name">Name</label>
       <input id="s-name" type="text" maxlength="20">
       <label for="s-palette">Fur colour</label>
@@ -120,6 +153,7 @@
   </div>
 
   <script src="model.js"></script>
+  <script src="voice-client.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
