@@ -4,14 +4,14 @@
 
 const {
   app, BrowserWindow, Tray, Menu, screen, ipcMain, clipboard, nativeImage, safeStorage, dialog, shell,
-  desktopCapturer, systemPreferences, Notification,
+  desktopCapturer, systemPreferences, Notification, globalShortcut,
 } = require('electron');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
 const { createActions } = require('./actions');
-const { runChat, runChatGemini, runChatGroq, runChatCloudflare } = require('./agent');
+const { runChat, runChatGemini, runChatGroq, runChatCloudflare, actionNudge, makeLoopGuard } = require('./agent');
 const { createCalendar } = require('./calendar');
 const voice = require('./voice');
 
@@ -249,6 +249,7 @@ function buildMenu() {
       checked: !!settings.openAtLogin,
       click: (item) => update({ openAtLogin: item.checked }),
     },
+    { label: 'Stop what Pip is doing  (Ctrl/Cmd+Alt+X)', click: () => stopChat() },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() },
   ]);
@@ -275,6 +276,9 @@ function createTray() {
 // ------------------------------------------------------------ actions (always ask first)
 let actions = null;
 let chatBusy = false;
+let chatAbort = null;      // aborts the request in flight when the user presses Stop
+let stopRequested = false;
+let stepCount = 0;
 const pendingApprovals = new Map();
 let nextApprovalId = 1;
 
@@ -308,6 +312,21 @@ function requestApproval({ title, details, risk }) {
     pendingApprovals.set(id, (ok) => { clearTimeout(timer); resolve(ok); });
     send('approve:request', { id, title: title, details: aiWording(details), risk: risk === 'high' ? 'high' : 'normal' });
   });
+}
+
+
+// Stop button, tray item and Ctrl/Cmd+Alt+X all land here: cancel the request, decline open cards, tell the user.
+function stopChat() {
+  if (!chatBusy || !chatAbort) return false;
+  stopRequested = true;
+  try { chatAbort.abort(); } catch (_) {}
+  for (const [id, done] of [...pendingApprovals]) {
+    pendingApprovals.delete(id);
+    send('approve:expired', { id, label: '✋ Stopped' });
+    done(false);
+  }
+  send('say', { text: 'Okay, stopped!', ms: 2500 });
+  return true;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -404,6 +423,17 @@ const PET_RULES =
   `press it with press_ui using the [number] from find_ui (Pip flies there and does it after they approve); otherwise tell them where it is and what to do. ` +
   `Don't move on every message; an occasional happy hop when you celebrate something is fine. Never claim to have moved unless you used the tool.`;
 
+
+const ACT_RULES =
+  `\n\nACT, DON'T JUST TALK. When the user asks you to open, go to, play, search, launch, mute, turn up or down, pause, skip, remind, type or otherwise DO something, ` +
+  `do it with a tool in this same reply. Never answer with a link, a command or step-by-step instructions for the user to carry out when one of your tools can do it, ` +
+  `and never paste text into the chat when they wanted it typed into an app. Examples: "open YouTube" -> open_url with url "youtube"; "go to Netflix" -> open_url; ` +
+  `"play lofi on YouTube" -> search_site site youtube, play true; "search for a keyboard on Amazon" -> search_site; "open Spotify" or "open VS Code" -> open_app; ` +
+  `"turn it up", "mute", "pause the music", "skip this song" -> media_control; "scroll down", "go to the bottom", "back to the top" -> scroll (no look needed); "new tab", "next tab", "go back", "refresh", "close this tab" -> browser; "scroll down and tell me what it says" -> scroll, then look_at_screen; "open Notepad and write hello" -> open_app, then type_text. ` +
+  `Several steps are fine: keep calling tools until the job is done. Give a link only when the user asks for the link itself. ` +
+  `After a tool works, say in one short line what you did (the page or app is already open, so don't repeat the address). ` +
+  `If a tool fails or is declined, say so plainly and try another tool before giving up. Never claim you did something unless a tool did it.`;
+
 function buildActionRules() {
   const plat = process.platform === 'win32' ? 'Windows (commands run in PowerShell)' : process.platform === 'darwin' ? 'macOS (commands run in zsh)' : 'Linux (commands run in sh)';
   let r =
@@ -422,7 +452,10 @@ function buildActionRules() {
     `\n\nControl Panel and settings: for "open Wi-Fi settings", "open the control panel", "where do I uninstall apps", "open Device Manager" and similar, ` +
     `use open_system_settings. For a change the user wants made for them (volume, dark mode, power plan, a Wi-Fi toggle...), explain what you will change, then use run_command. ` +
     `Never change security settings, the registry or system files unless the user clearly asked for exactly that.` +
-    `\n\nButtons and boxes: to press, open, tick or type into something, use find_ui (with a short 'query' like "save" to keep the list small), then press_ui or type_text with the [number]. ` +
+    `\n\nTYPING: when the user asks you to type or write something into an app, call type_text RIGHT AWAY with the exact text and no target. It finds the box with the user's cursor, flies there and types. ` +
+    `Do not call find_ui first, and do not keep checking or retrying. If the app named is not open, open_app first, then type_text. After type_text succeeds, tell the user it is typed and stop. ` +
+    `Only use find_ui plus a target when they name a specific box that is NOT where their cursor is. Never loop: at most a couple of tool calls per step of the job.` +
+    `\n\nButtons and boxes: to press, open or tick something, use find_ui (with a short 'query' like "save" to keep the list small), then press_ui or type_text with the [number]. ` +
     `Look again with find_ui after every press, because the screen changes. If find_ui finds nothing, use look_at_screen and tell the user where to click. ` +
     `Only press what the user asked for, and never press things like Delete, Send, Pay or Install unless they clearly asked for exactly that.` +
     `\n\nScreen: if the user asks about something on their screen (for example "what's the answer to this question?"), use ` +
@@ -434,8 +467,8 @@ function buildActionRules() {
     `nickname; never invent a date. To put something on their calendar use add_calendar_event; for "remind me in 20 minutes" use set_reminder.` +
     `\n\nWeb: to look something up or read a page, use fetch_url (for example https://duckduckgo.com/html/?q=search+words) and answer from what you read, ` +
     `naming the site; use open_url only when the user wants the page opened on screen.` +
-    `\n\nSearching: for "search up X" or "google X", use open_url with https://www.google.com/search?q=... (no approval needed) unless the user names a box or app to search in (for example "search X on YouTube" or "in the search bar"). ` +
-    `In that case use find_ui to find the search box, then type_text with press_enter true and the box's [number] as target. Short one-line text like a search can be typed without a card if the user allowed it, so say in one short line what you typed.`;
+    `\n\nSearching: for "search up X" or "google X" with no site named, use search_site with site google. For "search X on YouTube/Amazon/Wikipedia/maps..." or "play X on YouTube", use search_site with that site (play true to start a YouTube video). ` +
+    `Only when the user names a box in an app that is already open ("in the search bar") use find_ui to find the box, then type_text with press_enter true and the box's [number] as target. Short one-line text like that can be typed without a card if the user allowed it, so say in one short line what you typed.`;
   if (!settings.fullAccess) {
     r += `\n\nRunning commands, pressing keys, closing apps and reaching files outside the work folder are switched off in settings. If the user needs those, tell them they can allow it in the Pip settings (the gear).`;
   }
@@ -485,7 +518,12 @@ async function chat({ messages, ctx }) {
     if (!full) tools = tools.filter((d) => d.name === 'pet_do');
   }
   if (tools.some((d) => d.name === 'pet_do')) system += PET_RULES;
+  if (!full) {
+    system += `\n\nThe switch "Let Pip do things for me" is OFF in settings, so you cannot open sites, apps or anything on the computer. ` +
+      `If the user asks you to do something like that, say so in one short line and tell them to switch it on in the Pip settings (the gear). Do not paste links as a substitute.`;
+  }
   if (full) {
+    system += ACT_RULES;
     system += buildActionRules();
     if (settings.workFolder) {
       system += ` The user chose one work folder named "${path.basename(settings.workFolder)}"; relative file paths are relative to it.` +
@@ -496,8 +534,24 @@ async function chat({ messages, ctx }) {
   }
 
   chatBusy = true;
+  chatAbort = new AbortController();
+  stopRequested = false;
+  stepCount = 0;
+  const guard = makeLoopGuard();
   try {
-    const common = { fetchFn: fetch, apiKey: key, system, messages: clean, tools, prepare: (name, input) => { if (!actions || (!full && name !== 'pet_do')) throw new Error('Actions are turned off.'); return actions.prepare(name, input); }, approve: requestApproval };
+    const common = { fetchFn: fetch, apiKey: key, system, messages: clean, tools, prepare: (name, input) => {
+        if (stopRequested) throw new Error('The user pressed Stop. Do nothing more and just tell them you stopped.');
+        if (!actions || (!full && name !== 'pet_do')) throw new Error('Actions are turned off.');
+        guard(name, input);
+        const a = actions.prepare(name, input);
+        const n = ++stepCount;
+        // tell the chat which step this is, so a long job never looks like Pip is just sitting there
+        return Promise.resolve(a).then((r) => { send('progress', { n, title: (r && r.title) || name }); return r; });
+      },
+      approve: (card) => (stopRequested ? Promise.resolve(false) : requestApproval(card)),
+      signal: chatAbort.signal,
+      stopped: () => stopRequested,
+      nudge: full ? (reply) => actionNudge(clean[clean.length - 1].content, reply) : null };
     if (provider === 'cloudflare') {
       return await runChatCloudflare({ ...common, accountId: settings.cloudflareAccountId, model: settings.cloudflareModel || DEFAULTS.cloudflareModel });
     }
@@ -512,6 +566,7 @@ async function chat({ messages, ctx }) {
     return { error: `Something went wrong (${e.message})` };
   } finally {
     chatBusy = false;
+    chatAbort = null;
   }
 }
 
@@ -594,6 +649,7 @@ function registerIpc() {
     }
   });
 
+  ipcMain.handle('chat:stop', () => stopChat());
   ipcMain.on('approve:response', (_e, r) => {
     const done = r && pendingApprovals.get(r.id);
     if (done) { pendingApprovals.delete(r.id); done(r.ok === true); }
@@ -677,6 +733,7 @@ if (!app.requestSingleInstanceLock()) {
     setupActions();
     createTray();
     startCursorPolling();
+    try { globalShortcut.register('CommandOrControl+Alt+X', () => stopChat()); } catch (_) { /* the tray item and the Stop button still work */ }
     for (const ev of ['display-metrics-changed', 'display-added', 'display-removed']) {
       screen.on(ev, sendArea);
     }
@@ -684,5 +741,6 @@ if (!app.requestSingleInstanceLock()) {
 
   // Keep running in the tray even if the window goes away.
   app.on('window-all-closed', () => {});
+  app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch (_) {} });
   app.on('before-quit', () => { if (cursorTimer) clearInterval(cursorTimer); reminderTimers.forEach(clearTimeout); });
 }

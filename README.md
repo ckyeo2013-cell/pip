@@ -31,6 +31,22 @@ Pip isn't just for chit-chat: ask it to write or fix code in any language, expla
 
 Pip can control its own body from the chat, with no approval card because it touches nothing else on your computer. Try: "hop three times", "dance", "come here" (he flies to your cursor and perches there), "go to the left", "go to the middle", "stay there", "go back to wandering". Moving his own body works even if you switch off "do things on my computer" in settings. For help with things on screen see **Pip sees buttons without a screenshot** below.
 
+## Pip acts, he doesn't just talk
+
+Say what you want and Pip does it instead of pasting a link or giving you steps:
+
+- **Sites by name:** "open YouTube", "go to Netflix", "pull up Gmail", "open reddit". `open_url` understands plain site names (see `SITES` in `system.js`) as well as full addresses. Well-known sites open with no card.
+- **Search or play inside a site:** "play lofi on YouTube" opens the top video; "search keyboards on Amazon", "pizza near me on maps", "look up Ada Lovelace on Wikipedia" (`search_site`: YouTube, Google, Images, Maps, Amazon, Wikipedia, GitHub, Stack Overflow, Reddit, Spotify, Twitch, IMDb, DuckDuckGo, Bing).
+- **Volume and music, no card:** "turn it up", "mute", "set the volume to 30", "pause the music", "skip this song" (`media_control`). Play/pause/next/previous control Spotify and Apple Music on macOS, any media player on Windows, and `playerctl` players on Linux. A video playing in a browser tab needs a click or a key press.
+- **Apps by friendly name:** "open VS Code", "open Word", "open Spotify". Browsers and a few harmless apps (Calculator, Notepad, Spotify, Finder...) open with no card; everything else still asks first (`open_app`).
+- **Multi-step jobs:** "open Notepad and write my shopping list" opens the app, then types into it.
+- **Browser controls:** "new tab", "next tab", "go to tab 3", "go back", "refresh", "close this tab", "bring that tab back", "search on this page" (`browser`). Pip flies up to the top bar and uses the browser's own shortcuts on the window in front. Everything is automatic except **closing a tab**, which asks first (and can be undone with reopen). To open a website use "open YouTube" style requests: they already open in a new tab.
+- **Stop:** while Pip is working there is a red **Stop** button next to Send, and **Esc** works too. If Pip has hidden the chat to type or press something, use the tray / right-click menu item **Stop what Pip is doing** or the shortcut **Ctrl/Cmd+Alt+X**. It cancels the request, declines any open approval cards and tells you. A step that is already running (like a command) finishes, but nothing after it happens. While Pip works, the typing bubble shows **step N: what he is doing**, and after step 8 it reminds you about Stop.
+- **Scrolling:** "scroll down", "keep scrolling", "go to the bottom", "back to the top" (`scroll`, no card). Pip flies to the edge of the screen and presses Page Up/Down or Home/End on the window in front, so the page you mean must be the one in front. Say "scroll down and tell me what it says" and he looks at the screen afterwards. It can only scroll: nothing can be typed or clicked this way. macOS needs the Accessibility permission, Linux needs `xdotool`.
+- **He acts it out:** to open a page Pip flies up to the browser's top bar ("opening a new tab up here..."), to open an app he flies down to the taskbar/dock, he hops when he changes the volume or skips a song (dances for play/pause), and he cheers when it worked. This is automatic and only moves Pip himself.
+- **A safety net:** if Pip answers an "open / play / search / mute..." request with a link or "you can click..." instead of using a tool, the app sends it back once and tells it to do the job. If you really want the link, ask for the link.
+- If "Let Pip do things for me" is switched **off** in settings, Pip now says so instead of pasting links.
+
 ## Pip sees buttons without a screenshot
 
 Pip can read where the buttons, boxes, links and menus are straight from your operating system's accessibility information (the same data screen readers use). No picture is taken, nothing you typed into a box is read, and password boxes are skipped. Try: "press Save for me", "type hello into the search box", "where's the Share button?".

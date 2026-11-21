@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('pip', {
   addCalendarUrl: (label, url) => ipcRenderer.invoke('cal:addUrl', { label, url }),
   addCalendarFile: () => ipcRenderer.invoke('cal:addFile'),
   removeCalendar: (id) => ipcRenderer.invoke('cal:remove', id),
+  stopChat: () => ipcRenderer.invoke('chat:stop'),
+  onProgress: (cb) => on('progress', cb),
   onApproval: (cb) => on('approve:request', cb),
   onApprovalExpired: (cb) => on('approve:expired', cb),
   onSay: (cb) => on('say', cb),

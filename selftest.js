@@ -9,7 +9,7 @@ const { createActions } = require('./actions');
 const { execFile } = require('child_process');
 const PV = require('./voice-client');
 const V = require('./voice');
-const { runChatGemini, toGeminiTools, runChatGroq, toGroqTools, runChatCloudflare, cloudflareUrl } = require('./agent');
+const { runChatGemini, toGeminiTools, runChatGroq, toGroqTools, runChatCloudflare, cloudflareUrl, runChat, actionNudge, makeLoopGuard } = require('./agent');
 
 let passed = 0;
 const t = async (name, fn) => { try { await fn(); passed++; console.log('ok   ' + name); } catch (e) { console.error('FAIL ' + name + '\n     ' + e.message); process.exitCode = 1; } };
@@ -821,7 +821,253 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
   await t('open_app: plain browsers open with no approval; other apps still ask', async () => {
     const P = mkActions({ platform: 'darwin' });
     for (const n of ['Chrome', 'Firefox', 'Safari', 'Microsoft Edge']) assert.strictEqual((await P.prepare('open_app', { name: n })).auto, true, n);
-    for (const n of ['Notepad', 'Terminal', 'PowerShell']) assert.notStrictEqual((await P.prepare('open_app', { name: n })).auto, true, n);
+    for (const n of ['Terminal', 'PowerShell', 'Discord']) assert.notStrictEqual((await P.prepare('open_app', { name: n })).auto, true, n);
+  });
+
+
+  // ---------------------------------------------------------------- acting, not just talking
+  await t('open_url: site names like "youtube" become real addresses (and safe ones open with no card)', async () => {
+    const P = mkActions();
+    const a = await P.prepare('open_url', { url: 'YouTube' });
+    assert.strictEqual(a.details, 'https://www.youtube.com/');
+    assert.strictEqual(a.auto, true);
+    assert.strictEqual((await P.prepare('open_url', { url: 'the Netflix website' })).details, 'https://www.netflix.com/');
+    assert.strictEqual((await P.prepare('open_url', { url: 'gmail' })).auto, true);
+    const odd = await P.prepare('open_url', { url: 'my-bank.example' });
+    assert.strictEqual(odd.details, 'https://my-bank.example/');
+    assert.notStrictEqual(odd.auto, true);
+    throwsMsg(() => P.prepare('open_url', { url: 'not a site at all' }), /not a valid web address/);
+  });
+  await t('open_url: the result tells the model the page is already open (so it does not paste the link)', async () => {
+    const opened = [];
+    const P = mkActions({ shell: { ...shell, openExternal: async (u) => opened.push(u) } });
+    const out = await (await P.prepare('open_url', { url: 'youtube' })).run();
+    assert.deepStrictEqual(opened, ['https://www.youtube.com/']);
+    assert.match(out, /on the user's screen now/);
+  });
+  await t('search_site: builds the right search page, safe sites need no card, bad input is refused', async () => {
+    const opened = [];
+    const P = mkActions({ shell: { ...shell, openExternal: async (u) => opened.push(u) } });
+    const a = await P.prepare('search_site', { site: 'youtube', query: 'funny cats & dogs' });
+    assert.strictEqual(a.auto, true);
+    await a.run();
+    assert.strictEqual(opened[0], 'https://www.youtube.com/results?search_query=funny%20cats%20%26%20dogs');
+    await (await P.prepare('search_site', { site: 'amazon', query: 'usb c cable' })).run();
+    assert.strictEqual(opened[1], 'https://www.amazon.com/s?k=usb%20c%20cable');
+    await assert.rejects(async () => P.prepare('search_site', { site: 'evil.com', query: 'x' }), /Unknown site/);
+    await assert.rejects(async () => P.prepare('search_site', { site: 'youtube', query: '  ' }), /nothing to search/);
+  });
+  await t('search_site: play opens the top YouTube video, and falls back to the results page', async () => {
+    const opened = [];
+    const html = '<script>var d={"videoId":"dQw4w9WgXcQ","x":1}</script>';
+    const mk = (body, ok = true) => mkActions({
+      shell: { ...shell, openExternal: async (u) => opened.push(u) },
+      fetchFn: async () => ({ ok, status: ok ? 200 : 500, headers: { get: () => 'text/html' }, text: async () => body }),
+      lookup: async () => [{ address: '142.250.1.1' }],
+    });
+    const out = await (await mk(html).prepare('search_site', { site: 'youtube', query: 'lofi', play: true })).run();
+    assert.strictEqual(opened[0], 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+    assert.match(out, /playing/);
+    const out2 = await (await mk('no data here').prepare('search_site', { site: 'youtube', query: 'lofi', play: true })).run();
+    assert.match(opened[1], /results\?search_query=lofi/);
+    assert.match(out2, /Could not pick a video/);
+    assert.strictEqual(sys.firstYoutubeId(html), 'dQw4w9WgXcQ');
+    assert.strictEqual(sys.firstYoutubeId('nothing'), null);
+  });
+  await t('media_control: volume and music run with no card, validated and per OS', async () => {
+    const calls = [];
+    const mk = (platform) => mkActions({ platform, execFile: (c, a, o, cb) => { calls.push([c, a]); cb(null, '', ''); } });
+    const P = mk('darwin');
+    const a = await P.prepare('media_control', { action: 'set_volume', value: 30 });
+    assert.strictEqual(a.auto, true);
+    assert.match(await a.run(), /30%/);
+    assert.deepStrictEqual(calls[0], ['osascript', ['-e', 'set volume output volume 30']]);
+    await (await mk('linux').prepare('media_control', { action: 'play_pause' })).run();
+    assert.deepStrictEqual(calls[1], ['/bin/sh', ['-c', 'playerctl play-pause']]);
+    await (await mk('win32').prepare('media_control', { action: 'mute' })).run();
+    assert.strictEqual(calls[2][0], 'powershell.exe');
+    assert.match(Buffer.from(calls[2][1][calls[2][1].length - 1], 'base64').toString('utf16le'), /SendKeys\(\[char\]173\)/);
+    throwsMsg(() => P.prepare('media_control', { action: 'set_volume', value: 500 }), /0 to 100/);
+    throwsMsg(() => P.prepare('media_control', { action: 'format_disk' }), /Unknown media action/);
+    throwsMsg(() => sys.mediaCommand('set_volume', 'linux', '1; rm -rf /'), /0 to 100/);
+  });
+  await t('open_app: friendly names are translated, and harmless apps open with no card', async () => {
+    const calls = [];
+    const W = mkActions({ platform: 'win32', execFile: (c, a, o, cb) => { calls.push([c, a]); cb(null); } });
+    const code = await W.prepare('open_app', { name: 'VS Code' });
+    assert.notStrictEqual(code.auto, true);
+    await code.run();
+    assert.deepStrictEqual(calls[0], ['cmd.exe', ['/c', 'start', '', 'code']]);
+    assert.strictEqual((await W.prepare('open_app', { name: 'Spotify' })).auto, true);
+    assert.strictEqual((await W.prepare('open_app', { name: 'Calculator' })).auto, true);
+    assert.notStrictEqual((await W.prepare('open_app', { name: 'cmd' })).auto, true);
+    assert.notStrictEqual((await W.prepare('open_app', { name: 'powershell' })).auto, true);
+  });
+  await t('the new tools are offered to every provider', () => {
+    const names = A.toolDefs({ hasFolder: true, fullAccess: false }).map((d) => d.name);
+    for (const n of ['open_url', 'search_site', 'media_control', 'open_app']) assert.ok(names.includes(n), n);
+    for (const d of toGroqTools(A.toolDefs({ hasFolder: true, fullAccess: true }))) assert.strictEqual(d.function.parameters.type, 'object');
+  });
+  await t('actionNudge: only fires for "do it" requests answered with a link or how-to', () => {
+    assert.ok(actionNudge('open youtube', 'Here you go: https://www.youtube.com'));
+    assert.ok(actionNudge('play some jazz', 'You can just open Spotify and search for jazz.'));
+    assert.strictEqual(actionNudge('open youtube', 'Opened it! Enjoy.'), null);
+    assert.strictEqual(actionNudge('what is the youtube link', 'https://www.youtube.com'), null);
+    assert.strictEqual(actionNudge('write me a poem', 'Roses... see https://example.com'), null);
+    assert.strictEqual(actionNudge('', 'https://x.com'), null);
+  });
+  await t('guard: a link instead of a tool call is sent back once; the model then acts (Anthropic, Gemini, Groq)', async () => {
+    const nudge = (reply) => actionNudge('open youtube', reply);
+    const ran = [];
+    const prepare = async (n) => ({ auto: true, title: 'T', details: 'D', run: async () => { ran.push(n); return 'Opened.'; } });
+    const base = { apiKey: 'k', model: 'm', system: 's', messages: [{ role: 'user', content: 'open youtube' }], tools: [{ name: 'open_url', description: 'd', input_schema: { type: 'object', properties: {} } }], prepare, approve: async () => true, nudge, sleepFn: async () => {} };
+    const seq = (items) => { let i = 0; const reqs = []; return { reqs, fetchFn: async (u, init) => { reqs.push(JSON.parse(init.body)); return items[Math.min(i++, items.length - 1)]; } }; };
+    // Anthropic
+    let f = seq([jres(200, { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Sure: https://youtube.com' }] }),
+      jres(200, { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'a1', name: 'open_url', input: { url: 'youtube' } }] }),
+      jres(200, { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Opened YouTube!' }] })]);
+    let r = await runChat({ ...base, fetchFn: f.fetchFn });
+    assert.strictEqual(r.text, 'Opened YouTube!');
+    assert.deepStrictEqual(ran, ['open_url']);
+    assert.match(f.reqs[1].messages[f.reqs[1].messages.length - 1].content, /DO this/);
+    // Groq (OpenAI style)
+    ran.length = 0;
+    f = seq([gmsg({ content: 'Here: https://youtube.com' }), gmsg({ content: null, tool_calls: [gcall('open_url', { url: 'youtube' })] }), gmsg({ content: 'Done!' })]);
+    r = await runChatGroq({ ...base, fetchFn: f.fetchFn });
+    assert.strictEqual(r.text, 'Done!');
+    assert.deepStrictEqual(ran, ['open_url']);
+    // Gemini
+    ran.length = 0;
+    f = seq([jres(200, { candidates: [{ content: { parts: [{ text: 'Go to https://youtube.com' }] } }] }),
+      jres(200, { candidates: [{ content: { parts: [{ functionCall: { name: 'open_url', args: { url: 'youtube' } } }] } }] }),
+      jres(200, { candidates: [{ content: { parts: [{ text: 'All set.' }] } }] })]);
+    r = await runChatGemini({ ...base, fetchFn: f.fetchFn });
+    assert.strictEqual(r.text, 'All set.');
+    assert.deepStrictEqual(ran, ['open_url']);
+  });
+  await t('guard: nudges only once, and never after a tool was used', async () => {
+    const nudge = (reply) => actionNudge('open youtube', reply);
+    let n = 0;
+    const fetchFn = async () => { n++; return gmsg({ content: 'Here: https://youtube.com' }); };
+    const r = await runChatGroq({ fetchFn, apiKey: 'k', model: 'm', system: 's', messages: [{ role: 'user', content: 'open youtube' }], tools: [], prepare: () => { throw new Error('x'); }, approve: async () => true, nudge, sleepFn: async () => {} });
+    assert.strictEqual(n, 2); // one nudge, then it is accepted
+    assert.match(r.text, /youtube\.com/);
+  });
+
+  await t('loop guard: repeated calls and endless looking are cut off with a helpful message', () => {
+    const g = makeLoopGuard();
+    g('type_text', { text: 'hi' }); g('type_text', { text: 'hi' });
+    throwsMsg(() => g('type_text', { text: 'hi' }), /Stop repeating/);
+    g('type_text', { text: 'different' }); // other input is fine
+    const f = makeLoopGuard();
+    for (let i = 0; i < 4; i++) f('find_ui', { query: 'box' + i });
+    throwsMsg(() => f('find_ui', { query: 'another' }), /type_text WITHOUT a target/);
+    f('open_url', { url: 'youtube' }); // other tools unaffected
+  });
+
+  await t('staging: Pip flies to the browser top bar before opening a page, hops for volume, and cheers after', async () => {
+    const sent = [];
+    const opened = [];
+    const P = mkActions({ pet: (c) => sent.push(c), stageMs: 0, shell: { ...shell, openExternal: async (u) => opened.push(u) }, execFile: (c, a, o, cb) => cb(null, '', '') });
+    await (await P.prepare('open_url', { url: 'youtube' })).run();
+    assert.deepStrictEqual(sent[0], { action: 'fly', x: 0.5, y: 0.035 });
+    assert.deepStrictEqual(opened, ['https://www.youtube.com/']);
+    assert.strictEqual(sent[sent.length - 1].action, 'cheer');
+    sent.length = 0;
+    await (await P.prepare('media_control', { action: 'volume_up' })).run();
+    assert.strictEqual(sent[0].action, 'hop');
+    sent.length = 0;
+    await (await P.prepare('search_site', { site: 'amazon', query: 'mouse' })).run();
+    assert.strictEqual(sent[0].action, 'fly');
+    // no pet, no show: the job still works
+    const Q = mkActions({ shell: { ...shell, openExternal: async (u) => opened.push(u) } });
+    assert.match(await (await Q.prepare('open_url', { url: 'youtube' })).run(), /Opened/);
+  });
+
+  await t('scroll: Page Up/Down/Home/End only, no approval, validated, one PowerShell run on Windows', async () => {
+    const calls = [];
+    const mk = (platform, extra = {}) => mkActions({ platform, execFile: (c, a, o, cb) => { calls.push([c, a]); cb(null, '', ''); }, ...extra });
+    const L = mk('linux');
+    const a = await L.prepare('scroll', { direction: 'down', amount: 2 });
+    assert.strictEqual(a.auto, true);
+    assert.match(await a.run(), /down 2 pages/);
+    assert.deepStrictEqual(calls.map((c) => c[1].join(' ')), ['key --clearmodifiers Next', 'key --clearmodifiers Next']);
+    calls.length = 0;
+    await (await L.prepare('scroll', { direction: 'top' })).run();
+    assert.strictEqual(calls[0][1][2], 'Home');
+    calls.length = 0;
+    await (await mk('darwin').prepare('scroll', { direction: 'up' })).run();
+    assert.match(calls[0][1][1], /key code 116/);
+    calls.length = 0;
+    await (await mk('win32').prepare('scroll', { direction: 'down', amount: 99 })).run();
+    assert.strictEqual(calls.length, 1);
+    const ps = Buffer.from(calls[0][1][calls[0][1].length - 1], 'base64').toString('utf16le');
+    assert.strictEqual((ps.match(/\{PGDN\}/g) || []).length, 8); // amount is capped at 8
+    throwsMsg(() => L.prepare('scroll', { direction: 'sideways' }), /Unknown scroll direction/);
+    const sent = [];
+    await (await mk('linux', { pet: (c) => sent.push(c), stageMs: 0 }).prepare('scroll', { direction: 'down' })).run();
+    assert.strictEqual(sent[0].action, 'fly');
+  });
+
+  await t('browser: shortcuts per OS, harmless ones need no card, closing a tab asks first, input validated', async () => {
+    const calls = [];
+    const mk = (platform, extra = {}) => mkActions({ platform, execFile: (c, a, o, cb) => { calls.push([c, a]); cb(null, '', ''); }, ...extra });
+    const decode = (c) => Buffer.from(c[1][c[1].length - 1], 'base64').toString('utf16le');
+    const W = mk('win32');
+    const nt = await W.prepare('browser', { action: 'new_tab' });
+    assert.strictEqual(nt.auto, true);
+    assert.match(await nt.run(), /new tab/);
+    assert.match(decode(calls[0]), /SendWait\('\^t'\)/);
+    calls.length = 0;
+    await (await W.prepare('browser', { action: 'back' })).run();
+    assert.match(decode(calls[0]), /SendWait\('%\{LEFT\}'\)/);
+    calls.length = 0;
+    await (await W.prepare('browser', { action: 'go_to_tab', tab: 3 })).run();
+    assert.match(decode(calls[0]), /SendWait\('\^3'\)/);
+    calls.length = 0;
+    await (await mk('darwin').prepare('browser', { action: 'refresh' })).run();
+    assert.match(calls[0][1][1], /keystroke \"r\" using \{command down\}/);
+    calls.length = 0;
+    await (await mk('linux').prepare('browser', { action: 'next_tab' })).run();
+    assert.deepStrictEqual(calls[0][1], ['key', '--clearmodifiers', 'ctrl+Tab']);
+    const close = await W.prepare('browser', { action: 'close_tab' });
+    assert.notStrictEqual(close.auto, true);
+    assert.match(close.title, /Close the browser tab/);
+    throwsMsg(() => W.prepare('browser', { action: 'go_to_tab', tab: 12 }), /1 to 9/);
+    throwsMsg(() => W.prepare('browser', { action: 'format_c' }), /Unknown browser action/);
+    const sent = [];
+    await (await mk('linux', { pet: (c) => sent.push(c), stageMs: 0 }).prepare('browser', { action: 'new_tab' })).run();
+    assert.deepStrictEqual(sent[0], { action: 'fly', x: 0.5, y: 0.035 });
+  });
+  await t('stop: pressing Stop ends the chat at once with a friendly message (Anthropic, Gemini, Groq)', async () => {
+    const ac = new AbortController();
+    let stop = false;
+    const base = { apiKey: 'k', model: 'm', system: 's', messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 'system_info', description: 'd', input_schema: { type: 'object', properties: {} } }], approve: async () => true, sleepFn: async () => {}, signal: ac.signal, stopped: () => stop };
+    let runs = 0;
+    const prepare = async () => ({ auto: true, title: 'T', details: 'D', run: async () => { runs++; stop = true; return 'ok'; } });
+    // Stop pressed during a step: the loop ends before the next request goes out
+    let calls = 0;
+    const fa = async () => { calls++; return jres(200, { stop_reason: 'tool_use', content: [{ type: 'text', text: 'Working on it' }, { type: 'tool_use', id: 'a', name: 'system_info', input: {} }] }); };
+    let r = await runChat({ ...base, prepare, fetchFn: fa });
+    assert.match(r.text, /Working on it[\s\S]*\(Stopped\.\)/);
+    assert.strictEqual(calls, 1);
+    stop = false; runs = 0;
+    calls = 0;
+    r = await runChatGroq({ ...base, prepare, fetchFn: async () => { calls++; return gmsg({ content: null, tool_calls: [gcall('system_info', {})] }); } });
+    assert.strictEqual(r.text, 'Okay, I stopped.');
+    assert.strictEqual(calls, 1);
+    stop = false;
+    calls = 0;
+    r = await runChatGemini({ ...base, prepare, fetchFn: async () => { calls++; return jres(200, { candidates: [{ content: { parts: [{ functionCall: { name: 'system_info', args: {} } }] } }] }); } });
+    assert.strictEqual(r.text, 'Okay, I stopped.');
+    assert.strictEqual(calls, 1);
+    // Stop pressed while a request is in flight: the request is aborted, no error shown
+    stop = false;
+    const ac2 = new AbortController();
+    const slow = (u, init) => new Promise((_, rej) => { init.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; rej(e); }); setTimeout(() => ac2.abort(), 5); });
+    r = await runChatGroq({ ...base, signal: ac2.signal, stopped: () => false, prepare, fetchFn: slow });
+    assert.strictEqual(r.text, 'Okay, I stopped.');
+    assert.strictEqual(r.error, undefined);
   });
 
   // ---------------------------------------------------------------- Pip's own body (pet_do)

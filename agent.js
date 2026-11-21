@@ -7,6 +7,44 @@
  * action is reported back to Claude as an error so it can adapt.
  */
 
+
+// ---------------------------------------------------------------------------------------------
+// Safety net: if the user asked Pip to DO something (open, play, search, mute...) and the model
+// answered with a link or "you can click..." instructions without using any tool, nudge it once.
+// ---------------------------------------------------------------------------------------------
+const ACTION_ASK = /\b(open|go to|launch|start up|play|search|look up|google|pull up|bring up|take me to|navigate|visit|put on|turn (it )?(up|down|on|off)|mute|unmute|pause|resume|skip|volume|louder|quieter)\b/i;
+const LINK_OR_HOWTO = /(https?:\/\/\S+|\bwww\.\S+|\byou (can|could|may|should) (just )?(open|click|go to|visit|type|press|search|head to|navigate)\b|\b(just|simply) (open|click|go to|visit|type|press|search)\b)/i;
+
+function actionNudge(userText, replyText) {
+  if (typeof userText !== 'string' || typeof replyText !== 'string') return null;
+  if (!ACTION_ASK.test(userText)) return null;
+  if (/\b(link|url|address)\b/i.test(userText)) return null; // they really did ask for the link
+  if (!LINK_OR_HOWTO.test(replyText)) return null;
+  return 'You answered with a link or instructions, but the user asked you to DO this. Do it now with your tools ' +
+    '(open_url for sites, search_site for searching or playing on YouTube, open_app for apps, media_control for volume and music, type_text to write in an app). ' +
+    'The app shows the user an approval card itself when one is needed, so do not ask again. Then say in one short line what you did.';
+}
+
+const stopText = (said) => (said.length ? said.join('\n\n') + '\n\n(Stopped.)' : 'Okay, I stopped.');
+
+// Stops a model from going round in circles (looking, pressing, looking again...) until the tokens run out.
+// Wrap prepare() with it: the same call repeated, or too many look-ups in one chat turn, comes back as an error
+// that tells the model to finish with what it has.
+function makeLoopGuard({ maxSame = 2, maxPerTool = { find_ui: 4, look_at_screen: 3, press_ui: 6 } } = {}) {
+  const seen = new Map();
+  const perTool = new Map();
+  return function check(name, input) {
+    let sig;
+    try { sig = name + ':' + JSON.stringify(input || {}); } catch (_) { sig = name; }
+    const same = (seen.get(sig) || 0) + 1;
+    seen.set(sig, same);
+    const n = (perTool.get(name) || 0) + 1;
+    perTool.set(name, n);
+    if (same > maxSame) throw new Error(`You already did exactly this ${same - 1} times. Stop repeating it. Use the result you have, try a different tool, or tell the user plainly what is not working.`);
+    if (maxPerTool[name] && n > maxPerTool[name]) throw new Error(`You have used ${name} ${n - 1} times already in this request. Stop looking. For typing, call type_text WITHOUT a target (it types where the user's cursor is), or ask the user to click the box and try again.`);
+  };
+}
+
 async function runChat({
   fetchFn,
   apiKey,
@@ -18,15 +56,22 @@ async function runChat({
   approve,
   maxSteps = 20,
   timeoutMs = 180000,
+  signal = null,
+  stopped = () => false,
+  nudge = null,
 }) {
   const convo = messages.slice();
   const said = [];
+  let called = false;
+  let nudged = false;
 
   for (let step = 0; step <= maxSteps; step++) {
+    if (stopped()) return { text: stopText(said) };
     const body = { model, max_tokens: 6000, system, messages: convo };
     if (tools.length) body.tools = tools;
 
     const ac = new AbortController();
+    if (signal) { if (signal.aborted) ac.abort(); else signal.addEventListener('abort', () => ac.abort(), { once: true }); }
     const timer = setTimeout(() => ac.abort(), timeoutMs);
     let res;
     try {
@@ -41,6 +86,7 @@ async function runChat({
         signal: ac.signal,
       });
     } catch (e) {
+      if (signal && signal.aborted) return { text: stopText(said) };
       return { error: e.name === 'AbortError' ? 'The request timed out.' : `Network problem (${e.message})` };
     } finally {
       clearTimeout(timer);
@@ -59,6 +105,14 @@ async function runChat({
 
     const calls = blocks.filter((b) => b.type === 'tool_use');
     if (data.stop_reason !== 'tool_use' || !calls.length) {
+      const n = text && !called && !nudged && nudge ? nudge(text) : null;
+      if (n) {
+        nudged = true;
+        said.pop();
+        convo.push({ role: 'assistant', content: blocks });
+        convo.push({ role: 'user', content: n });
+        continue;
+      }
       return { text: said.join('\n\n') || '...' };
     }
 
@@ -71,6 +125,7 @@ async function runChat({
   return { text: (said.join('\n\n') + '\n\nThat was a lot of steps, so I stopped here. Ask me to continue if you want more!').trim() };
 
   async function handleCall(call) {
+    called = true;
     const fail = (msg) => ({ type: 'tool_result', tool_use_id: call.id, content: msg, is_error: true });
     try {
       const action = await prepare(call.name, call.input); // validates; does nothing yet
@@ -142,14 +197,20 @@ async function runChatGemini({
   approve,
   maxSteps = 20,
   timeoutMs = 180000,
+  signal = null,
+  stopped = () => false,
   sleepFn = (ms) => new Promise((r) => setTimeout(r, ms)),
+  nudge = null,
 }) {
+  let called = false;
+  let nudged = false;
   const contents = messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
   while (contents.length && contents[0].role !== 'user') contents.shift();
   const said = [];
   const url = `${GEMINI_BASE}${encodeURIComponent(model)}:generateContent`;
 
   for (let step = 0; step <= maxSteps; step++) {
+    if (stopped()) return { text: stopText(said) };
     const body = { systemInstruction: { parts: [{ text: system }] }, contents, generationConfig: { maxOutputTokens: 8192 } };
     if (tools.length) {
       body.tools = [{ functionDeclarations: toGeminiTools(tools) }];
@@ -161,6 +222,7 @@ async function runChatGemini({
     for (const wait of [0, 5000, 12000]) {
       if (wait) await sleepFn(wait);
       const ac = new AbortController();
+      if (signal) { if (signal.aborted) ac.abort(); else signal.addEventListener('abort', () => ac.abort(), { once: true }); }
       const timer = setTimeout(() => ac.abort(), timeoutMs);
       try {
         res = await fetchFn(url, {
@@ -170,7 +232,8 @@ async function runChatGemini({
           signal: ac.signal,
         });
       } catch (e) {
-        return { error: e.name === 'AbortError' ? 'The request timed out.' : `Network problem (${e.message})` };
+        if (signal && signal.aborted) return { text: stopText(said) };
+      return { error: e.name === 'AbortError' ? 'The request timed out.' : `Network problem (${e.message})` };
       } finally {
         clearTimeout(timer);
       }
@@ -191,6 +254,14 @@ async function runChatGemini({
     if (text) said.push(text);
 
     if (!calls.length) {
+      const n = text && !called && !nudged && nudge ? nudge(text) : null;
+      if (n) {
+        nudged = true;
+        said.pop();
+        contents.push({ role: 'model', parts });
+        contents.push({ role: 'user', parts: [{ text: n }] });
+        continue;
+      }
       if (said.length) return { text: said.join('\n\n') };
       const block = data.promptFeedback && data.promptFeedback.blockReason;
       if (block) return { error: `Gemini would not answer that (${block}).` };
@@ -213,6 +284,7 @@ async function runChatGemini({
   return { text: (said.join('\n\n') + '\n\nThat was a lot of steps, so I stopped here. Ask me to continue if you want more!').trim() };
 
   async function handleCall(fc) {
+    called = true;
     const name = fc.name;
     const reply = (response, extra) => ({
       part: { functionResponse: Object.assign({ name, response }, fc.id ? { id: fc.id } : {}) },
@@ -281,13 +353,19 @@ async function runChatOpenAI({
   approve,
   maxSteps = 20,
   timeoutMs = 180000,
+  signal = null,
+  stopped = () => false,
   sleepFn = (ms) => new Promise((r) => setTimeout(r, ms)),
+  nudge = null,
 }) {
+  let called = false;
+  let nudged = false;
   const convo = [{ role: 'system', content: system }, ...messages.map((m) => ({ role: m.role, content: m.content }))];
   const said = [];
   const imageMsgs = new Set(); // screenshot messages already in the conversation (internal bookkeeping, never sent)
 
   for (let step = 0; step <= maxSteps; step++) {
+    if (stopped()) return { text: stopText(said) };
     const body = { model, messages: convo, max_tokens: 8192 };
     if (tools.length) { body.tools = toGroqTools(tools); body.tool_choice = 'auto'; }
 
@@ -296,6 +374,7 @@ async function runChatOpenAI({
     for (const wait of [0, 5000, 12000]) {
       if (wait) await sleepFn(wait);
       const ac = new AbortController();
+      if (signal) { if (signal.aborted) ac.abort(); else signal.addEventListener('abort', () => ac.abort(), { once: true }); }
       const timer = setTimeout(() => ac.abort(), timeoutMs);
       try {
         res = await fetchFn(url, {
@@ -305,7 +384,8 @@ async function runChatOpenAI({
           signal: ac.signal,
         });
       } catch (e) {
-        return { error: e.name === 'AbortError' ? 'The request timed out.' : `Network problem (${e.message})` };
+        if (signal && signal.aborted) return { text: stopText(said) };
+      return { error: e.name === 'AbortError' ? 'The request timed out.' : `Network problem (${e.message})` };
       } finally {
         clearTimeout(timer);
       }
@@ -333,6 +413,14 @@ async function runChatOpenAI({
     if (text) said.push(text);
 
     if (!calls.length) {
+      const n = text && !called && !nudged && nudge ? nudge(text) : null;
+      if (n) {
+        nudged = true;
+        said.pop();
+        convo.push({ role: 'assistant', content: msg.content });
+        convo.push({ role: 'user', content: n });
+        continue;
+      }
       if (said.length) return { text: said.join('\n\n') };
       return { error: `${label} sent back an empty answer. Try asking again.` };
     }
@@ -355,6 +443,7 @@ async function runChatOpenAI({
   return { text: (said.join('\n\n') + '\n\nThat was a lot of steps, so I stopped here. Ask me to continue if you want more!').trim() };
 
   async function handleCall(c, images) {
+    called = true;
     let args = {};
     try { args = c.function.arguments ? JSON.parse(c.function.arguments) : {}; } catch (_) {
       return 'Error: the tool arguments were not valid JSON. Try the call again.';
@@ -407,4 +496,4 @@ function runChatCloudflare({ accountId, ...opts }) {
   return runChatOpenAI({ url: cloudflareUrl(accountId), label: 'Cloudflare', vision: true, errorMessage: cloudflareErrorMessage, ...opts });
 }
 
-module.exports = { runChat, runChatGemini, runChatGroq, runChatCloudflare, cloudflareUrl, toGeminiTools, toGeminiSchema, toGroqTools };
+module.exports = { makeLoopGuard, actionNudge, runChat, runChatGemini, runChatGroq, runChatCloudflare, cloudflareUrl, toGeminiTools, toGeminiSchema, toGroqTools };

@@ -617,6 +617,8 @@
   let history = [];
   let convoCtx = null;
   let busy = false;
+  let typingEl = null;   // the "working..." bubble, so step updates can reach it
+  const stopBtn = $('stop');
   let rec = null;        // the recording in progress (voice chat)
   let micBusy = false;   // from tapping the mic until the words have been sent
   let wide = false;
@@ -727,7 +729,8 @@
   function addTyping() {
     const d = document.createElement('div');
     d.className = 'm pet typing';
-    d.innerHTML = '<i></i><i></i><i></i>';
+    d.innerHTML = '<i></i><i></i><i></i><span class="step"></span>';
+    typingEl = d;
     msgs.appendChild(d);
     msgs.scrollTop = msgs.scrollHeight;
     return d;
@@ -771,6 +774,7 @@
     history.push({ role: 'user', content: text });
     busy = true;
     thinkingFlag = true;
+    stopBtn.hidden = false;
     const typing = addTyping();
     try {
       const res = await pip.chat({ messages: trimmedHistory(), ctx: convoCtx });
@@ -794,6 +798,8 @@
     } finally {
       busy = false;
       thinkingFlag = false;
+      stopBtn.hidden = true;
+      typingEl = null;
       if (reopenAfter) { reopenAfter = false; openChat(); }
     }
   }
@@ -836,7 +842,15 @@
     pip.focus();
   }
   pip.onApproval(showApproval);
-  pip.onApprovalExpired(({ id }) => { const f = cards.get(id); if (f) f('⏱ Expired'); });
+  pip.onApprovalExpired(({ id, label }) => { const f = cards.get(id); if (f) f(label || '⏱ Expired'); });
+  pip.onProgress(({ n, title }) => {
+    const el = typingEl && typingEl.querySelector('.step');
+    if (!el) return;
+    el.textContent = `step ${n}: ${String(title || '').toLowerCase().slice(0, 40)}${n >= 8 ? ' (press Stop if I am going in circles)' : ''}`;
+    msgs.scrollTop = msgs.scrollHeight;
+  });
+  stopBtn.addEventListener('click', () => { pip.stopChat(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && busy) pip.stopChat(); });
   pip.onSay(({ text, ms }) => showBubble(text, ms || 3000));
   pip.onPet(petCommand);
   pip.onHidePanel(() => { if (st.chatOpen) { reopenAfter = true; closeChat(); } });

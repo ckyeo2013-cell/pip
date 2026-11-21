@@ -217,6 +217,50 @@ function buildKeyCommand(combo, platform) {
   return { cmd: 'xdotool', args: ['key', '--clearmodifiers', x.join('+')] };
 }
 
+// Scrolling the page in front, using only Page Up/Down and Home/End (nothing can be typed this way).
+const SCROLL_DIRS = ['down', 'up', 'top', 'bottom'];
+function scrollCommands(direction, amount, platform) {
+  if (!SCROLL_DIRS.includes(direction)) throw new Error(`Unknown scroll direction "${direction}". Use down, up, top or bottom.`);
+  const key = { down: 'pagedown', up: 'pageup', top: 'home', bottom: 'end' }[direction];
+  const times = direction === 'top' || direction === 'bottom' ? 1 : Math.max(1, Math.min(8, Math.round(Number(amount)) || 1));
+  const combo = parseCombo(key);
+  if (platform === 'win32') {
+    // one PowerShell run for all presses (starting PowerShell is slow)
+    const k = NAMED[key].win;
+    const script = 'Add-Type -AssemblyName System.Windows.Forms; ' + Array(times).fill(`[System.Windows.Forms.SendKeys]::SendWait('${k}'); Start-Sleep -Milliseconds 220`).join('; ');
+    return { times, cmds: [{ cmd: 'powershell.exe', args: psArgs(script) }] };
+  }
+  return { times, cmds: Array(times).fill(null).map(() => buildKeyCommand(combo, platform)) };
+}
+
+// Browser controls: ordinary keyboard shortcuts for the browser in front (nothing can be typed this way).
+const BROWSER_ACTIONS = ['new_tab', 'close_tab', 'reopen_tab', 'next_tab', 'previous_tab', 'go_to_tab', 'back', 'forward', 'refresh', 'address_bar', 'find'];
+function browserKeys(action, platform, value) {
+  if (!BROWSER_ACTIONS.includes(action)) throw new Error(`Unknown browser action "${action}". Use one of: ${BROWSER_ACTIONS.join(', ')}.`);
+  const mac = platform === 'darwin';
+  const m = mac ? 'cmd' : 'ctrl';
+  let n = null;
+  if (action === 'go_to_tab') {
+    n = Math.round(Number(value));
+    if (!(n >= 1 && n <= 9)) throw new Error('go_to_tab needs a tab number from 1 to 9 (9 means the last tab).');
+  }
+  const table = {
+    new_tab: [`${m}+t`, 'Opened a new tab.'],
+    close_tab: [`${m}+w`, 'Closed the tab.'],
+    reopen_tab: [`${m}+shift+t`, 'Brought back the last closed tab.'],
+    next_tab: ['ctrl+tab', 'Switched to the next tab.'],
+    previous_tab: ['ctrl+shift+tab', 'Switched to the previous tab.'],
+    go_to_tab: [`${m}+${n}`, `Switched to tab ${n}${n === 9 ? ' (the last one)' : ''}.`],
+    back: [mac ? 'cmd+left' : 'alt+left', 'Went back a page.'],
+    forward: [mac ? 'cmd+right' : 'alt+right', 'Went forward a page.'],
+    refresh: [mac ? 'cmd+r' : 'f5', 'Refreshed the page.'],
+    address_bar: [`${m}+l`, 'Put the cursor in the address bar.'],
+    find: [`${m}+f`, 'Opened find-on-page.'],
+  };
+  const [combo, label] = table[action];
+  return { combo, label, cmd: buildKeyCommand(parseCombo(combo), platform) };
+}
+
 // ------------------------------------------------------------------ apps
 const APP_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,59}$/;
 
@@ -309,7 +353,119 @@ function buildIcs({ title, start, durationMinutes = 60, location = '', notes = '
   return lines.join('\r\n') + '\r\n';
 }
 
+
+// ------------------------------------------------------------------ websites, searches, media
+// Names people say out loud -> the real address. Used by open_url so "open YouTube" just works.
+const SITES = {
+  youtube: 'https://www.youtube.com/', 'youtube music': 'https://music.youtube.com/', gmail: 'https://mail.google.com/',
+  google: 'https://www.google.com/', 'google maps': 'https://www.google.com/maps', maps: 'https://www.google.com/maps',
+  'google drive': 'https://drive.google.com/', drive: 'https://drive.google.com/', 'google docs': 'https://docs.google.com/',
+  'google calendar': 'https://calendar.google.com/', calendar: 'https://calendar.google.com/', 'google translate': 'https://translate.google.com/',
+  translate: 'https://translate.google.com/', wikipedia: 'https://www.wikipedia.org/', github: 'https://github.com/',
+  'stack overflow': 'https://stackoverflow.com/', stackoverflow: 'https://stackoverflow.com/', reddit: 'https://www.reddit.com/',
+  netflix: 'https://www.netflix.com/', spotify: 'https://open.spotify.com/', twitch: 'https://www.twitch.tv/',
+  amazon: 'https://www.amazon.com/', linkedin: 'https://www.linkedin.com/', twitter: 'https://x.com/', x: 'https://x.com/',
+  imdb: 'https://www.imdb.com/', duckduckgo: 'https://duckduckgo.com/', bing: 'https://www.bing.com/', weather: 'https://weather.com/',
+  chatgpt: 'https://chatgpt.com/', claude: 'https://claude.ai/', outlook: 'https://outlook.live.com/', facebook: 'https://www.facebook.com/',
+  instagram: 'https://www.instagram.com/', whatsapp: 'https://web.whatsapp.com/', discord: 'https://discord.com/app',
+};
+
+// "youtube", "the YouTube website", "youtube.com", "example.org" -> an https address (or null if it is none of those).
+function resolveSite(text) {
+  if (typeof text !== 'string') return null;
+  let t = text.trim().toLowerCase().replace(/^(the|open|go to)\s+/, '').replace(/\s+(website|site|web ?page|homepage|app)$/, '').trim();
+  if (SITES[t]) return SITES[t];
+  const noCom = t.replace(/\.com$/, '');
+  if (SITES[noCom]) return SITES[noCom];
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,24}(\/\S*)?$/.test(t)) return 'https://' + t;
+  return null;
+}
+
+const enc = encodeURIComponent;
+const SEARCH_SITES = {
+  youtube: (q) => `https://www.youtube.com/results?search_query=${enc(q)}`,
+  google: (q) => `https://www.google.com/search?q=${enc(q)}`,
+  images: (q) => `https://www.google.com/search?tbm=isch&q=${enc(q)}`,
+  maps: (q) => `https://www.google.com/maps/search/${enc(q)}`,
+  amazon: (q) => `https://www.amazon.com/s?k=${enc(q)}`,
+  wikipedia: (q) => `https://en.wikipedia.org/w/index.php?search=${enc(q)}`,
+  github: (q) => `https://github.com/search?q=${enc(q)}`,
+  stackoverflow: (q) => `https://stackoverflow.com/search?q=${enc(q)}`,
+  reddit: (q) => `https://www.reddit.com/search/?q=${enc(q)}`,
+  spotify: (q) => `https://open.spotify.com/search/${enc(q)}`,
+  twitch: (q) => `https://www.twitch.tv/search?term=${enc(q)}`,
+  imdb: (q) => `https://www.imdb.com/find/?q=${enc(q)}`,
+  duckduckgo: (q) => `https://duckduckgo.com/?q=${enc(q)}`,
+  bing: (q) => `https://www.bing.com/search?q=${enc(q)}`,
+};
+
+// First video on a YouTube results page (the page embeds its data as JSON), or null.
+function firstYoutubeId(html) {
+  const m = /"videoId":"([A-Za-z0-9_-]{11})"/.exec(String(html || ''));
+  return m ? m[1] : null;
+}
+
+// Friendly app names -> what each OS actually calls them.
+const APP_ALIASES = {
+  win32: { 'vs code': 'code', vscode: 'code', 'visual studio code': 'code', word: 'winword', excel: 'excel', powerpoint: 'powerpnt', 'file explorer': 'explorer', files: 'explorer', explorer: 'explorer', terminal: 'wt', paint: 'mspaint', calculator: 'calc', notepad: 'notepad', 'task manager': 'taskmgr', outlook: 'outlook', teams: 'msteams', 'microsoft edge': 'msedge', edge: 'msedge', chrome: 'chrome' },
+  darwin: { 'vs code': 'Visual Studio Code', vscode: 'Visual Studio Code', word: 'Microsoft Word', excel: 'Microsoft Excel', powerpoint: 'Microsoft PowerPoint', 'file explorer': 'Finder', files: 'Finder', explorer: 'Finder', edge: 'Microsoft Edge', chrome: 'Google Chrome', music: 'Music', notes: 'Notes', calculator: 'Calculator', terminal: 'Terminal' },
+};
+function resolveAppName(name, platform) {
+  const map = APP_ALIASES[platform] || {};
+  return map[String(name).trim().toLowerCase()] || name;
+}
+// A few apps that only open a window and can do nothing by themselves: no approval card needed.
+const SAFE_APPS = ['calculator', 'calc', 'notepad', 'paint', 'mspaint', 'spotify', 'music', 'notes', 'textedit', 'finder', 'file explorer', 'explorer', 'files', 'calendar', 'maps', 'weather', 'clock'];
+
+const MEDIA_ACTIONS = ['volume_up', 'volume_down', 'mute', 'set_volume', 'play_pause', 'next', 'previous'];
+const MEDIA_LABELS = {
+  volume_up: 'Turned the volume up.', volume_down: 'Turned the volume down.', mute: 'Toggled mute.',
+  play_pause: 'Pressed play/pause.', next: 'Skipped to the next track.', previous: 'Went back to the previous track.',
+};
+
+// Returns { cmd, args } to run for a media/volume action on this OS. Throws for unknown actions or bad values.
+function mediaCommand(action, platform, value) {
+  if (!MEDIA_ACTIONS.includes(action)) throw new Error(`Unknown media action: ${action}`);
+  let level = null;
+  if (action === 'set_volume') {
+    level = Math.round(Number(value));
+    if (!Number.isFinite(level) || level < 0 || level > 100) throw new Error('Volume must be a number from 0 to 100.');
+  }
+  if (platform === 'win32') {
+    const keys = { volume_up: 175, volume_down: 174, mute: 173, play_pause: 179, next: 176, previous: 177 };
+    let script;
+    if (action === 'set_volume') script = `$w=New-Object -ComObject WScript.Shell; 1..50 | % { $w.SendKeys([char]174) }; 1..${Math.round(level / 2)} | % { $w.SendKeys([char]175) }`;
+    else if (action === 'volume_up' || action === 'volume_down') script = `$w=New-Object -ComObject WScript.Shell; 1..5 | % { $w.SendKeys([char]${keys[action]}) }`;
+    else script = `(New-Object -ComObject WScript.Shell).SendKeys([char]${keys[action]})`;
+    return { cmd: 'powershell.exe', args: psArgs(script) };
+  }
+  if (platform === 'darwin') {
+    const player = (verb) => `if application "Spotify" is running then tell application "Spotify" to ${verb}\nif application "Music" is running then tell application "Music" to ${verb}`;
+    const scripts = {
+      volume_up: 'set volume output volume ((output volume of (get volume settings)) + 10)',
+      volume_down: 'set volume output volume ((output volume of (get volume settings)) - 10)',
+      mute: 'set volume output muted (not (output muted of (get volume settings)))',
+      set_volume: `set volume output volume ${level}`,
+      play_pause: player('playpause'), next: player('next track'), previous: player('previous track'),
+    };
+    const args = [];
+    for (const line of scripts[action].split('\n')) args.push('-e', line);
+    return { cmd: 'osascript', args };
+  }
+  const sh = {
+    volume_up: 'pactl set-sink-volume @DEFAULT_SINK@ +10% || amixer -q set Master 10%+',
+    volume_down: 'pactl set-sink-volume @DEFAULT_SINK@ -10% || amixer -q set Master 10%-',
+    mute: 'pactl set-sink-mute @DEFAULT_SINK@ toggle || amixer -q set Master toggle',
+    set_volume: `pactl set-sink-volume @DEFAULT_SINK@ ${level}% || amixer -q set Master ${level}%`,
+    play_pause: 'playerctl play-pause', next: 'playerctl next', previous: 'playerctl previous',
+  };
+  return { cmd: '/bin/sh', args: ['-c', sh[action]] };
+}
+
 module.exports = {
+  BROWSER_ACTIONS, browserKeys,
+  SCROLL_DIRS, scrollCommands,
+  SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
   PAGES, pageNames, settingsLaunch,
   psArgs, buildShell, shellName, checkCommand,
   parseCombo, buildKeyCommand,

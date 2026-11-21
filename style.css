@@ -131,3 +131,11 @@ textarea:focus { background: var(--bg); border-color: var(--blue); box-shadow: 0
 .codeblk pre code { background: none; padding: 0; color: inherit; font: inherit; }
 
 .hint.warnbox { background: var(--red-soft); border-radius: 8px; padding: 8px 10px; color: var(--text); }
+
+#stop { all: unset; cursor: pointer; flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--red); color: #fff; display: flex; align-items: center; justify-content: center; }
+#stop[hidden] { display: none; }
+#stop:hover { filter: brightness(1.1); }
+#stop:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+#stop svg { width: 16px; height: 16px; fill: currentColor; pointer-events: none; }
+.typing .step { font-size: 11px; color: var(--sub); margin-left: 6px; align-self: center; max-width: 220px; }
+.typing:has(.step:not(:empty)) { padding-right: 14px; }
