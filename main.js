@@ -11,6 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
 const { createActions } = require('./actions');
+const brain = require('./brain');
 const { runChat, runChatGemini, runChatGroq, runChatCloudflare, actionNudge, makeLoopGuard } = require('./agent');
 const { createCalendar } = require('./calendar');
 const voice = require('./voice');
@@ -435,7 +436,7 @@ function setupActions() {
     protectedPaths: [app.getPath('userData')],
     remind,
     pet: (cmd) => send('pet', cmd),
-    getScreenInfo: () => { const d = screen.getPrimaryDisplay(); return { workArea: d.workArea, scaleFactor: d.scaleFactor || 1 }; },
+    getScreenInfo: () => { const d = screen.getPrimaryDisplay(); return { workArea: d.workArea, bounds: d.bounds, scaleFactor: d.scaleFactor || 1 }; },
     pipPid: process.pid,
     fetchFn: fetch,
     notify: (text, ms) => send('say', { text, ms }),
@@ -486,10 +487,11 @@ function buildActionRules() {
     `\n\nTYPING: when the user asks you to type or write something into an app, call type_text RIGHT AWAY with the exact text and no target. It finds the box with the user's cursor, flies there and types. ` +
     `Do not call find_ui first, and do not keep checking or retrying. If the app named is not open, open_app first, then type_text. After type_text succeeds, tell the user it is typed and stop. ` +
     `Only use find_ui plus a target when they name a specific box that is NOT where their cursor is. Never loop: at most a couple of tool calls per step of the job. ` +
-    `Messaging a friend (Discord, WhatsApp, Messenger...): open the app if needed, open that person's chat, then call type_text ONCE with ONLY the message and press_enter true; ` +
-    `set replace true so leftover or half-typed text in the message box is replaced instead of glued onto your message. Never type extra words like "its" or the person's name into the box. ` +
-    `If the chat is not open yet, open it first (find_ui then press_ui on the person's name) and look again with find_ui before typing. ` +
-    `If a message came out garbled, do not send another: say so, and retype it with replace true.` +
+    `Messaging and group chats (Discord, Slack, Teams, WhatsApp): do the whole job yourself, never ask the user to open the chat. Use open_chat with the app and the person or group name; it opens the app and the chat with the keyboard. ` +
+    `Then look_at_screen once to check the right chat is open (the name shows at the top); if it is not, call open_chat again with a fuller name. The message box normally has the cursor already, so call type_text ONCE with ONLY the message, at_cursor true (instant) and no target; set replace true so leftover text is replaced, and press_enter true only when they asked you to send it. ` +
+    `If the box does not have the cursor, click it yourself: look_at_screen, then click_screen on the message box, then type_text with at_cursor true. Never type extra words like "its" or the person's name into the box. If a message came out garbled, do not send another: retype it with replace true. ` +
+    `To search INSIDE a chat (find a message), use the app's search shortcut with press_keys (Ctrl+F in Discord, Slack and WhatsApp), type_text the words, press enter, then look_at_screen and read the results to the user. ` +
+    `For any other app that shares no buttons with find_ui: look_at_screen, then click_screen on what you need, then look again.` +
     `\n\nButtons and boxes: to press, open or tick something, use find_ui (with a short 'query' like "save" to keep the list small), then press_ui or type_text with the [number]. ` +
     `Look again with find_ui after every press, because the screen changes. If find_ui finds nothing, use look_at_screen and tell the user where to click. ` +
     `Only press what the user asked for, and never press things like Delete, Send, Pay or Install unless they clearly asked for exactly that.` +
@@ -502,7 +504,7 @@ function buildActionRules() {
     `nickname; never invent a date. To put something on their calendar use add_calendar_event; for "remind me in 20 minutes" use set_reminder.` +
     `\n\nWeb: to look something up or read a page, use fetch_url (for example https://duckduckgo.com/html/?q=search+words) and answer from what you read, ` +
     `naming the site; use open_url only when the user wants the page opened on screen.` +
-    `\n\nGAMES: when the user wants you to play a turn-based or puzzle game on screen (Wordle, a trivia game like Krillion, a keyboard puzzle), call start_game ONCE (they approve once), then loop with no chatter between steps: look_at_screen, decide, game_keys (text for letters or digits, keys like enter or backspace), look again. You have no mouse: use the game's keyboard controls, or find_ui and press_ui for real buttons. If the game needs mouse clicks on a drawing, tell the user and call end_game. ` +
+    `\n\nGAMES: when the user wants you to play a turn-based or puzzle game on screen (Wordle, a trivia game like Krillion, a keyboard puzzle), call start_game ONCE (they approve once), then loop with no chatter between steps: look_at_screen, decide, game_keys (text for letters or digits, keys like enter or backspace), look again. Use the game's keyboard controls, or find_ui and press_ui for real buttons. If the game needs mouse clicks on a drawing, tell the user and call end_game. ` +
     `Wordle: open with a strong word like "crane" or "slate", then use the colours (green = right letter in the right place, yellow = in the word but elsewhere, grey = not in the word), keep a short list of what you know, never repeat a guess, only guess real 5-letter English words, and you get 6 tries. ` +
     `Rare-answer trivia like Krillion: each prompt has a short timer (about 25 seconds), so do ONE look per prompt and answer right away; a valid but less obvious answer scores more than the first one everyone thinks of, but never risk an invalid one, and spell it plainly. ` +
     `Only play single-player, practice or casual games the user asked for. Stop with end_game when it is over or stuck, and tell the user the result. If a login, payment, purchase or ad appears, stop and tell them.` +
@@ -516,9 +518,50 @@ function buildActionRules() {
 }
 
 // ------------------------------------------------------------ chat
+// Pip's own little brain (brain.js): plain code, no AI. It answers simple requests at once and runs the same
+// tools the AI would, with the same approval cards. Returns null when the AI should take over instead.
+async function runBrain(plan, hasAI) {
+  if (plan.reply) return { text: plan.reply };
+  const canAct = !!(settings.actions && actions);
+  if (!canAct) return hasAI ? null : { text: 'I can do that, but actions are turned off. Tap the ⚙ and switch them on.' };
+  if (chatBusy) return null;
+  chatBusy = true;
+  stopRequested = false;
+  stepCount = 0;
+  const outs = [];
+  try {
+    for (const step of plan.steps) {
+      if (stopRequested) return { text: 'Okay, I stopped.' };
+      const a = await actions.prepare(step.name, step.input); // validates, does nothing yet
+      send('progress', { n: outs.length + 1, title: (a && a.title) || step.name });
+      const ok = a.auto ? true : await requestApproval({ title: a.title, details: a.details, risk: a.risk || 'normal' });
+      if (!ok) return { text: 'Okay, I will not do that.' };
+      const out = await a.run();
+      outs.push(typeof out === 'string' ? out : '');
+    }
+    return { text: String(plan.finish ? plan.finish(outs) : outs.join(' ')).slice(0, 4000) || 'Done!' };
+  } catch (e) {
+    if (!outs.length && hasAI) return null; // nothing happened yet: let the AI have a go
+    return { text: `Hmm, that did not work: ${e.message}` };
+  } finally {
+    chatBusy = false;
+  }
+}
+
 async function chat({ messages, ctx }) {
   const provider = settings.provider;
   const key = getKey(provider);
+  const hasAI = !!key && !(provider === 'cloudflare' && !/^[0-9a-f]{32}$/i.test(settings.cloudflareAccountId || ''));
+  {
+    const list = Array.isArray(messages) ? messages : [];
+    const last = list[list.length - 1];
+    const before = list[list.length - 2];
+    const answeringQuestion = before && before.role === 'assistant' && /\?\s*$/.test(String(before.content || '')); // "which site?" -> "youtube" is for the AI
+    if (last && last.role === 'user' && typeof last.content === 'string' && !answeringQuestion && !chatBusy && !(ctx && ctx.text)) {
+      const plan = brain.think(last.content, { platform: process.platform, hasAI });
+      if (plan) { const r = await runBrain(plan, hasAI); if (r) return r; }
+    }
+  }
   if (!key) return { error: 'no_key', provider };
   if (provider === 'cloudflare' && !/^[0-9a-f]{32}$/i.test(settings.cloudflareAccountId || '')) {
     return { error: 'Cloudflare also needs your Account ID (32 letters and numbers). Tap the ⚙ and paste it in under Cloudflare.' };

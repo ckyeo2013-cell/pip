@@ -213,6 +213,42 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     assert.match((await go('system_info', {})).out, /Memory:/);
     if (process.platform === 'linux') assert.match((await go('list_running_apps', {})).out, /Open apps/);
   });
+  await t('type_text at_cursor: no UI search and no click countdown, pastes straight away (mocked)', async () => {
+    const calls = [];
+    const K = mkActions({ platform: 'linux', execFile: (c, a, o, cb) => { calls.push(a.join(' ')); cb(null, '', ''); }, countdown: 5 });
+    const act = await K.prepare('type_text', { text: 'hi there', at_cursor: true, replace: true, press_enter: true });
+    const t0 = Date.now();
+    await act.run();
+    assert.ok(Date.now() - t0 < 3000, 'no 5 second countdown');
+    assert.deepStrictEqual(calls, ['key --clearmodifiers ctrl+a ctrl+v', 'key --clearmodifiers Return']);
+  });
+  await t('click_screen: validates, converts to real pixels, clicks once (mocked)', async () => {
+    full = true;
+    const calls = [];
+    const K = mkActions({ platform: 'linux', execFile: (c, a, o, cb) => { calls.push([c, a]); cb(null, '', ''); }, flightMs: 1,
+      getScreenInfo: () => ({ workArea: { x: 0, y: 0, width: 1000, height: 560 }, bounds: { x: 0, y: 0, width: 1000, height: 600 }, scaleFactor: 2 }) });
+    throwsMsg(() => K.prepare('click_screen', { x: 2, y: 0.5 }), /between 0 and 1/);
+    const act = await K.prepare('click_screen', { x: 0.5, y: 0.5, what: 'message box' });
+    assert.strictEqual(act.risk, 'high');
+    await act.run();
+    assert.deepStrictEqual(calls[0][1], ['mousemove', '1000', '600', 'click', '1']); // 0.5 of 1000x600 DIPs, x2 scale
+    const w = sys.clickCommand(10, 20, 'win32');
+    assert.strictEqual(w.cmd, 'powershell.exe');
+    throwsMsg(() => sys.clickCommand(-5, 1, 'win32'), /not a spot/);
+  });
+  await t('open_chat: knows the chat apps, keyboard only, pastes the name and presses Enter (mocked)', async () => {
+    full = true;
+    const calls = [];
+    const K = mkActions({ platform: 'linux', execFile: (c, a, o, cb) => { calls.push(a.join(' ')); cb(null, '', ''); } });
+    throwsMsg(() => K.prepare('open_chat', { app: 'myspace', name: 'Sam' }), /open_chat knows/);
+    throwsMsg(() => K.prepare('open_chat', { app: 'discord', name: 'a\nb' }), /one short line/);
+    const act = await K.prepare('open_chat', { app: 'discord', name: 'Study group', open_app: false });
+    assert.match(act.title, /Study group/);
+    await act.run();
+    assert.deepStrictEqual(calls, ['key --clearmodifiers ctrl+k', 'key --clearmodifiers ctrl+a ctrl+v', 'key --clearmodifiers Return']);
+    assert.ok(K.toolDefs({ hasFolder: false, fullAccess: true }).some((d) => d.name === 'open_chat'));
+    assert.ok(!K.toolDefs({ hasFolder: false, fullAccess: false }).some((d) => d.name === 'click_screen'));
+  });
   await t('key presses go through the OS tool (mocked)', async () => {
     full = true;
     const calls = [];
@@ -942,7 +978,11 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     let r = await runChat({ ...base, fetchFn: f.fetchFn });
     assert.strictEqual(r.text, 'Opened YouTube!');
     assert.deepStrictEqual(ran, ['open_url']);
-    assert.match(f.reqs[1].messages[f.reqs[1].messages.length - 1].content, /DO this/);
+    const lastContent = f.reqs[1].messages[f.reqs[1].messages.length - 1].content;
+    assert.match(Array.isArray(lastContent) ? lastContent.map((b) => b.text || '').join(' ') : lastContent, /DO this/);
+    // prompt caching: system, last tool and newest message carry a cache marker, and no more than 4 markers are ever sent
+    const marks = JSON.stringify(f.reqs[1]).split('cache_control').length - 1;
+    assert.ok(marks >= 3 && marks <= 4, 'cache markers: ' + marks);
     // Groq (OpenAI style)
     ran.length = 0;
     f = seq([gmsg({ content: 'Here: https://youtube.com' }), gmsg({ content: null, tool_calls: [gcall('open_url', { url: 'youtube' })] }), gmsg({ content: 'Done!' })]);

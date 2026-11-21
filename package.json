@@ -8,7 +8,7 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder",
-    "test": "node selftest.js && node selftest-main.js && node selftest-flight.js"
+    "test": "node selftest.js && node selftest-brain.js && node selftest-main.js && node selftest-flight.js"
   },
   "devDependencies": {
     "electron": "^39.0.0",

@@ -46,12 +46,20 @@ const txt = (t) => ({ candidates: [{ content: { parts: [{ text: t }] } }] });
   let n = 0;
   const t = async (name, fn) => { try { await fn(); n++; console.log('ok   ' + name); } catch (e) { console.error('FAIL ' + name + '\n     ' + e.stack); process.exitCode = 1; } };
 
+  await t('the built-in brain answers simple things with no key at all, and leaves real questions to the AI', async () => {
+    const hi = await handlers.chat({}, { messages: [{ role: 'user', content: 'flip a coin' }] });
+    assert.ok(/Heads|Tails/.test(hi.text), JSON.stringify(hi));
+    const q = await handlers.chat({}, { messages: [{ role: 'user', content: 'explain how clouds form' }] });
+    assert.strictEqual(q.error, 'no_key');
+    const follow = await handlers.chat({}, { messages: [{ role: 'user', content: 'help me pick a site' }, { role: 'assistant', content: 'Which site?' }, { role: 'user', content: 'flip a coin' }] });
+    assert.strictEqual(follow.error, 'no_key', 'an answer to the AI\'s own question goes to the AI');
+  });
   await t('default provider is Anthropic and asks for a key', async () => {
     const s = await handlers['settings:get']();
     assert.strictEqual(s.provider, 'anthropic');
     assert.strictEqual(s.groqModel, 'openai/gpt-oss-120b');
     assert.deepStrictEqual([s.hasAnthropicKey, s.hasGeminiKey], [false, false]);
-    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'hi' }] });
+    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'explain how clouds form' }] });
     assert.deepStrictEqual(r, { error: 'no_key', provider: 'anthropic' });
   });
   await t('saving a Gemini key + model never leaks the key to the page', async () => {
@@ -67,7 +75,7 @@ const txt = (t) => ({ candidates: [{ content: { parts: [{ text: t }] } }] });
   });
   await t('chat goes to Gemini with the saved key and model', async () => {
     script = [txt('Hi from Gemini')];
-    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'hello' }] });
+    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'explain how clouds form' }] });
     assert.deepStrictEqual(r, { text: 'Hi from Gemini' });
     assert.match(calls[0].url, /generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-2\.5-flash-lite:generateContent/);
     assert.strictEqual(calls[0].init.headers['x-goog-api-key'], 'AIzaSECRET');
@@ -90,7 +98,7 @@ const txt = (t) => ({ candidates: [{ content: { parts: [{ text: t }] } }] });
   await t('switching back to Anthropic uses the Anthropic API and its own (separate) key slot', async () => {
     await handlers['settings:save']({}, { provider: 'anthropic', apiKey: 'sk-ant-X', model: 'claude-sonnet-5-5' });
     script = [{ content: [{ type: 'text', text: 'Hi from Claude' }], stop_reason: 'end_turn' }];
-    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'hello' }] });
+    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'explain how clouds form' }] });
     assert.deepStrictEqual(r, { text: 'Hi from Claude' });
     const c = calls[calls.length - 1];
     assert.strictEqual(c.url, 'https://api.anthropic.com/v1/messages');
@@ -107,7 +115,7 @@ const txt = (t) => ({ candidates: [{ content: { parts: [{ text: t }] } }] });
     const bad = await handlers['settings:save']({}, { groqModel: '../../x?y' });
     assert.strictEqual(bad.groqModel, 'llama-3.1-8b-instant');
     script = [{ choices: [{ message: { content: 'Hi from Groq' } }] }];
-    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'hello' }] });
+    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'explain how clouds form' }] });
     assert.deepStrictEqual(r, { text: 'Hi from Groq' });
     const c = calls[calls.length - 1];
     assert.strictEqual(c.url, 'https://api.groq.com/openai/v1/chat/completions');
@@ -157,7 +165,7 @@ const txt = (t) => ({ candidates: [{ content: { parts: [{ text: t }] } }] });
     assert.strictEqual(saved.cloudflareModel, '@cf/google/gemma-4-26b-a4b-it');
     assert.strictEqual(saved.cloudflareAccountId, ACCT);
     script = [{ choices: [{ message: { content: 'Hi from Cloudflare' } }] }];
-    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'hello' }] });
+    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'explain how clouds form' }] });
     assert.deepStrictEqual(r, { text: 'Hi from Cloudflare' });
     const c = calls[calls.length - 1];
     assert.strictEqual(c.url, `https://api.cloudflare.com/client/v4/accounts/${ACCT}/ai/v1/chat/completions`);
@@ -166,7 +174,7 @@ const txt = (t) => ({ candidates: [{ content: { parts: [{ text: t }] } }] });
   });
   await t('Cloudflare: without an account ID the chat says so; approval cards name Cloudflare', async () => {
     await handlers['settings:save']({}, { cloudflareAccountId: '' });
-    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'hello' }] });
+    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'explain how clouds form' }] });
     assert.match(r.error, /Account ID/);
     await handlers['settings:save']({}, { cloudflareAccountId: '0123456789abcdef0123456789abcdef' });
     sent.length = 0;

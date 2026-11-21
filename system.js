@@ -217,6 +217,37 @@ function buildKeyCommand(combo, platform) {
   return { cmd: 'xdotool', args: ['key', '--clearmodifiers', x.join('+')] };
 }
 
+
+// ------------------------------------------------------------------ mouse click + chat apps
+// One left click at a spot on the main screen. px/py are physical pixels on Windows/Linux, points on macOS.
+function clickCommand(px, py, platform) {
+  const x = Math.round(Number(px)), y = Math.round(Number(py));
+  if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 20000 || y > 20000) throw new Error('That is not a spot on the screen.');
+  if (platform === 'win32') {
+    const script = "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class PipMouse { [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int x, int y); [DllImport(\"user32.dll\")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e); }'; " +
+      `[void][PipMouse]::SetProcessDPIAware(); [void][PipMouse]::SetCursorPos(${x}, ${y}); Start-Sleep -Milliseconds 120; ` +
+      '[PipMouse]::mouse_event(2,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 50; [PipMouse]::mouse_event(4,0,0,0,[UIntPtr]::Zero)';
+    return { cmd: 'powershell.exe', args: psArgs(script) };
+  }
+  if (platform === 'darwin') return { cmd: 'osascript', args: ['-e', `tell application "System Events" to click at {${x}, ${y}}`] };
+  return { cmd: 'xdotool', args: ['mousemove', String(x), String(y), 'click', '1'] };
+}
+
+// Messaging apps: the app's own "jump to a conversation" shortcut (keyboard only, so it works even when the
+// app shows Pip nothing to look at). Windows/Linux use Ctrl, macOS uses Cmd.
+const CHAT_APPS = {
+  discord:  { open: 'Discord',         key: 'k', what: "Discord's quick switcher (Ctrl+K)" },
+  slack:    { open: 'Slack',           key: 'k', what: "Slack's jump-to box (Ctrl+K)" },
+  teams:    { open: 'Microsoft Teams', key: 'e', what: "Teams' search box (Ctrl+E)" },
+  whatsapp: { open: 'WhatsApp',        key: 'f', what: "WhatsApp's chat search (Ctrl+F)" },
+};
+function chatApp(name) {
+  const k = String(name || '').toLowerCase().replace(/[^a-z]/g, '');
+  const key = k === 'microsoftteams' ? 'teams' : k;
+  if (!CHAT_APPS[key]) throw new Error(`open_chat knows ${Object.keys(CHAT_APPS).join(', ')}. For another app, open it with open_app and use look_at_screen, then click_screen on its search box.`);
+  return Object.assign({ id: key }, CHAT_APPS[key]);
+}
+
 // Game input: plain letters/digits plus a few named keys, sent in ONE command (no modifiers, nothing risky).
 const GAME_KEYS = ['enter', 'backspace', 'tab', 'space', 'up', 'down', 'left', 'right'];
 function gameKeyCommand(text, keys, platform) {
@@ -511,7 +542,7 @@ function mediaCommand(action, platform, value) {
 module.exports = {
   BROWSER_ACTIONS, browserKeys,
   START_APPS_SCRIPT, parseStartApps, pickStartApp, SCROLL_DIRS, scrollCommands, gameKeyCommand, GAME_KEYS,
-  SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
+  clickCommand, chatApp, CHAT_APPS, SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
   PAGES, pageNames, settingsLaunch,
   psArgs, buildShell, shellName, checkCommand,
   parseCombo, buildKeyCommand,

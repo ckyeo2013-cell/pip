@@ -306,6 +306,7 @@ function createActions({
       if (text.length > MAX_TEXT) throw new Error(`Text is too long (max ${MAX_TEXT} characters).`);
       const enter = !!(input && input.press_enter);
       const replace = !!(input && input.replace);
+      const atCursor = !!(input && input.at_cursor); // the cursor is already in the right box (after open_chat or click_screen)
       let targetEl = null;
       if (input && input.target !== undefined && input.target !== null) {
         if (!uiOn) throw new Error('Choosing a box by number is not available here.');
@@ -316,7 +317,9 @@ function createActions({
         if (!targetEl.enabled) throw new Error(`The box "${targetEl.name}" is disabled.`);
       }
       const enterNote = enter ? ' Do not approve this if a password box or a terminal could be the one in focus.' : '';
-      const how = !uiOn
+      const how = atCursor
+        ? '(Pip types straight where your cursor already is, with no waiting.)'
+        : !uiOn
         ? `(After you approve, you will have ${countdown} seconds to click the exact spot where it should be typed.${enterNote})`
         : targetEl
           ? `(Pip flies to the ${targetEl.name ? `"${targetEl.name}" ` : ''}box, puts the cursor in it and types there. If that does not work you will have ${countdown} seconds to click the spot yourself.${enterNote})`
@@ -332,7 +335,10 @@ function createActions({
           hidePanel();
           blurWindow();
           let flew = false;
-          if (uiOn) {
+          if (atCursor) {
+            await sleep(500); // just enough for the app behind the chat to get the keyboard back
+            flew = true;
+          } else if (uiOn) {
             try {
               await sleep(700); // let the app behind the chat get the keyboard back
               let norm = screenNorm(await runUi('list'));
@@ -350,7 +356,7 @@ function createActions({
                 if (fresh) {
                   notify('Typing right here!', 2500);
                   flyTo(fresh);
-                  await sleep(flightMs);
+                  await sleep(Math.min(flightMs, 1000)); // typing does not need to wait for him to land
                   if (targetEl) await runUi('focus', targetOf(fresh));
                   flew = true;
                 }
@@ -364,7 +370,7 @@ function createActions({
               await sleep(1000);
             }
           }
-          await sleep(300); // let the box finish taking focus before the first key goes in
+          await sleep(atCursor ? 100 : 250); // let the box finish taking focus before the first key goes in
           const oldText = clipboard.readText();
           const oldImage = clipboard.readImage();
           clipboard.writeText(text);
@@ -384,7 +390,7 @@ function createActions({
               reject(new Error('The text was typed, but pressing Enter failed: ' + (err.message || 'unknown error')));
             }));
           }
-          const where = flew ? 'in the text box (Pip flew there first)' : "at the user's cursor";
+          const where = atCursor ? "at the user's cursor" : flew ? 'in the text box (Pip flew there first)' : "at the user's cursor";
           return enter ? `Typed the text ${where} and pressed Enter.` : `Typed the text ${where}.`;
         },
       };
@@ -951,6 +957,83 @@ function createActions({
       };
     },
 
+    click_screen(input) {
+      if (!getFull()) throw new Error('Clicking is turned off. The user can allow it in Pip settings.');
+      if (!getScreenInfo) throw new Error('Clicking is not available here.');
+      const fx = Number(input && input.x), fy = Number(input && input.y);
+      if (!(fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1)) throw new Error('x and y must each be between 0 and 1, measured from the top-left corner of the screenshot.');
+      const why = typeof (input && input.what) === 'string' ? input.what.trim().slice(0, 80) : '';
+      return {
+        title: why ? `Click: ${why}` : 'Click on the screen',
+        risk: 'high',
+        details: `Pip flies to the spot you see (${Math.round(fx * 100)}% across, ${Math.round(fy * 100)}% down the screen), then clicks it once with the mouse.${why ? `\n\nHe means: ${why}` : ''}\n\nCheck that this is what you want: a click can press anything under it, including Send or Delete.`,
+        async run() {
+          const info = getScreenInfo();
+          const b = info.bounds || info.workArea;
+          const wa = info.workArea;
+          const sf = platform === 'darwin' ? 1 : (info.scaleFactor || 1);
+          const dipX = b.x + fx * b.width, dipY = b.y + fy * b.height;
+          if (pet) pet({ action: 'fly', x: Math.min(1, Math.max(0, (dipX - wa.x) / wa.width)), y: Math.min(1, Math.max(0, (dipY - wa.y) / wa.height)) });
+          hidePanel();
+          blurWindow();
+          await sleep(Math.min(flightMs, 1000));
+          const c = sys.clickCommand(dipX * sf, dipY * sf, platform);
+          await new Promise((resolve, reject) => execFile(c.cmd, c.args, { timeout: 15000, windowsHide: true }, (err, _o, stderr) => {
+            if (!err) return resolve();
+            if (platform === 'darwin' && /not allowed|1002|assistive/i.test(String(stderr))) return reject(new Error('macOS blocked the click. Allow Pip (or Electron) in System Settings > Privacy & Security > Accessibility.'));
+            if (err.code === 'ENOENT') return reject(new Error(platform === 'win32' || platform === 'darwin' ? 'The click tool is missing.' : 'Clicking on Linux needs "xdotool" (X11 only).'));
+            reject(new Error('Could not click: ' + (err.message || 'unknown error')));
+          }));
+          lastUi = null;
+          await sleep(500);
+          return 'Clicked. Use look_at_screen to see what happened before the next step.';
+        },
+      };
+    },
+
+    open_chat(input) {
+      if (!getFull()) throw new Error('Opening chats uses key presses, which are turned off. The user can allow it in Pip settings.');
+      const app = sys.chatApp(input && input.app);
+      const person = input && input.name;
+      if (typeof person !== 'string' || !person.trim() || person.length > 80 || /[\r\n]/.test(person)) throw new Error('name must be one short line: the person or group chat to open.');
+      const target = person.trim();
+      const mod = platform === 'darwin' ? 'cmd' : 'ctrl';
+      return {
+        title: `Open "${target.slice(0, 40)}" in ${app.open}`,
+        details: `Pip opens ${app.open}, uses ${app.what} to search for "${target}", and opens the top result. He does not send anything.\n\nHe then looks to check it is the right chat.`,
+        async run() {
+          hidePanel();
+          blurWindow();
+          if (input.open_app !== false) {
+            try { await tools.open_app({ name: app.open }).run(); } catch (e) { throw new Error(`Could not open ${app.open}: ${e.message}`); }
+            await sleep(1500);
+          } else {
+            await sleep(500);
+          }
+          const press = (combo) => {
+            const c = sys.buildKeyCommand(sys.parseCombo(combo), platform);
+            return new Promise((resolve, reject) => execFile(c.cmd, c.args, { timeout: 10000, windowsHide: true }, (err, _o, stderr) => {
+              if (!err) return resolve();
+              if (platform === 'darwin' && /not allowed|1002|assistive/i.test(String(stderr))) return reject(new Error('macOS blocked key presses. Allow Pip (or Electron) in System Settings > Privacy & Security > Accessibility.'));
+              reject(new Error('Could not press keys: ' + (err.message || 'unknown error')));
+            }));
+          };
+          await press(`${mod}+${app.key}`);
+          await sleep(400);
+          const oldText = clipboard.readText();
+          const oldImage = clipboard.readImage();
+          clipboard.writeText(target);
+          try { await pressPaste(true); await sleep(700); } finally {
+            if (oldImage && !oldImage.isEmpty()) clipboard.writeImage(oldImage); else clipboard.writeText(oldText);
+          }
+          await press('enter');
+          await sleep(600);
+          lastUi = null;
+          return `Searched ${app.open} for "${target}" and opened the top result. The message box normally has the cursor now, so type_text with at_cursor true works straight away. Use look_at_screen to check the chat name at the top is the right one BEFORE typing anything. If it is wrong, call open_chat again with a fuller name. If the box has no cursor, use click_screen on it.`;
+        },
+      };
+    },
+
     list_running_apps() {
       return {
         title: 'See which apps are open',
@@ -1209,7 +1292,7 @@ function createActions({
         description: "Type (paste) text into whatever app the user is using: a search bar, a form, a document, a chat. The user approves first (they see the exact text)." + (uiOn
           ? " Pip then finds the text box that has the user's cursor (or the one you name with 'target', the [number] from find_ui), flies to it, and types there. If no box is found the user gets a few seconds to click the spot themselves, so tell them which box to click if you know."
           : " The user then clicks the spot where the text should go; you cannot click for them, so tell them which box to click (fly next to it first if you know where it is).") + " Use it when they ask you to write or type something for them. Set press_enter true only when they want it submitted, like running a search. Never type passwords or secrets, and never type commands into a terminal (use run_command so they can review it properly).",
-        input_schema: { type: 'object', properties: Object.assign({ text: str('The exact text to type (max 20000 characters). Code is fine, including multi-line.'), press_enter: { type: 'boolean', description: 'Press Enter afterwards, e.g. to run a search (default false).' }, replace: { type: 'boolean', description: 'Select everything already in the box first so the new text REPLACES it (default false). Use true when typing a chat message and the box may hold leftover text from an earlier try.' } }, uiOn ? { target: { type: 'number', description: 'Optional: the [number] of a text box from find_ui. Pip focuses that box first.' } } : {}), required: ['text'] },
+        input_schema: { type: 'object', properties: Object.assign({ text: str('The exact text to type (max 20000 characters). Code is fine, including multi-line.'), press_enter: { type: 'boolean', description: 'Press Enter afterwards, e.g. to run a search (default false).' }, at_cursor: { type: 'boolean', description: 'Set true when the cursor is ALREADY in the right box (right after open_chat or click_screen): Pip types at once with no searching and no click countdown. Much faster.' }, replace: { type: 'boolean', description: 'Select everything already in the box first so the new text REPLACES it (default false). Use true when typing a chat message and the box may hold leftover text from an earlier try.' } }, uiOn ? { target: { type: 'number', description: 'Optional: the [number] of a text box from find_ui. Pip focuses that box first.' } } : {}), required: ['text'] },
       },
       {
         name: 'open_url',
@@ -1331,6 +1414,16 @@ function createActions({
             },
             required: ['command'],
           },
+        },
+        {
+          name: 'click_screen',
+          description: "Click once with the mouse at a spot on the main screen. Use it when find_ui finds nothing (Discord, games, web apps often share nothing): take look_at_screen first, then give x and y as fractions 0 to 1 of that screenshot, measured from its top-left corner (x 0.5, y 0.5 is the middle). Aim for the centre of the thing. Typical uses: click a chat's message box before type_text, click a search box, open a chat in a list. Afterwards look again to confirm it worked. Never click Send, Delete, Pay or similar unless the user clearly asked for exactly that.",
+          input_schema: { type: 'object', properties: { x: { type: 'number', description: 'Across, 0 (left) to 1 (right) of the screenshot' }, y: { type: 'number', description: 'Down, 0 (top) to 1 (bottom) of the screenshot' }, what: str('Short note of what is being clicked, e.g. "message box"') }, required: ['x', 'y'] },
+        },
+        {
+          name: 'open_chat',
+          description: "Open a person or group chat in a messaging app by name, with the keyboard, no clicking. Opens the app if needed, uses its own jump-to-chat search, and opens the top match. Works for discord, slack, teams, whatsapp. Use it for 'message Sam on Discord', 'open the study group chat', 'search my group chat for ...'. Afterwards call look_at_screen to confirm the right chat is open, then type_text (no target) to write in it. Pass a name distinctive enough that the top result is the right one.",
+          input_schema: { type: 'object', properties: { app: { type: 'string', enum: Object.keys(sys.CHAT_APPS), description: 'Which app' }, name: str('The person or group chat name to search for'), open_app: { type: 'boolean', description: 'Set false if the app is already in front (default true)' } }, required: ['app', 'name'] },
         },
         {
           name: 'press_keys',

@@ -809,7 +809,7 @@
       typing.remove();
       if (res.error === 'no_key') {
         history.pop();
-        addMsg('pet', `I need ${res.provider === 'gemini' ? 'a Google Gemini key' : res.provider === 'groq' ? 'a Groq key' : res.provider === 'cloudflare' ? 'a Cloudflare token' : 'an Anthropic key'} before I can chat! Tap the ⚙ above and paste one in. (Coin flips work without it 🪙)`);
+        addMsg('pet', `I need ${res.provider === 'gemini' ? 'a Google Gemini key' : res.provider === 'groq' ? 'a Groq key' : res.provider === 'cloudflare' ? 'a Cloudflare token' : 'an Anthropic key'} before I can chat! Tap the ⚙ above and paste one in. (Simple things like opening sites, volume, timers, maths and coin flips work without it 🪙)`);
       } else if (res.error) {
         history.pop();
         addMsg('pet', 'Oops, something went wrong: ' + res.error);

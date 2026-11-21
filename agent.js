@@ -82,8 +82,13 @@ async function runChat({
 
   for (let step = 0; step <= maxSteps; step++) {
     if (stopped()) return { text: stopText(said) };
-    const body = { model, max_tokens: 6000, system, messages: convo };
-    if (tools.length) body.tools = tools;
+    // Prompt caching: the long instructions + tool list are identical every step, so the API can reuse them
+    // (much faster first word, and cheaper). Breakpoints: last tool, system, and the newest message.
+    const cached = convo.map((m) => ({ role: m.role, content: Array.isArray(m.content) ? m.content.map((b) => ({ ...b })) : [{ type: 'text', text: String(m.content) }] }));
+    const lastMsg = cached[cached.length - 1];
+    if (lastMsg && lastMsg.content.length) lastMsg.content[lastMsg.content.length - 1].cache_control = { type: 'ephemeral' };
+    const body = { model, max_tokens: 6000, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: cached };
+    if (tools.length) body.tools = tools.map((t, i) => (i === tools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t));
 
     const ac = new AbortController();
     if (signal) { if (signal.aborted) ac.abort(); else signal.addEventListener('abort', () => ac.abort(), { once: true }); }
