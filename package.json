@@ -23,6 +23,7 @@
       "system.js",
       "ui.js",
       "agent.js",
+      "brain.js",
       "calendar.js",
       "voice.js",
       "voice-client.js",
