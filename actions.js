@@ -170,19 +170,24 @@ function createActions({
   };
 
   // ------------------------------------------------------------ typing
-  function pressPaste() {
+  function pressPaste(replace) {
     return new Promise((resolve, reject) => {
       let cmd, args;
       if (platform === 'win32') {
         cmd = 'powershell.exe';
+        // replace = select everything already in the box first (Ctrl+A), so leftover text from an earlier try is overwritten
         args = ['-NoProfile', '-NonInteractive', '-Command',
-          "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')"];
+          'Add-Type -AssemblyName System.Windows.Forms; ' +
+          (replace ? "[System.Windows.Forms.SendKeys]::SendWait('^a'); Start-Sleep -Milliseconds 150; " : '') +
+          "[System.Windows.Forms.SendKeys]::SendWait('^v')"];
       } else if (platform === 'darwin') {
         cmd = 'osascript';
-        args = ['-e', 'tell application "System Events" to keystroke "v" using command down'];
+        args = replace
+          ? ['-e', 'tell application "System Events"', '-e', 'keystroke "a" using command down', '-e', 'delay 0.15', '-e', 'keystroke "v" using command down', '-e', 'end tell']
+          : ['-e', 'tell application "System Events" to keystroke "v" using command down'];
       } else {
         cmd = 'xdotool';
-        args = ['key', '--clearmodifiers', 'ctrl+v'];
+        args = replace ? ['key', '--clearmodifiers', 'ctrl+a', 'ctrl+v'] : ['key', '--clearmodifiers', 'ctrl+v'];
       }
       execFile(cmd, args, { timeout: 10000, windowsHide: true }, (err, _out, stderr) => {
         if (!err) return resolve();
@@ -281,6 +286,7 @@ function createActions({
   const autoLook = () => gameOn || !!getAutoLook();
   const autoType = () => gameOn || !!getAutoType();
   const autoPress = () => gameOn || !!getAutoPress();
+  let startAppsCache = null; // Windows Start menu list, refreshed every minute
   const safeUrl = (u) => isSafeUrl(u) || (u.protocol === 'https:' && !u.username && !u.password && !u.port &&
     getTrusted().some((h) => { const host = u.hostname.toLowerCase().replace(/\.$/, ''); return host === h || host.endsWith('.' + h); }));
   // one routine step: "gmail" / a web address, "app:Slack", or "search:youtube:lofi beats"
@@ -299,6 +305,7 @@ function createActions({
       if (typeof text !== 'string' || !text.length) throw new Error('No text to type.');
       if (text.length > MAX_TEXT) throw new Error(`Text is too long (max ${MAX_TEXT} characters).`);
       const enter = !!(input && input.press_enter);
+      const replace = !!(input && input.replace);
       let targetEl = null;
       if (input && input.target !== undefined && input.target !== null) {
         if (!uiOn) throw new Error('Choosing a box by number is not available here.');
@@ -319,7 +326,7 @@ function createActions({
       return {
         auto: quiet,
         title: enter ? 'Type this and press Enter' : 'Type this text for you',
-        details: `${text}${enter ? '\n\n(Then Enter is pressed, for example to run a search.)' : ''}\n\n${how}`,
+        details: `${text}${replace ? '\n\n(Whatever is already in that box is replaced.)' : ''}${enter ? '\n\n(Then Enter is pressed, for example to run a search.)' : ''}\n\n${how}`,
         async run() {
           if (quiet) notify(`Typing: ${text.length > 60 ? text.slice(0, 57) + '...' : text}`, 3000);
           hidePanel();
@@ -328,7 +335,12 @@ function createActions({
           if (uiOn) {
             try {
               await sleep(700); // let the app behind the chat get the keyboard back
-              const norm = screenNorm(await runUi('list'));
+              let norm = screenNorm(await runUi('list'));
+              // keep checking (up to ~3s) until the app behind really is the front window; a paste sent too early lands nowhere or in the wrong place
+              for (let tries = 0; tries < 6 && norm.window.foreground === false; tries++) {
+                await sleep(500);
+                norm = screenNorm(await runUi('list'));
+              }
               const fg = norm.window.foreground !== false;
               const terminal = ui.looksLikeTerminal(norm.window);
               const spot = targetEl || ui.focusedEditable(norm);
@@ -352,18 +364,19 @@ function createActions({
               await sleep(1000);
             }
           }
+          await sleep(300); // let the box finish taking focus before the first key goes in
           const oldText = clipboard.readText();
           const oldImage = clipboard.readImage();
           clipboard.writeText(text);
           try {
-            await pressPaste();
-            await sleep(450);
+            await pressPaste(replace);
+            await sleep(800); // chat apps like Discord read the clipboard a moment late; restoring too soon pastes the OLD clipboard
           } finally {
             if (oldImage && !oldImage.isEmpty()) clipboard.writeImage(oldImage);
             else clipboard.writeText(oldText);
           }
           if (enter) {
-            await sleep(250);
+            await sleep(350);
             const c = sys.buildKeyCommand(sys.parseCombo('enter'), platform);
             await new Promise((resolve, reject) => execFile(c.cmd, c.args, { timeout: 10000, windowsHide: true }, (err, _o, stderr) => {
               if (!err) return resolve();
@@ -664,11 +677,29 @@ function createActions({
         auto: SAFE_BROWSERS.includes(lower) || sys.SAFE_APPS.includes(lower), // plain browsers and a few harmless apps just open a window
         title: 'Open this app',
         details: name === asked ? name : `${asked} (${name})`,
-        run() {
-          return new Promise((resolve, reject) => {
-            const [cmd, args] = platform === 'win32' ? ['cmd.exe', ['/c', 'start', '', name]] : ['open', ['-a', name]];
-            execFile(cmd, args, { timeout: 10000 }, (err) => (err ? reject(new Error(`Could not open "${asked}". It may not be installed, or may be called something else.`)) : resolve(`Opened ${asked}.`)));
-          });
+        async run() {
+          const notFound = (extra) => new Error(`Could not open "${asked}". It may not be installed, or may be called something else.${extra || ''}`);
+          const exec = (cmd, args, ms = 10000) => new Promise((resolve) => execFile(cmd, args, { timeout: ms, windowsHide: true }, (err, out) => resolve({ err, out: String(out || '') })));
+          if (platform === 'win32') {
+            // 1) look it up in the Start menu (finds Discord, Steam, store apps...), 2) fall back to "start <name>"
+            if (!startAppsCache || Date.now() - startAppsCache.at > 60000) {
+              const r = await exec('powershell.exe', sys.psArgs(sys.START_APPS_SCRIPT), 20000);
+              startAppsCache = { at: Date.now(), apps: r.err ? [] : sys.parseStartApps(r.out) };
+            }
+            let pick = sys.pickStartApp(startAppsCache.apps, asked);
+            if (!pick.app && name !== asked) pick = sys.pickStartApp(startAppsCache.apps, name);
+            if (pick.app) {
+              const r = await exec('explorer.exe', [`shell:AppsFolder\\${pick.app.AppID}`]); // explorer reports exit code 1 even when it worked
+              if (r.err && r.err.code === 'ENOENT') throw notFound();
+              return `Opened ${pick.app.Name}.`;
+            }
+            const r = await exec('cmd.exe', ['/c', 'start', '', name]);
+            if (!r.err) return `Opened ${asked}.`;
+            throw notFound(pick.suggestions && pick.suggestions.length ? ` Similar apps in the Start menu: ${pick.suggestions.join(', ')}.` : ' It is not in the Start menu either.');
+          }
+          const r = await exec('open', ['-a', name]);
+          if (r.err) throw notFound();
+          return `Opened ${asked}.`;
         },
       };
     },
@@ -1178,7 +1209,7 @@ function createActions({
         description: "Type (paste) text into whatever app the user is using: a search bar, a form, a document, a chat. The user approves first (they see the exact text)." + (uiOn
           ? " Pip then finds the text box that has the user's cursor (or the one you name with 'target', the [number] from find_ui), flies to it, and types there. If no box is found the user gets a few seconds to click the spot themselves, so tell them which box to click if you know."
           : " The user then clicks the spot where the text should go; you cannot click for them, so tell them which box to click (fly next to it first if you know where it is).") + " Use it when they ask you to write or type something for them. Set press_enter true only when they want it submitted, like running a search. Never type passwords or secrets, and never type commands into a terminal (use run_command so they can review it properly).",
-        input_schema: { type: 'object', properties: Object.assign({ text: str('The exact text to type (max 20000 characters). Code is fine, including multi-line.'), press_enter: { type: 'boolean', description: 'Press Enter afterwards, e.g. to run a search (default false).' } }, uiOn ? { target: { type: 'number', description: 'Optional: the [number] of a text box from find_ui. Pip focuses that box first.' } } : {}), required: ['text'] },
+        input_schema: { type: 'object', properties: Object.assign({ text: str('The exact text to type (max 20000 characters). Code is fine, including multi-line.'), press_enter: { type: 'boolean', description: 'Press Enter afterwards, e.g. to run a search (default false).' }, replace: { type: 'boolean', description: 'Select everything already in the box first so the new text REPLACES it (default false). Use true when typing a chat message and the box may hold leftover text from an earlier try.' } }, uiOn ? { target: { type: 'number', description: 'Optional: the [number] of a text box from find_ui. Pip focuses that box first.' } } : {}), required: ['text'] },
       },
       {
         name: 'open_url',

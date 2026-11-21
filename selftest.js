@@ -897,11 +897,24 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     const code = await W.prepare('open_app', { name: 'VS Code' });
     assert.notStrictEqual(code.auto, true);
     await code.run();
-    assert.deepStrictEqual(calls[0], ['cmd.exe', ['/c', 'start', '', 'code']]);
+    assert.deepStrictEqual(calls[calls.length - 1], ['cmd.exe', ['/c', 'start', '', 'code']]); // after the Start-menu lookup finds nothing
     assert.strictEqual((await W.prepare('open_app', { name: 'Spotify' })).auto, true);
     assert.strictEqual((await W.prepare('open_app', { name: 'Calculator' })).auto, true);
     assert.notStrictEqual((await W.prepare('open_app', { name: 'cmd' })).auto, true);
     assert.notStrictEqual((await W.prepare('open_app', { name: 'powershell' })).auto, true);
+  });
+  await t('open_app (Windows): finds apps like Discord in the Start menu and launches them by AppID; falls back to start', async () => {
+    const calls = [];
+    const W = mkActions({ platform: 'win32', execFile: (c, a, o, cb) => {
+      calls.push([c, a]);
+      if (c === 'powershell.exe') cb(null, JSON.stringify([{ Name: 'Uninstall Discord', AppID: 'u' }, { Name: 'Discord', AppID: 'com.squirrel.Discord.Discord' }]));
+      else if (c === 'explorer.exe') cb({ code: 1 }, ''); // explorer exits 1 even when it worked
+      else cb(null, '');
+    } });
+    const r = await (await W.prepare('open_app', { name: 'discord' })).run();
+    assert.match(r, /Opened Discord/);
+    assert.deepStrictEqual(calls[calls.length - 1], ['explorer.exe', ['shell:AppsFolder\\com.squirrel.Discord.Discord']]);
+    assert.ok(!calls.some((c) => c[0] === 'cmd.exe'));
   });
   await t('the new tools are offered to every provider', () => {
     const names = A.toolDefs({ hasFolder: true, fullAccess: false }).map((d) => d.name);

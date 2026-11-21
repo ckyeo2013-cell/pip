@@ -485,7 +485,11 @@ function buildActionRules() {
     `Never change security settings, the registry or system files unless the user clearly asked for exactly that.` +
     `\n\nTYPING: when the user asks you to type or write something into an app, call type_text RIGHT AWAY with the exact text and no target. It finds the box with the user's cursor, flies there and types. ` +
     `Do not call find_ui first, and do not keep checking or retrying. If the app named is not open, open_app first, then type_text. After type_text succeeds, tell the user it is typed and stop. ` +
-    `Only use find_ui plus a target when they name a specific box that is NOT where their cursor is. Never loop: at most a couple of tool calls per step of the job.` +
+    `Only use find_ui plus a target when they name a specific box that is NOT where their cursor is. Never loop: at most a couple of tool calls per step of the job. ` +
+    `Messaging a friend (Discord, WhatsApp, Messenger...): open the app if needed, open that person's chat, then call type_text ONCE with ONLY the message and press_enter true; ` +
+    `set replace true so leftover or half-typed text in the message box is replaced instead of glued onto your message. Never type extra words like "its" or the person's name into the box. ` +
+    `If the chat is not open yet, open it first (find_ui then press_ui on the person's name) and look again with find_ui before typing. ` +
+    `If a message came out garbled, do not send another: say so, and retype it with replace true.` +
     `\n\nButtons and boxes: to press, open or tick something, use find_ui (with a short 'query' like "save" to keep the list small), then press_ui or type_text with the [number]. ` +
     `Look again with find_ui after every press, because the screen changes. If find_ui finds nothing, use look_at_screen and tell the user where to click. ` +
     `Only press what the user asked for, and never press things like Delete, Send, Pay or Install unless they clearly asked for exactly that.` +

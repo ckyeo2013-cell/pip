@@ -439,6 +439,27 @@ function resolveAppName(name, platform) {
   const map = APP_ALIASES[platform] || {};
   return map[String(name).trim().toLowerCase()] || name;
 }
+// Windows: every app in the Start menu (name + AppID). Launching by AppID works for Discord, Steam, store apps, etc.,
+// which "start <name>" cannot find because they are not registered on the PATH.
+const START_APPS_SCRIPT = 'Get-StartApps | ConvertTo-Json -Compress';
+function parseStartApps(out) {
+  let j;
+  try { j = JSON.parse(String(out || '').trim() || '[]'); } catch (_) { return []; }
+  return (Array.isArray(j) ? j : [j]).filter((a) => a && typeof a.Name === 'string' && typeof a.AppID === 'string');
+}
+const flat = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+// Best match for what the user called the app: exact, then starts-with, then contains. Returns { app } or { suggestions }.
+function pickStartApp(apps, query) {
+  const q = flat(query);
+  if (!q) return { suggestions: [] };
+  const score = (a) => { const n = flat(a.Name); return n === q ? 0 : n.startsWith(q) ? 1 : n.includes(q) ? 2 : q.includes(n) && n.length >= 4 ? 3 : 9; };
+  const ranked = apps.map((a) => ({ a, s: score(a) })).filter((x) => x.s < 9).sort((x, y) => x.s - y.s || x.a.Name.length - y.a.Name.length);
+  // skip uninstallers and helper entries when a real app matches
+  const clean = ranked.filter((x) => !/uninstall|readme|help|license/i.test(x.a.Name));
+  const best = (clean.length ? clean : ranked)[0];
+  return best ? { app: best.a } : { suggestions: apps.map((a) => a.Name).filter((n) => flat(n).includes(q.slice(0, 3))).slice(0, 5) };
+}
+
 // A few apps that only open a window and can do nothing by themselves: no approval card needed.
 const SAFE_APPS = ['calculator', 'calc', 'notepad', 'paint', 'mspaint', 'spotify', 'music', 'notes', 'textedit', 'finder', 'file explorer', 'explorer', 'files', 'calendar', 'maps', 'weather', 'clock'];
 
@@ -489,7 +510,7 @@ function mediaCommand(action, platform, value) {
 
 module.exports = {
   BROWSER_ACTIONS, browserKeys,
-  SCROLL_DIRS, scrollCommands, gameKeyCommand, GAME_KEYS,
+  START_APPS_SCRIPT, parseStartApps, pickStartApp, SCROLL_DIRS, scrollCommands, gameKeyCommand, GAME_KEYS,
   SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
   PAGES, pageNames, settingsLaunch,
   psArgs, buildShell, shellName, checkCommand,
