@@ -388,10 +388,25 @@ function think(rawText, ctx = {}) {
     }
   }
 
+  // "help me ask Sam if he wants to call at 5pm": written and typed right here with no AI call (anything fancier goes to the AI)
+  if ((m = /^(?:help me (?:to )?)?(?:ask|check with|find out)\s+(?:(.{1,30}?)\s+)?(?:if|whether)\s+(.{3,160}?)(\s+and send(?: it)?)?$/i.exec(orig))) {
+    const clause = m[2].trim().replace(/[?.!]+$/, '');
+    let q = null, c;
+    if ((c = /^(?:he|she|they|you)\s+(?:wants?|would like|want)\s+to\s+(.+)$/i.exec(clause))) q = `do you want to ${c[1]}`;
+    else if ((c = /^(?:he|she|they|you)\s+(?:is|are)\s+(free|available|ready|coming|home|around|busy|up|down)\b(.*)$/i.exec(clause))) q = `are you ${c[1]}${c[2]}`;
+    else if ((c = /^(?:he|she|they|you)\s+(can|could|will|would|should)\s+(.+)$/i.exec(clause))) q = `${c[1].toLowerCase()} you ${c[2]}`;
+    else if ((c = /^(?:he|she|they|you)\s+(?:has|have)\s+(.+)$/i.exec(clause))) q = `do you have ${c[1]}`;
+    if (q && !/\b(?:he|she|they|his|her|their|him)\b/i.test(q)) {
+      const name = m[1] && !/^(?:my|the|a|an|our|your|this|that)\b/i.test(m[1]) ? m[1].trim().replace(/^./, (ch) => ch.toUpperCase()) : '';
+      const text = `${name ? `Hey ${name}, ` : ''}${name ? q : q.replace(/^./, (ch) => ch.toUpperCase())}?`;
+      return { steps: [{ name: 'type_text', input: { text, at_cursor: true, press_enter: !!m[3] } }], finish: () => `Typed: "${text}"${m[3] ? ' and sent it' : ''}.` };
+    }
+  }
+
   // ---- typing into whatever has the cursor
   if ((m = /^type\s+(.{1,300})$/i.exec(orig)) && !/\bin (?:the |my )?(?:box|field|chat|document|doc)\b/i.test(orig)) {
     const text = m[1].replace(/^["“'‘]|["”'’]$/g, '');
-    return { steps: [{ name: 'type_text', input: { text } }], finish: (o) => String(o[0] || 'Typed it.') };
+    return { steps: [{ name: 'type_text', input: { text, at_cursor: true } }], finish: (o) => String(o[0] || 'Typed it.') }; // the cursor is already where they want it, so no slow window scan
   }
 
   return null; // not something the little brain knows

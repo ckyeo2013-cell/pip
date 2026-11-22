@@ -30,6 +30,15 @@ const step = (text, extra) => { const p = plan(text, extra); assert.ok(p && p.st
     assert.strictEqual(name('start a timer for 5 minutes').split(':')[0], 'set_reminder');
     assert.strictEqual(plan('switch to dark mode'), null);
   });
+  await t('"help me ask ..." is written and typed at the cursor instantly, and plain "type" skips the slow window scan', () => {
+    const typed = (q) => { const s = step(q); assert.strictEqual(s[0].name, 'type_text'); assert.strictEqual(s[0].input.at_cursor, true); return s[0].input; };
+    assert.strictEqual(typed('help me ask if he wants to call at 5pm').text, 'Do you want to call at 5pm?');
+    assert.strictEqual(typed('ask sam if he wants to call tonight at 8').text, 'Hey Sam, do you want to call tonight at 8?');
+    assert.strictEqual(typed('help me ask if she is free tomorrow').text, 'Are you free tomorrow?');
+    assert.strictEqual(typed('ask mia if they can come at 6 and send it').press_enter, true);
+    assert.strictEqual(typed('type hello there').text, 'hello there');
+    assert.strictEqual(plan('help me ask him something clever about the project'), null); // too open-ended: the AI writes it
+  });
   await t('maths never runs anything but numbers and operators', () => {
     assert.strictEqual(brain.safeMath('process.exit()'), null);
     assert.strictEqual(brain.safeMath('2**999999'), null);

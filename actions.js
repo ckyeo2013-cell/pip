@@ -292,6 +292,8 @@ function createActions({
   // ------------------------------------------------------------ tools
   // Game mode: one approval lets Pip look, type plain keys and press ordinary buttons for the rest of THIS request only.
   let gameOn = false, gameBudget = 0;
+  let clipRestore = null; // the user's clipboard comes back a moment AFTER a paste, in the background, so typing does not wait for it
+  const flushClipboard = () => { if (clipRestore) { clearTimeout(clipRestore.timer); const r = clipRestore; clipRestore = null; r.fn(); } };
   const autoLook = () => gameOn || !!getAutoLook();
   const autoType = () => gameOn || !!getAutoType();
   const autoPress = () => gameOn || !!getAutoPress();
@@ -369,11 +371,11 @@ function createActions({
           blurWindow();
           let flew = false;
           if (atCursor) {
-            await sleep(500); // just enough for the app behind the chat to get the keyboard back
+            await sleep(400); // just enough for the app behind the chat to get the keyboard back
             flew = true;
           } else if (uiOn) {
             try {
-              await sleep(700); // let the app behind the chat get the keyboard back
+              await sleep(400); // let the app behind the chat get the keyboard back
               let norm = screenNorm(await runUi('list'));
               // keep checking (up to ~3s) until the app behind really is the front window; a paste sent too early lands nowhere or in the wrong place
               for (let tries = 0; tries < 6 && norm.window.foreground === false; tries++) {
@@ -389,7 +391,7 @@ function createActions({
                 if (fresh) {
                   notify('Typing right here!', 2500);
                   flyTo(fresh);
-                  await sleep(Math.min(flightMs, 1000)); // typing does not need to wait for him to land
+                  await sleep(Math.min(flightMs, 350)); // typing does not need to wait for him to land
                   if (targetEl) await runUi('focus', targetOf(fresh));
                   flew = true;
                 }
@@ -403,19 +405,19 @@ function createActions({
               await sleep(1000);
             }
           }
-          await sleep(atCursor ? 100 : 250); // let the box finish taking focus before the first key goes in
+          await sleep(atCursor ? 80 : 150); // let the box finish taking focus before the first key goes in
+          flushClipboard(); // an earlier paste's clipboard is put back first, so two typings in a row cannot mix
           const oldText = clipboard.readText();
           const oldImage = clipboard.readImage();
+          const restore = () => { if (oldImage && !oldImage.isEmpty()) clipboard.writeImage(oldImage); else clipboard.writeText(oldText); };
           clipboard.writeText(text);
           try {
             await pressPaste(replace);
-            await sleep(800 + Math.min(4000, Math.round(text.length / 2))); // chat apps read the clipboard late, and long text takes longer to land; restoring too soon pastes the OLD clipboard
-          } finally {
-            if (oldImage && !oldImage.isEmpty()) clipboard.writeImage(oldImage);
-            else clipboard.writeText(oldText);
-          }
+          } catch (e) { restore(); throw e; }
+          // chat apps read the clipboard late and long text takes longer to land, so the old clipboard goes back later, without making Pip wait
+          clipRestore = { fn: restore, timer: setTimeout(() => { clipRestore = null; restore(); }, 900 + Math.min(4000, Math.round(text.length / 2))) };
           if (enter) {
-            await sleep(350 + Math.min(2500, Math.round(text.length / 4))); // Enter must come after the whole paste has landed
+            await sleep(300 + Math.min(2500, Math.round(text.length / 4))); // Enter must come after the whole paste has landed
             const c = sys.buildKeyCommand(sys.parseCombo('enter'), platform);
             await new Promise((resolve, reject) => execFile(c.cmd, c.args, { timeout: 10000, windowsHide: true }, (err, _o, stderr) => {
               if (!err) return resolve();
