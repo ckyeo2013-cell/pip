@@ -135,6 +135,12 @@
     const thinking = clamp(p.thinking || 0, 0, 1);
     const blink = p.blink === undefined ? 1 : p.blink;
     const sleepy = clamp(p.sleepy || 0, 0, 1); // late at night: heavy eyes, drooping head and ears, slow tail
+    const brow = clamp(p.brow || 0, -1, 1);       // +1 angry, -1 sad
+    const mouthV = clamp(p.mouth || 0, -1, 1);    // +1 smile, -1 frown
+    const mouthO = clamp(p.mouthO || 0, 0, 1);    // open mouth (surprise, yawn, shout)
+    const wide = clamp(p.wide || 0, 0, 1);        // big eyes (surprise, fear)
+    const blush = clamp(p.blush || 0, 0, 1);      // red cheeks (love, shy, angry)
+    const earBack = clamp(p.earBack || 0, 0, 1);  // ears flat (angry, scared)
     const alert = clamp(p.alert || 0, 0, 1);   // perked up: ears up, curious head tilt
 
     const child = (F, off, rot) => ({
@@ -156,7 +162,7 @@
     // ---- body ---------------------------------------------------------
     const bob = Math.sin(t * 2.2) * 0.022 * (1 - glide) + happy * Math.abs(Math.sin(t * 9)) * 0.05;
     const B = {
-      R: mul(rotY(p.bodyYaw || 0), rotX(0.02 + 0.28 * glide + 0.2 * crouch)),
+      R: mul(rotX(p.flip || 0), mul(rotY(p.bodyYaw || 0), rotX(0.02 + 0.28 * glide + 0.2 * crouch))),
       t: [0, -0.41 + bob - 0.14 * crouch, 0],
     };
 
@@ -225,25 +231,28 @@
     P(H, [0, 0.2, 0.3], [0.04, 0.3, 0.32], rotX(-0.3), C.dark); // nose-to-crown stripe
     P(H, [0, 0.36, -0.1], [0.05, 0.2, 0.3], rotX(0.5), C.dark);
 
-    const eyeOpen = clamp(Math.min(blink, 1 - 0.8 * happy) * (1 - 0.55 * sleepy), 0, 1);
+    const eyeOpen = clamp(Math.min(blink, 1 - 0.8 * happy) * (1 - 0.55 * sleepy) * (1 - 0.35 * Math.max(0, brow)), 0, 1);
+    const WS = 1 + 0.25 * wide;
     for (const s of [-1, 1]) {
-      P(H, [s * 0.3, -0.15, 0.3], [0.1, 0.09, 0.12], null, C.cheek);
-      P(H, [s * 0.3, 0.07, 0.3], [0.2, lerp(0.05, 0.23, eyeOpen), 0.13], null, C.dark); // dark eye patch
-      P(H, [s * 0.31, 0.07, 0.35], [0.155, lerp(0.02, 0.19, eyeOpen), 0.12], null, C.eye, 1.0, 0);
+      P(H, [s * 0.3, -0.15, 0.3], [0.1 + 0.03 * blush, 0.09 + 0.02 * blush, 0.12], null, mix3(C.cheek, [0.96, 0.4, 0.46], blush));
+      P(H, [s * 0.3, 0.07, 0.3], [0.2 * WS, lerp(0.05, 0.23, eyeOpen) * WS, 0.13], null, C.dark); // dark eye patch
+      P(H, [s * 0.31, 0.07, 0.35], [0.155 * WS, lerp(0.02, 0.19, eyeOpen) * WS, 0.12], null, C.eye, 1.0, 0);
       if (eyeOpen > 0.5) {
         P(H, [s * 0.27, 0.15, 0.45], [0.05, 0.055, 0.025], null, C.white, 1.0, 0);
         P(H, [s * 0.36, 0.01, 0.43], [0.02, 0.022, 0.015], null, C.white, 1.0, 0);
       }
-      P(H, [s * 0.04, -0.2, 0.6], [0.04, 0.011, 0.03], rotZ(s * 0.45), C.mouth, 0, 0); // mouth line
+      P(H, [s * 0.04, -0.2 - 0.02 * mouthV, 0.6], [0.04, 0.011, 0.03], rotZ(s * (0.45 + 0.7 * mouthV)), C.mouth, 0, 0); // mouth line
+      if (Math.abs(brow) > 0.08) P(H, [s * 0.3, 0.3, 0.33], [0.16, 0.028, 0.05], rotZ(s * 0.55 * brow), C.dark, 0, 0); // brow: angry = inner end down, sad = inner end up
 
       // ears: big, thin, pinkish-grey
       const wig = Math.sin(t * (thinking > 0.1 ? 9 : 1.1) + s) * (thinking > 0.1 ? 0.1 : 0.05)
         + happy * Math.sin(t * 14 + s) * 0.08;
-      const E = child(H, [s * 0.36, 0.36, -0.02], rotZ(-s * (0.5 - 0.18 * alert + 0.28 * sleepy) + s * wig));
+      const E = child(H, [s * 0.36, 0.36, -0.02], rotZ(-s * (0.5 - 0.18 * alert + 0.28 * sleepy + 0.45 * earBack) + s * wig));
       P(E, [0, 0.14, 0], [0.22, 0.4, 0.04], null, C.earOut, 0, 0.5);
       P(E, [0, 0.12, 0.03], [0.15, 0.32, 0.03], null, C.earIn, 0, 0.3);
     }
     P(H, [0, -0.1, 0.69], [0.05, 0.04, 0.04], null, C.nose, 0.6, 0.3);
+    if (mouthO > 0.05) P(H, [0, -0.24, 0.6], [0.04 + 0.05 * mouthO, 0.02 + 0.07 * mouthO, 0.03], null, C.dark, 0, 0); // open mouth
 
     return parts;
   }

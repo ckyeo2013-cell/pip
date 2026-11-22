@@ -20,7 +20,7 @@ const LOCAL_APPS = ['spotify', 'discord', 'whatsapp', 'slack', 'teams', 'microso
 
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const FACTS = [
-  'Sugar gliders can glide about 50 metres between trees. That is a lot for something this small! 🦊',
+  'Sugar gliders can glide about 50 metres between trees. That is a lot for something this small!',
   'Honey never spoils. People have found edible honey in ancient Egyptian tombs.',
   'Octopuses have three hearts, and two of them stop when they swim.',
   'A day on Venus is longer than its year.',
@@ -32,9 +32,9 @@ const FACTS = [
   'Your stomach gets a new lining every few days, or it would digest itself.',
 ];
 const JOKES = [
-  'Why did the computer go to the doctor? It had a virus! 🤒',
+  'Why did the computer go to the doctor? It had a virus!',
   'I told my computer I needed a break. Now it will not stop sending me vacation ads.',
-  'Why do programmers prefer dark mode? Because light attracts bugs. 🐛',
+  'Why do programmers prefer dark mode? Because light attracts bugs.',
   'What do you call a sugar glider who tells jokes? A pun-ny possum!',
   'Why was the JavaScript developer sad? Because he did not Node how to Express himself.',
   'I would tell you a UDP joke, but you might not get it.',
@@ -158,29 +158,29 @@ function think(rawText, ctx = {}) {
 
   // ---- small talk
   const hello = String(rawText || '').toLowerCase().replace(/[!.?,\s]+$/g, '').replace(/,/g, '').trim();
-  if (/^(?:hi|hello|hey|yo|sup|hiya|howdy|good (?:morning|afternoon|evening))(?: pip| there)?$|^pip$/.test(hello)) return { reply: pick(['Hi! 🦊 What can I do for you?', 'Hello! Ready when you are.', 'Hey! What are we doing today?']) };
-  if (/^(?:thanks|thank you|thx|ty|cheers)(?: pip| so much| a lot)?$/.test(t)) return { reply: pick(['Anytime! 🦊', 'You got it!', 'Happy to help!']) };
+  if (/^(?:hi|hello|hey|yo|sup|hiya|howdy|good (?:morning|afternoon|evening))(?: pip| there)?$|^pip$/.test(hello)) return { reply: pick(['Hi! What can I do for you?', 'Hello! Ready when you are.', 'Hey! What are we doing today?']) };
+  if (/^(?:thanks|thank you|thx|ty|cheers)(?: pip| so much| a lot)?$/.test(t)) return { reply: pick(['Anytime!', 'You got it!', 'Happy to help!']) };
   if (/^(?:what can you do|help|what do you do|how do you work|what are your commands)\??$/.test(t)) {
-    return { reply: 'Without any AI, I can: open sites and apps ("open YouTube"), search ("play lofi on YouTube", "google cats"), control volume and music, scroll, switch tabs, set timers and reminders ("remind me in 20 minutes to stretch"), do quick maths, flip coins and roll dice, tell the time, open settings pages ("wifi settings"), look in your calendar ("when is Sam\'s birthday"), and open a Discord, Slack, Teams or WhatsApp chat ("message Sam on Discord saying hi"). For everything else (writing, code, questions, seeing your screen) I need an AI key in the ⚙.' };
+    return { reply: 'Without any AI, I can: open sites and apps ("open YouTube"), search ("play lofi on YouTube", "google cats"), control volume and music, scroll, switch tabs, set timers and reminders ("remind me in 20 minutes to stretch"), do quick maths, flip coins and roll dice, tell the time, open settings pages ("wifi settings"), look in your calendar ("when is Sam\'s birthday"), and open a Discord, Slack, Teams or WhatsApp chat ("message Sam on Discord saying hi"). For everything else (writing, code, questions, seeing your screen) I need an AI key in the gear button.' };
   }
 
   // ---- time, date
   if (/^(?:what(?:'s|s| is)? (?:the )?time(?: is it)?(?: now| right now)?|what time is it(?: now| right now)?|time|the time|got the time)\??$/.test(t)) {
-    return { reply: `It is ${now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. 🕒` };
+    return { reply: `It is ${now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` };
   }
   if (/^(?:what(?:'s|s| is)? (?:the |today'?s )?date(?: today)?|what day is it(?: today)?|what is today|today'?s date|what(?:'s|s| is) today)\??$/.test(t)) {
-    return { reply: `Today is ${now.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}. 📅` };
+    return { reply: `Today is ${now.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.` };
   }
 
   // ---- dice, coins, random numbers
-  if (/^(?:flip|toss) a coin$|^coin ?flip$|^heads or tails\??$/.test(t)) return { reply: Math.random() < 0.5 ? 'Heads! 🪙' : 'Tails! 🪙' };
+  if (/^(?:flip|toss) a coin$|^coin ?flip$|^heads or tails\??$/.test(t)) return { reply: Math.random() < 0.5 ? 'Heads!' : 'Tails!' };
   if ((m = /^roll (?:a |an |the )?(?:(\d+)[ -]?sided )?(?:d(\d+)|dice|die)$/.exec(t))) {
     const sides = Math.min(1000, Math.max(2, Number(m[1] || m[2] || 6)));
-    return { reply: `🎲 ${1 + Math.floor(Math.random() * sides)} (out of ${sides})` };
+    return { reply: `${1 + Math.floor(Math.random() * sides)} (out of ${sides})` };
   }
   if ((m = /^(?:pick|give me|choose) (?:a )?(?:random )?number (?:between|from) (-?\d+) (?:and|to) (-?\d+)$/.exec(t))) {
     const a = Math.min(Number(m[1]), Number(m[2])), b = Math.max(Number(m[1]), Number(m[2]));
-    return { reply: `🎲 ${a + Math.floor(Math.random() * (b - a + 1))}` };
+    return { reply: `${a + Math.floor(Math.random() * (b - a + 1))}` };
   }
   if (/^(?:tell me |say |give me )?(?:a |another )?(?:fun fact|random fact|fact)$/.test(t)) return { reply: pick(FACTS) };
   if (/^(?:tell me |say |give me )?(?:a |another )?joke$/.test(t)) return { reply: pick(JOKES) };
@@ -256,7 +256,7 @@ function think(rawText, ctx = {}) {
       what = what.replace(/^(?:to|about|that|of)\s+/i, '').replace(/^(?:timer|for)\b\s*/i, '').trim();
       const isTimer = /\btimer\b/.test(t);
       const message = what || (isTimer ? `Your ${when.minutes}-minute timer is done!` : 'Time is up!');
-      return { steps: [{ name: 'set_reminder', input: { minutes: when.minutes, message } }], finish: (o) => `${o[0]} I will tell you in ${when.minutes} minute${when.minutes === 1 ? '' : 's'}: "${message}" ⏰` };
+      return { steps: [{ name: 'set_reminder', input: { minutes: when.minutes, message } }], finish: (o) => `${o[0]} I will tell you in ${when.minutes} minute${when.minutes === 1 ? '' : 's'}: "${message}"` };
     }
   }
 
@@ -264,14 +264,14 @@ function think(rawText, ctx = {}) {
   const media = (action, value, done) => ({ steps: [{ name: 'media_control', input: value === undefined ? { action } : { action, value } }], finish: () => done });
   if ((m = /^(?:set|turn|put|change) (?:the |my )?(?:volume|sound) (?:to|at) (\d{1,3})\s*%?$|^volume (?:to |at )?(\d{1,3})\s*%?$/.exec(t))) {
     const v = Math.min(100, Number(m[1] || m[2]));
-    return media('set_volume', v, `Volume set to ${v}%. 🔊`);
+    return media('set_volume', v, `Volume set to ${v}%.`);
   }
-  if (/^(?:volume up|turn (?:it |the volume |the sound |the music )?up|louder|raise the volume|increase (?:the )?volume|crank it up)$/.test(t)) return media('volume_up', undefined, 'Turned it up. 🔊');
-  if (/^(?:volume down|turn (?:it |the volume |the sound |the music )?down|quieter|lower the volume|decrease (?:the )?volume|softer)$/.test(t)) return media('volume_down', undefined, 'Turned it down. 🔉');
-  if (/^(?:mute|unmute|mute (?:it|the sound|the volume|the computer)|unmute (?:it|the sound))$/.test(t)) return media('mute', undefined, 'Toggled mute. 🔇');
-  if (/^(?:pause|play|resume|stop|pause (?:the )?(?:music|song|track|video)|play (?:the )?(?:music|song|track)|resume (?:the )?(?:music|song|track)|stop (?:the )?music)$/.test(t)) return media('play_pause', undefined, 'Done: play/pause pressed. 🎵');
-  if (/^(?:next|skip|next (?:song|track)|skip (?:this |the )?(?:song|track)|play the next (?:song|track))$/.test(t)) return media('next', undefined, 'Skipped to the next one. ⏭️');
-  if (/^(?:previous|previous (?:song|track)|last (?:song|track)|go back a (?:song|track)|play the previous (?:song|track))$/.test(t)) return media('previous', undefined, 'Back to the previous one. ⏮️');
+  if (/^(?:volume up|turn (?:it |the volume |the sound |the music )?up|louder|raise the volume|increase (?:the )?volume|crank it up)$/.test(t)) return media('volume_up', undefined, 'Turned it up.');
+  if (/^(?:volume down|turn (?:it |the volume |the sound |the music )?down|quieter|lower the volume|decrease (?:the )?volume|softer)$/.test(t)) return media('volume_down', undefined, 'Turned it down.');
+  if (/^(?:mute|unmute|mute (?:it|the sound|the volume|the computer)|unmute (?:it|the sound))$/.test(t)) return media('mute', undefined, 'Toggled mute.');
+  if (/^(?:pause|play|resume|stop|pause (?:the )?(?:music|song|track|video)|play (?:the )?(?:music|song|track)|resume (?:the )?(?:music|song|track)|stop (?:the )?music)$/.test(t)) return media('play_pause', undefined, 'Done: play/pause pressed.');
+  if (/^(?:next|skip|next (?:song|track)|skip (?:this |the )?(?:song|track)|play the next (?:song|track))$/.test(t)) return media('next', undefined, 'Skipped to the next one.');
+  if (/^(?:previous|previous (?:song|track)|last (?:song|track)|go back a (?:song|track)|play the previous (?:song|track))$/.test(t)) return media('previous', undefined, 'Back to the previous one.');
 
   // ---- scrolling and browser
   if ((m = /^scroll (down|up)(?: a (?:lot|bit|little))?(?: (\d)(?: times| screens?)?)?$|^(?:go|jump|scroll) (?:to )?the (bottom|top)(?: of the page)?$|^(?:back to the top|to the top|to the bottom)$/.exec(t))) {
@@ -309,10 +309,10 @@ function think(rawText, ctx = {}) {
     if (site === 'google maps') site = 'maps';
     const play = /^play$/i.test(m[1]) && site === 'youtube';
     if (/^play$/i.test(m[1]) && site !== 'youtube') return null;
-    return { steps: [{ name: 'search_site', input: { site, query: m[2].trim(), play } }], finish: () => (play ? `Playing "${m[2].trim()}" on YouTube. ▶️` : `Searching ${site} for "${m[2].trim()}". 🔎`) };
+    return { steps: [{ name: 'search_site', input: { site, query: m[2].trim(), play } }], finish: () => (play ? `Playing "${m[2].trim()}" on YouTube. ▶` : `Searching ${site} for "${m[2].trim()}".`) };
   }
   if ((m = /^(?:search(?: up| for)?|google|look up)\s+(.{2,120})$/i.exec(orig)) && !/\b(?:calendar|chat|chats|computer|files?|folder|desktop|screen|email|inbox|discord|slack|teams|whatsapp)\b/i.test(orig)) {
-    return { steps: [{ name: 'search_site', input: { site: 'google', query: m[1].trim() } }], finish: () => `Searching Google for "${m[1].trim()}". 🔎` };
+    return { steps: [{ name: 'search_site', input: { site: 'google', query: m[1].trim() } }], finish: () => `Searching Google for "${m[1].trim()}".` };
   }
 
   // ---- chats (Discord, Slack, Teams, WhatsApp)
@@ -379,7 +379,7 @@ function think(rawText, ctx = {}) {
     if (/\s(?:and|then)\s/.test(low) || low.split(' ').length > 4) return null; // a bigger job: leave it to the AI
     const known = matchApp(low);
     if (known) return { steps: [{ name: 'open_app', input: { name: known } }], finish: (o) => String(o[0] || `Opened ${known}.`) };
-    if (sys.resolveSite(what)) return { steps: [{ name: 'open_url', input: { url: what } }], finish: () => `Opened ${what}. 🌐` };
+    if (sys.resolveSite(what)) return { steps: [{ name: 'open_url', input: { url: what } }], finish: () => `Opened ${what}.` };
     if (platform === 'win32' || platform === 'darwin') {
       const words = what.split(/\s+/);
       while (words.length > 1 && TAIL_WORDS.has(words[words.length - 1].toLowerCase())) words.pop(); // "notepad++ lot"

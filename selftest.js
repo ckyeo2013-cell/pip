@@ -1283,6 +1283,93 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     }
   });
 
+  await t('chess_play: recovers when a click is lost (swallowed first click, or lost second click) instead of leaving the piece selected', async () => {
+    const chess = require('./chess.js');
+    for (const lose of ['first', 'second']) {
+      const world = { pieces: new Map(), sel: null, hl: new Set(), calls: 0, clicks: 0 };
+      chess.startState().board.forEach((p, i) => { if (p) world.pieces.set(i, p); });
+      const REG = { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, SCR = { x: 0, y: 0, width: 1000, height: 1000 };
+      const render = () => {
+        const bm = Buffer.alloc(128 * 128 * 4);
+        for (let sq = 0; sq < 64; sq++) {
+          const r = sq >> 3, c = sq & 7, p = world.pieces.get(sq), dark = (r + c) % 2;
+          let col = dark ? [90, 120, 60] : [220, 225, 200];
+          if (world.hl.has(sq) || world.sel === sq) col = [col[0] * 0.5, col[1] * 0.9, col[2] + 20];
+          for (let y = r * 16; y < r * 16 + 16; y++) for (let x = c * 16; x < c * 16 + 16; x++) {
+            let v = col;
+            if (p && x >= c * 16 + 4 && x < c * 16 + 12 && y >= r * 16 + 3 && y < r * 16 + 13) v = p === p.toUpperCase() ? [250, 250, 250] : [30, 30, 30];
+            const i = (y * 128 + x) * 4; bm[i] = v[0]; bm[i + 1] = v[1]; bm[i + 2] = v[2]; bm[i + 3] = 255;
+          }
+        }
+        return { bitmap: bm, width: 128, height: 128 };
+      };
+      const sqAt = (px, py) => { const c = Math.floor(((px / 1000 - REG.x) / REG.w) * 8), r = Math.floor(((py / 1000 - REG.y) / REG.h) * 8); return r * 8 + c; };
+      let n = 0;
+      const exec = (cmd, args, o, cb) => {
+        for (let i = 0; i < args.length; i++) if (args[i] === 'mousemove') {
+          n++;
+          if (lose === 'first' && n === 1) continue;  // the very first click is swallowed (window not focused yet)
+          if (lose === 'second' && n === 2) continue; // the destination click is lost
+          const sq = sqAt(Number(args[i + 1]), Number(args[i + 2])), p = world.pieces.get(sq);
+          if (world.sel === null) { if (p && p === p.toUpperCase()) world.sel = sq; }
+          else if (sq === world.sel) world.sel = null; // clicking a selected piece again un-selects it
+          else { world.pieces.set(sq, world.pieces.get(world.sel)); world.pieces.delete(world.sel); world.hl = new Set([world.sel, sq]); world.sel = null; }
+        }
+        cb(null, '');
+      };
+      const P = mkActions({ platform: 'linux', execFile: exec, getFull: () => true, getScreenInfo: () => ({ bounds: SCR, workArea: SCR, scaleFactor: 1 }), grabBoard: async () => render() });
+      await (await P.prepare('start_game', { game: 'Chess' })).run();
+      const r = await (await P.prepare('chess_play', { board: REG, my_color: 'white', flipped: false, new_game: true, think_ms: 200, moves: 1 })).run();
+      assert.match(r, /^Played [a-h][1-8] to [a-h][1-8]/, `${lose}: ${r}`);
+      assert.strictEqual(world.sel, null, `${lose}: nothing is left selected`);
+      P.endGame();
+    }
+  });
+
+  await t('chess: Pip\'s full-screen window steps aside while a game runs and comes back when it ends', async () => {
+    const log = [];
+    const P = mkActions({ platform: 'linux', setOverlay: (v) => log.push(v), getFull: () => true, getScreenInfo: () => ({ bounds: { x: 0, y: 0, width: 1000, height: 1000 }, workArea: { x: 0, y: 0, width: 1000, height: 1000 }, scaleFactor: 1 }), grabBoard: async () => ({ bitmap: Buffer.alloc(128 * 128 * 4), width: 128, height: 128 }) });
+    await (await P.prepare('start_game', { game: 'Chess' })).run();
+    assert.deepStrictEqual(log, []);
+    await (await P.prepare('chess_play', { board: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, my_color: 'white', flipped: false, new_game: true, think_ms: 200, moves: 1 })).run().catch(() => {});
+    assert.strictEqual(log[0], false, 'hidden when chess starts');
+    P.endGame();
+    assert.strictEqual(log[log.length - 1], true, 'shown again at the end');
+  });
+
+  await t('games: playbooks per game, an exact sudoku solver, and click_many / drag_screen only inside game mode', async () => {
+    const games = require('./games.js'), sys = require('./system.js');
+    for (const [name, id] of [['Wordle', 'wordle'], ['NYT Connections', 'connections'], ['Spelling Bee', 'spellingbee'], ['The Mini', 'crossword'], ['Strands', 'strands'], ['Sudoku', 'sudoku'], ['2048', '2048'], ['Krillion', 'trivia'], ['Quordle', 'wordle'], ['Tic tac toe', 'boardgame'], ['Some new game', 'general']]) assert.strictEqual(games.playbookFor(name).id, id, name);
+    const r = games.solveSudoku('530070000600195000098000060800060003400803001700020006060000280000419005000080079');
+    assert.strictEqual(r.solution, '534678912672195348198342567859761423426853791713924856961537284287419635345286179');
+    assert.throws(() => games.solveSudoku('55' + '0'.repeat(79)), /clash/);
+    assert.throws(() => games.solveSudoku('123'), /81 characters/);
+    const calls = [];
+    const P = mkActions({ platform: 'linux', pet: () => {}, getFull: () => true, getScreenInfo: () => ({ bounds: { x: 0, y: 0, width: 1000, height: 1000 }, workArea: { x: 0, y: 0, width: 1000, height: 1000 }, scaleFactor: 1 }), captureScreen: async () => ({ data: 'QUJD', width: 1, height: 1 }), execFile: (c, a, o, cb) => { calls.push(a.join(' ')); cb(null, '', ''); } });
+    await assert.rejects(async () => P.prepare('click_many', { points: [{ x: 0.5, y: 0.5 }] }), /start_game/);
+    await assert.rejects(async () => P.prepare('drag_screen', { points: [{ x: 0.1, y: 0.1 }, { x: 0.2, y: 0.2 }] }), /start_game/);
+    const st = await (await P.prepare('start_game', { game: 'NYT Connections' })).run();
+    assert.match(st, /PLAYBOOK for NYT Connections/);
+    assert.match(st, /CONNECTIONS/);
+    const cm = await P.prepare('click_many', { points: [{ x: 0.1, y: 0.1 }, { x: 0.2, y: 0.1 }, { x: 0.3, y: 0.1 }, { x: 0.4, y: 0.1 }], wait_ms: 0 });
+    assert.ok(cm.auto);
+    const out = await cm.run();
+    assert.ok(out.content.some((c) => c.type === 'image'));
+    assert.strictEqual((calls[0].match(/mousemove/g) || []).length, 4);
+    await assert.rejects(async () => P.prepare('click_many', { points: [{ x: 2, y: 0 }] }), /between 0 and 1/);
+    await assert.rejects(async () => P.prepare('drag_screen', { points: [{ x: 0.1, y: 0.1 }] }), /2 to 16/);
+    const dr = await P.prepare('drag_screen', { points: [{ x: 0.1, y: 0.1 }, { x: 0.3, y: 0.1 }, { x: 0.3, y: 0.3 }], wait_ms: 0 });
+    await dr.run();
+    const d = calls[calls.length - 1];
+    assert.ok(/mousedown 1/.test(d) && /mouseup 1/.test(d) && d.indexOf('mousedown') < d.indexOf('mouseup'));
+    const sd = await (await P.prepare('sudoku_solve', { grid: '530070000600195000098000060800060003400803001700020006060000280000419005000080079' })).run();
+    assert.match(sd, /534678912/);
+    assert.throws(() => sys.dragCommand([{ x: 1, y: 1 }], 'linux'), /2 to 16/);
+    for (const plat of ['win32', 'darwin', 'linux']) assert.ok(sys.dragCommand([{ x: 1, y: 1 }, { x: 50, y: 50 }], plat).cmd);
+    P.endGame();
+    await assert.rejects(async () => P.prepare('click_many', { points: [{ x: 0.5, y: 0.5 }] }), /start_game/);
+  });
+
   await t('game mode: needs one approval, then plain keys run without asking; it ends cleanly and rejects risky keys', async () => {
     const sys = require('./system.js');
     const P = mkActions({ pet: () => {} });
@@ -1295,6 +1382,21 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     assert.throws(() => sys.gameKeyCommand('a', ['f5'], 'linux'));
     P.endGame();
     await assert.rejects(async () => P.prepare('game_keys', { text: 'x' }), /start_game/);
+  });
+
+  await t('game_keys and open_chat return a screenshot themselves, so no extra look_at_screen round trip is needed', async () => {
+    full = true;
+    let shots = 0;
+    const P = mkActions({ platform: 'linux', pet: () => {}, captureScreen: async () => { shots++; return { data: 'QUJD', width: 1, height: 1 }; }, execFile: (c, a, o, cb) => cb(null, '', '') });
+    await (await P.prepare('start_game', { game: 'Wordle' })).run();
+    const g = await (await P.prepare('game_keys', { text: 'crane', keys: ['enter'], wait_ms: 0 })).run();
+    assert.ok(g && Array.isArray(g.content) && g.content.some((c) => c.type === 'image'), 'game_keys should hand back a screenshot');
+    const none = await (await P.prepare('game_keys', { text: 'a', look: false })).run();
+    assert.strictEqual(typeof none, 'string');
+    assert.strictEqual(shots, 1);
+    const c = await (await P.prepare('open_chat', { app: 'discord', name: 'Sam', open_app: false })).run();
+    assert.ok(c && Array.isArray(c.content) && c.content.some((x) => x.type === 'image'), 'open_chat should hand back a screenshot');
+    P.endGame();
   });
 
   fs.rmSync(tmp, { recursive: true, force: true });

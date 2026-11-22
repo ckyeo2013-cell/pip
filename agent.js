@@ -493,7 +493,7 @@ async function runChatOpenAI({
 
   for (let step = 0; step <= maxSteps; step++) {
     if (stopped()) return { text: stopText(said) };
-    const body = { model, messages: convo, max_tokens: 8192 };
+    const body = { model, messages: convo, max_tokens: 2048 };
     if (onText) body.stream = true;
     if (tools.length) { body.tools = toGroqTools(tools); body.tool_choice = 'auto'; }
 

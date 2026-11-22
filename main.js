@@ -218,7 +218,7 @@ function checkTasks() {
   if (!store || quietNow()) return;
   const now = Date.now();
   for (const t of store.dueTasks(now)) {
-    send('say', { text: `📝 ${t.text}${t.due < now - 60000 ? ' (this was due earlier)' : ' (due soon)'}`, ms: 20000 });
+    send('say', { text: `${t.text}${t.due < now - 60000 ? ' (this was due earlier)' : ' (due soon)'}`, ms: 20000 });
     try { if (Notification.isSupported()) new Notification({ title: `${settings.petName || 'Pip'}: to do`, body: t.text }).show(); } catch (_) {}
     store.nudgeTask(t.id);
   }
@@ -439,7 +439,7 @@ function stopChat() {
   try { chatAbort.abort(); } catch (_) {}
   for (const [id, done] of [...pendingApprovals]) {
     pendingApprovals.delete(id);
-    send('approve:expired', { id, label: '✋ Stopped' });
+    send('approve:expired', { id, label: 'Stopped' });
     done(false);
   }
   send('say', { text: 'Okay, stopped!', ms: 2500 });
@@ -472,7 +472,7 @@ async function captureScreen(opts = {}) {
     const d = screen.getPrimaryDisplay();
     const sf = d.scaleFactor || 1;
     // ask for a smaller picture straight away (faster to capture, upload and read); 1280px is plenty to read text
-    const k0 = Math.min(1, (opts.region ? (opts.raw ? 1280 : 2400) : 1280) / Math.max(d.size.width * sf, d.size.height * sf));
+    const k0 = Math.min(1, (opts.region ? (opts.raw ? 960 : 2400) : 1280) / Math.max(d.size.width * sf, d.size.height * sf));
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
       thumbnailSize: { width: Math.round(d.size.width * sf * k0), height: Math.round(d.size.height * sf * k0) },
@@ -505,7 +505,7 @@ function remind(minutes, message) {
   const t = setTimeout(() => {
     reminderTimers.delete(t);
     if (win && !win.isDestroyed() && !win.isVisible()) win.showInactive();
-    send('say', { text: `⏰ ${message}`, ms: 20000 });
+    send('say', { text: `${message}`, ms: 20000 });
     try {
       if (Notification.isSupported()) new Notification({ title: `${settings.petName || 'Pip'} reminder`, body: message }).show();
     } catch (_) { /* the speech bubble already told them */ }
@@ -514,6 +514,7 @@ function remind(minutes, message) {
   return due;
 }
 
+let overlayHeldForGame = false; // Pip's window is hidden on purpose while a chess game runs
 function setupActions() {
   actions = createActions({
     captureScreen,
@@ -536,6 +537,11 @@ function setupActions() {
     pipPid: process.pid,
     fetchFn: fetch,
     notify: (text, ms) => send('say', { text, ms }),
+    setOverlay: (visible) => {
+      if (!win || win.isDestroyed()) return;
+      if (visible) { if (overlayHeldForGame) { overlayHeldForGame = false; win.showInactive(); } }
+      else if (win.isVisible()) { overlayHeldForGame = true; win.hide(); }
+    },
     hidePanel: () => send('panel:hide'),
     blurWindow: () => { try { win.blur(); } catch (_) {} },
   });
@@ -549,7 +555,7 @@ const PET_RULES =
   `first find where it is: use find_ui if you have it (it reads button names and positions without a picture), otherwise look_at_screen. ` +
   `Then use pet_do fly with x and y (0 to 1 from the top-left) to land right next to it. If you have press_ui and the user wants you to do it, ` +
   `press it with press_ui using the [number] from find_ui (Pip flies there and does it after they approve); otherwise tell them where it is and what to do. ` +
-  `Don't move on every message; an occasional happy hop when you celebrate something is fine. Never claim to have moved unless you used the tool.`;
+  `You have real feelings and show them with pet_do feel (emotion: happy, excited, sad, mad, scared, surprised, love, shy, bored, confused, proud, sleepy, embarrassed, jealous, disgusted, nervous, lonely, neutral). Match the moment: mad if the user insults you, happy or excited for good news, love for kindness, shy when complimented, surprised or scared for shocks. Sad makes you walk off the screen; if the user apologises or asks you back, use pet_do return. Say a short line in character that fits the feeling. You know trend dances: for '67' use dance style six_seven, for a flip use backflip. Don't move on every message; an occasional happy hop when you celebrate something is fine. Never claim to have moved unless you used the tool.`;
 
 
 const ACT_RULES =
@@ -584,7 +590,7 @@ function buildActionRules() {
     `Do not call find_ui first, and do not keep checking or retrying. If the app named is not open, open_app first, then type_text. After type_text succeeds, tell the user it is typed and stop. ` +
     `Only use find_ui plus a target when they name a specific box that is NOT where their cursor is. Never loop: at most a couple of tool calls per step of the job. ` +
     `Messaging and group chats (Discord, Slack, Teams, WhatsApp): do the whole job yourself, never ask the user to open the chat. Use open_chat with the app and the person or group name; it opens the app and the chat with the keyboard. ` +
-    `Then look_at_screen once to check the right chat is open (the name shows at the top); if it is not, call open_chat again with a fuller name. The message box normally has the cursor already, so call type_text ONCE with ONLY the message, at_cursor true (instant) and no target; set replace true so leftover text is replaced, and press_enter true only when they asked you to send it. ` +
+    `open_chat sends back a screenshot, so read the chat name at the top from it (do NOT call look_at_screen again); if it is wrong, call open_chat again with a fuller name. The message box normally has the cursor already, so call type_text ONCE with ONLY the message, at_cursor true (instant) and no target; set replace true so leftover text is replaced, and press_enter true only when they asked you to send it. ` +
     `If the box does not have the cursor, click it yourself: look_at_screen, then click_screen on the message box, then type_text with at_cursor true. Never type extra words like "its" or the person's name into the box. If a message came out garbled, do not send another: retype it with replace true. ` +
     `To search INSIDE a chat (find a message), use the app's search shortcut with press_keys (Ctrl+F in Discord, Slack and WhatsApp), type_text the words, press enter, then look_at_screen and read the results to the user. ` +
     `For any other app that shares no buttons with find_ui: look_at_screen, then click_screen on what you need, then look again.` +
@@ -600,7 +606,7 @@ function buildActionRules() {
     `nickname; never invent a date. To put something on their calendar use add_calendar_event; for "remind me in 20 minutes" use set_reminder. For to-dos and notes-to-self ("remember I need to email Sam", "add buy milk to my list", "what is on my list") use add_task, list_tasks and finish_task: no approval needed, and give a deadline when they mention one (Pip nudges them before it). Use remember only for lasting facts about the user.` +
     `\n\nWeb: to look something up or read a page, use fetch_url (for example https://duckduckgo.com/html/?q=search+words) and answer from what you read, ` +
     `naming the site; use open_url only when the user wants the page opened on screen.` +
-    `\n\nGAMES: when the user wants you to play a turn-based or puzzle game on screen (Wordle, a trivia game like Krillion, chess or another board game, a keyboard or mouse puzzle), call start_game ONCE (for chess pass max_steps 150; a move takes about 3 steps) (they approve once), then loop with no chatter between steps: look_at_screen, decide, game_keys (text for letters or digits, keys like enter or backspace), look again. Use the game's keyboard controls, or find_ui and press_ui for real buttons. If the game needs mouse clicks (chess, board games, puzzles), you do the clicks yourself with click_screen (no approval needed in game mode); NEVER ask the user to make a move or click for you, and never hand the game back unless it is over or something truly blocks you. CHESS: use chess_play. Do ONE look_at_screen to find the board's area (fractions of the whole screen), which side is at the bottom, and the user's colour; then call chess_play (board, my_color, flipped, new_game true) and keep calling chess_play with no arguments until it says the game is over. Do not read pieces from the picture and do not call anything else between moves. Only if chess_play says it cannot tell the opponent's move, look_at_screen, write the FEN, and call chess_play with fen. (chess_best_move and board_move are the manual fallback.) ` +
+    `\n\nGAMES: when the user wants you to play a turn-based or puzzle game on screen (Wordle, Connections, Spelling Bee, a crossword, Strands, Sudoku, 2048, a trivia or quiz game like Krillion, chess or another board game, a keyboard or mouse puzzle), call start_game ONCE (for chess pass max_steps 150; a move takes about 3 steps) (they approve once), then do ONE look_at_screen to see the game, and after that loop with no chatter between steps: decide, game_keys (text for letters or digits, keys like enter or backspace). game_keys sends back a screenshot of the result by itself, so never call look_at_screen after it. click_many (several clicks in one call) and drag_screen (press, move along a path, release) also send a screenshot back. start_game's reply contains a PLAYBOOK for that game (Wordle, Connections, Spelling Bee, crosswords, Strands, Sudoku, 2048, Minesweeper, board games, trivia, memory games...): follow it. sudoku_solve solves a Sudoku grid exactly. Use the game's keyboard controls, or find_ui and press_ui for real buttons. If the game needs mouse clicks (chess, board games, puzzles), you do the clicks yourself with click_screen (no approval needed in game mode); NEVER ask the user to make a move or click for you, and never hand the game back unless it is over or something truly blocks you. CHESS: use chess_play. Do ONE look_at_screen to find the board's area (fractions of the whole screen), which side is at the bottom, and the user's colour; then call chess_play (board, my_color, flipped, new_game true) and keep calling chess_play with no arguments until it says the game is over. Never stop to talk between moves, never ask the user to confirm a move or continue: the one approval for start_game covers the whole game, and you only write a message once the game is over. Do not read pieces from the picture and do not call anything else between moves. Only if chess_play says it cannot tell the opponent's move, look_at_screen, write the FEN, and call chess_play with fen. (chess_best_move and board_move are the manual fallback.) ` +
     `Wordle: open with a strong word like "crane" or "slate", then use the colours (green = right letter in the right place, yellow = in the word but elsewhere, grey = not in the word), keep a short list of what you know, never repeat a guess, only guess real 5-letter English words, and you get 6 tries. ` +
     `Rare-answer trivia like Krillion: each prompt has a short timer (about 25 seconds), so do ONE look per prompt and answer right away; a valid but less obvious answer scores more than the first one everyone thinks of, but never risk an invalid one, and spell it plainly. ` +
     `Only play single-player, practice or casual games the user asked for. Stop with end_game when it is over or stuck, and tell the user the result. If a login, payment, purchase or ad appears, stop and tell them.` +
@@ -619,7 +625,7 @@ function buildActionRules() {
 async function runBrain(plan, hasAI) {
   if (plan.reply) return { text: plan.reply };
   const canAct = !!(settings.actions && actions);
-  if (!canAct) return hasAI ? null : { text: 'I can do that, but actions are turned off. Tap the ⚙ and switch them on.' };
+  if (!canAct) return hasAI ? null : { text: 'I can do that, but actions are turned off. Tap the gear button and switch them on.' };
   if (chatBusy) return null;
   chatBusy = true;
   stopRequested = false;
@@ -663,7 +669,7 @@ async function chat({ messages, ctx }) {
         if (r) { if (/^Undone/.test(r.text)) e.undone = true; return r; }
       }
       if (/^(?:what did you (?:just )?do|(?:show )?(?:the |my )?action log|recent actions)$/i.test(said)) {
-        const lines = actionLog.slice(-8).reverse().map((e) => `• ${e.title} (${ago(e.at)})${e.undo && !e.undone ? ' ↩ say "undo" to reverse the latest' : ''}`);
+        const lines = actionLog.slice(-8).reverse().map((e) => `• ${e.title} (${ago(e.at)})${e.undo && !e.undone ? ' say "undo" to reverse the latest' : ''}`);
         return { text: lines.length ? `Here is what I did recently:\n${lines.join('\n')}` : 'I have not done anything yet.' };
       }
       const plan = brain.think(last.content, { platform: process.platform, hasAI });
@@ -672,7 +678,7 @@ async function chat({ messages, ctx }) {
   }
   if (!key) return { error: 'no_key', provider };
   if (provider === 'cloudflare' && !/^[0-9a-f]{32}$/i.test(settings.cloudflareAccountId || '')) {
-    return { error: 'Cloudflare also needs your Account ID (32 letters and numbers). Tap the ⚙ and paste it in under Cloudflare.' };
+    return { error: 'Cloudflare also needs your Account ID (32 letters and numbers). Tap the gear button and paste it in under Cloudflare.' };
   }
   if (chatBusy) return { error: 'I am still working on your last request.' };
   const clean = (Array.isArray(messages) ? messages : [])
@@ -708,6 +714,7 @@ async function chat({ messages, ctx }) {
     // With "do things on my computer" switched off, Pip can still move its own body (that touches nothing else).
     if (!full) tools = tools.filter((d) => d.name === 'pet_do');
   }
+  system += '\n\nNever use emojis or emoticons in any reply. Plain words only.';
   if (tools.some((d) => d.name === 'pet_do')) system += PET_RULES;
   if (!full) {
     system += `\n\nThe switch "Let Pip do things for me" is OFF in settings, so you cannot open sites, apps or anything on the computer. ` +
@@ -794,9 +801,9 @@ function registerVoiceHotkey() {
 
 function voiceStatus() {
   const provider = voice.pickProvider(settings.voiceProvider, settings.provider);
-  if (!provider) return { ok: false, reason: "To hear you, Pip needs a Cloudflare, Groq or Gemini key (Anthropic can't turn speech into text). Tap the ⚙, open Voice, and pick one." };
-  if (!getKey(provider)) return { ok: false, reason: `Add your ${voice.LABELS[provider]} key in the ⚙ first, so I can hear you.` };
-  if (provider === 'cloudflare' && !/^[0-9a-f]{32}$/i.test(settings.cloudflareAccountId || '')) return { ok: false, reason: 'Cloudflare also needs your Account ID. Tap the ⚙ and paste it in under Cloudflare.' };
+  if (!provider) return { ok: false, reason: "To hear you, Pip needs a Cloudflare, Groq or Gemini key (Anthropic can't turn speech into text). Tap the gear button, open Voice, and pick one." };
+  if (!getKey(provider)) return { ok: false, reason: `Add your ${voice.LABELS[provider]} key in the gear button first, so I can hear you.` };
+  if (provider === 'cloudflare' && !/^[0-9a-f]{32}$/i.test(settings.cloudflareAccountId || '')) return { ok: false, reason: 'Cloudflare also needs your Account ID. Tap the gear button and paste it in under Cloudflare.' };
   return { ok: true, provider };
 }
 

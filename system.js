@@ -247,12 +247,12 @@ function clickCommand(px, py, platform) {
 }
 
 // Several clicks one after another in a single command (for a chess move: piece, then square), gap = pause between them.
-function clicksCommand(points, platform, gapMs = 250) {
+function clicksCommand(points, platform, gapMs = 250, maxPoints = 4) {
   const pts = (points || []).map((p) => ({ x: Math.round(Number(p.x)), y: Math.round(Number(p.y)) }));
-  if (!pts.length || pts.length > 4 || pts.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y) || p.x < 0 || p.y < 0 || p.x > 20000 || p.y > 20000)) throw new Error('That is not a spot on the screen.');
+  if (!pts.length || pts.length > maxPoints || pts.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y) || p.x < 0 || p.y < 0 || p.x > 20000 || p.y > 20000)) throw new Error('That is not a spot on the screen.');
   if (platform === 'win32') {
     const script = "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class PipMouse { [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int x, int y); [DllImport(\"user32.dll\")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e); }'; [void][PipMouse]::SetProcessDPIAware(); " +
-      pts.map((p) => `[void][PipMouse]::SetCursorPos(${p.x}, ${p.y}); Start-Sleep -Milliseconds 60; [PipMouse]::mouse_event(2,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 40; [PipMouse]::mouse_event(4,0,0,0,[UIntPtr]::Zero)`).join(`; Start-Sleep -Milliseconds ${gapMs}; `);
+      pts.map((p) => `[void][PipMouse]::SetCursorPos(${p.x}, ${p.y}); Start-Sleep -Milliseconds 60; [PipMouse]::mouse_event(1,1,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 40; [PipMouse]::mouse_event(2,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 60; [PipMouse]::mouse_event(4,0,0,0,[UIntPtr]::Zero)`).join(`; Start-Sleep -Milliseconds ${gapMs}; `);
     return { cmd: 'powershell.exe', args: psArgs(script) };
   }
   if (platform === 'darwin') {
@@ -263,6 +263,36 @@ function clicksCommand(points, platform, gapMs = 250) {
   }
   const args = [];
   pts.forEach((p, i) => { if (i) args.push('sleep', String(gapMs / 1000)); args.push('mousemove', String(p.x), String(p.y), 'click', '1'); });
+  return { cmd: 'xdotool', args };
+}
+
+// Press at the first point, move through the others in order, release at the last (Strands, word search, solitaire, sliders).
+// Every hop is cut into small steps so the page sees a real drag, not a jump.
+function dragCommand(points, platform, holdMs = 60) {
+  const pts = (points || []).map((p) => ({ x: Math.round(Number(p.x)), y: Math.round(Number(p.y)) }));
+  if (pts.length < 2 || pts.length > 16 || pts.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y) || p.x < 0 || p.y < 0 || p.x > 20000 || p.y > 20000)) throw new Error('A drag needs 2 to 16 spots on the screen.');
+  const hold = Math.max(0, Math.min(500, Math.round(Number(holdMs)) || 0));
+  const steps = [];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i], n = 4;
+    for (let k = 1; k <= n; k++) steps.push({ x: Math.round(a.x + (b.x - a.x) * k / n), y: Math.round(a.y + (b.y - a.y) * k / n) });
+  }
+  if (platform === 'win32') {
+    const head = "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class PipMouse { [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int x, int y); [DllImport(\"user32.dll\")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e); }'; [void][PipMouse]::SetProcessDPIAware(); ";
+    const script = head + `[void][PipMouse]::SetCursorPos(${pts[0].x}, ${pts[0].y}); Start-Sleep -Milliseconds 80; [PipMouse]::mouse_event(2,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds ${hold + 40}; ` +
+      steps.map((p) => `[void][PipMouse]::SetCursorPos(${p.x}, ${p.y}); Start-Sleep -Milliseconds 18`).join('; ') + '; Start-Sleep -Milliseconds 60; [PipMouse]::mouse_event(4,0,0,0,[UIntPtr]::Zero)';
+    return { cmd: 'powershell.exe', args: psArgs(script) };
+  }
+  if (platform === 'darwin') {
+    // System Events cannot drag, so post the mouse events directly (needs the same Accessibility permission as clicking).
+    const js = "ObjC.import('ApplicationServices'); function post(t,x,y){var e=$.CGEventCreateMouseEvent(null,t,{x:x,y:y},0);$.CGEventPost($.kCGHIDEventTap,e);} " +
+      `post(5,${pts[0].x},${pts[0].y}); delay(0.08); post(1,${pts[0].x},${pts[0].y}); delay(${(hold + 40) / 1000}); ` +
+      steps.map((p) => `post(6,${p.x},${p.y}); delay(0.018);`).join(' ') + ` delay(0.06); post(2,${pts[pts.length - 1].x},${pts[pts.length - 1].y});`;
+    return { cmd: 'osascript', args: ['-l', 'JavaScript', '-e', js] };
+  }
+  const args = ['mousemove', String(pts[0].x), String(pts[0].y), 'sleep', '0.08', 'mousedown', '1', 'sleep', String((hold + 40) / 1000)];
+  steps.forEach((p) => args.push('mousemove', String(p.x), String(p.y), 'sleep', '0.018'));
+  args.push('sleep', '0.06', 'mouseup', '1');
   return { cmd: 'xdotool', args };
 }
 
@@ -745,7 +775,7 @@ function mediaCommand(action, platform, value) {
 module.exports = {
   BROWSER_ACTIONS, browserKeys, focusBrowserCommand, focusAppCommand, parseFocusResult, BROWSER_PROCESSES,
   START_APPS_SCRIPT, parseStartApps, pickStartApp, editDistance, APP_PROTOCOLS, SCROLL_DIRS, scrollCommands, gameKeyCommand, GAME_KEYS,
-  clickCommand, clicksCommand, chatApp, CHAT_APPS, SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
+  clickCommand, clicksCommand, dragCommand, chatApp, CHAT_APPS, SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
   PAGES, pageNames, settingsLaunch,
   psArgs, buildShell, shellName, checkCommand, isReadOnlyCommand,
   parseCombo, buildKeyCommand,

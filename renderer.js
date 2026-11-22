@@ -18,16 +18,16 @@
   const rand = (a, b) => a + Math.random() * (b - a);
 
   const QUIPS = [
-    'Sip some water? 💧',
-    'Quick stretch time! 🙆',
+    'Sip some water?',
+    'Quick stretch time!',
     'Roll your shoulders back~',
-    'Look away from the screen for 20 seconds 👀',
-    'You are doing great ✨',
-    'Snack break? 🍎',
+    'Look away from the screen for 20 seconds',
+    'You are doing great',
+    'Snack break?',
     'Psst... right-click me for the menu!',
     'Click me if you need help deciding something!',
-    'Deep breath in... and out 🌿',
-    'Posture check! 🪑',
+    'Deep breath in... and out',
+    'Posture check!',
   ];
 
   const $ = (id) => document.getElementById(id);
@@ -251,6 +251,8 @@
     chatOpen: false,
     queue: [],   // hops and moves Pip still has to do (from chat commands)
     stay: false, // chat told Pip to stay put
+    away: null,  // sad: {phase:'sulk'|'out'|'gone'|'in', t0, dir, off}
+    ax: 0,       // horizontal offset while walking off / back on
   };
   const mouse = { x: area.w / 2, y: area.h / 2 };
   let thinkingFlag = false;
@@ -382,7 +384,10 @@
     }
   }
 
+  const EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu;
+  const noEmoji = (t) => String(t == null ? '' : t).replace(EMOJI_RE, '').replace(/[ \t]{2,}/g, ' ').replace(/ +([.,!?])/g, '$1').trim();
   function showBubble(text, ms = 5000) {
+    text = noEmoji(text);
     bubble.textContent = text;
     bubble.classList.add('show');
     clearTimeout(bubbleTimer);
@@ -394,36 +399,164 @@
   // A dance is a short sequence of moves layered on top of whatever Pip is doing (hopping, perched...).
   const DANCE_SEG = 1300; // ms per move
   const DANCE_ROUTINE = ['sway', 'bounce', 'spin', 'wiggle', 'flourish', 'bounce', 'spin'];
+  const DANCE_EXTRA = ['floss', 'shuffle', 'six_seven', 'headbang', 'dab', 'robot', 'moonwalk', 'backflip'];
+  const DANCE_ALL = DANCE_ROUTINE.concat(DANCE_EXTRA);
   function startDance(style) {
-    const move = DANCE_ROUTINE.includes(style) ? style : null;
-    const seq = move ? [move, move, move, move] : DANCE_ROUTINE.slice();
+    const move = DANCE_ALL.includes(style) ? style : null;
+    const once = move === 'backflip' || move === 'cartwheel';
+    let seq;
+    if (move) seq = once ? [move, move] : [move, move, move, move];
+    else {
+      const ex = DANCE_EXTRA.slice().sort(() => Math.random() - 0.5).slice(0, 3);
+      seq = DANCE_ROUTINE.slice(0, 4).concat(ex, ['flourish']);
+    }
+    if (seq.includes('six_seven')) showBubble('6... 7!', 2600);
     st.dance = { t0: performance.now(), seq, total: seq.length * DANCE_SEG };
   }
   function danceOffsets(now) {
-    const z = { yaw: 0, tilt: 0, hop: 0, glide: 0 };
+    const z = { yaw: 0, tilt: 0, hop: 0, glide: 0, x: 0, flip: 0 };
     const d = st.dance;
     if (!d) return z;
     const e = now - d.t0;
-    if (e >= d.total || st.dragging) { st.dance = null; return z; }
+    if (e >= d.total || st.dragging || st.away) { st.dance = null; return z; }
     const i = Math.min(d.seq.length - 1, Math.floor(e / DANCE_SEG)), q = (e - i * DANCE_SEG) / DANCE_SEG;
     const w = clamp(Math.min(e, d.total - e) / 350, 0, 1); // ease in and out
-    const TAU = Math.PI * 2, s = (n) => Math.sin(q * TAU * n);
+    const TAU = Math.PI * 2, s = (n) => Math.sin(q * TAU * n), arc = Math.sin(q * Math.PI), ez = q * q * (3 - 2 * q);
+    let full = false; // moves that must complete a full turn are not scaled by the ease
     switch (d.seq[i]) {
       case 'sway': z.yaw = s(2) * 0.5; z.tilt = s(2) * 0.22; break;
       case 'bounce': z.hop = -Math.abs(Math.sin(q * Math.PI * 4)) * 34; z.tilt = s(2) * 0.06; break;
-      case 'spin': z.yaw = q * q * (3 - 2 * q) * TAU; break;
+      case 'spin': z.yaw = ez * TAU; break;
       case 'wiggle': z.tilt = s(6) * 0.14; z.yaw = s(3) * 0.25; break;
-      case 'flourish': z.glide = Math.sin(q * Math.PI); z.tilt = s(1) * 0.1; z.yaw = s(1) * 0.3; break;
+      case 'flourish': z.glide = arc; z.tilt = s(1) * 0.1; z.yaw = s(1) * 0.3; break;
+      case 'backflip': full = true; z.hop = -arc * 130; z.flip = -ez * TAU; z.glide = arc * 0.5; break;
+      case 'cartwheel': full = true; z.hop = -arc * 60; z.tilt = ez * TAU * st.face; z.glide = arc; break;
+      case 'six_seven': z.glide = 0.55 + 0.45 * s(4); z.tilt = s(4) * 0.16; z.hop = -Math.abs(s(4)) * 14; z.yaw = s(2) * 0.2; break;
+      case 'floss': z.yaw = s(4) * 0.7; z.tilt = -s(4) * 0.22; z.glide = 0.7; break;
+      case 'moonwalk': z.x = -st.face * q * 90 * (i % 2 ? -1 : 1); z.yaw = 0.7 * st.face; z.hop = -Math.abs(s(6)) * 6; z.tilt = s(6) * 0.05; break;
+      case 'shuffle': z.x = s(2) * 40; z.yaw = s(2) * 0.6; z.hop = -Math.abs(s(4)) * 16; break;
+      case 'headbang': z.tilt = s(4) * 0.22; z.hop = s(4) * 8; z.glide = 0.15; break;
+      case 'dab': z.glide = Math.sqrt(arc); z.tilt = 0.32 * arc; z.yaw = 0.8 * arc; break;
+      case 'robot': z.yaw = Math.round(s(1) * 2) / 2 * 0.7; z.tilt = Math.round(s(2) * 2) / 2 * 0.15; z.glide = Math.round(arc * 2) / 2; break;
     }
     happyUntil = Math.max(happyUntil, now + 250); // ears wiggle and he waves while dancing
-    for (const k of Object.keys(z)) z[k] *= w;
+    for (const k of Object.keys(z)) if (!(full && (k === 'flip' || k === 'tilt'))) z[k] *= w;
     return z;
+  }
+
+  // ---------------------------------------------------------------- emotions
+  // Face/body targets per emotion; the current values ease toward them. Sad is separate (he walks off, see goSad).
+  const EMO = {
+    neutral: {},
+    happy: { mouth: 1, happy: 0.9 },
+    excited: { mouth: 1, mouthO: 0.5, happy: 0.5, wide: 0.5, alert: 1, bounce: 1 },
+    mad: { brow: 1, mouth: -0.9, blush: 0.7, earBack: 1, shake: 0.05, stomp: 1 },
+    scared: { wide: 1, mouth: -0.4, mouthO: 0.4, earBack: 0.8, brow: -0.6, shake: 0.06, crouch: 0.6 },
+    surprised: { wide: 1, mouthO: 1, alert: 1, brow: -0.2, jump: 1 },
+    love: { mouth: 1, blush: 1, happy: 0.8, sway: 1 },
+    shy: { mouth: 0.2, blush: 1, sleepy: 0.25, brow: -0.3, tilt: 0.18 },
+    embarrassed: { mouth: -0.2, blush: 1, wide: 0.2, brow: -0.4, shake: 0.02, tilt: 0.15 },
+    bored: { mouth: -0.3, sleepy: 0.7, brow: -0.15, earBack: 0.3 },
+    confused: { thinking: 0.9, brow: -0.4, mouth: -0.2, wide: 0.2, tilt: -0.12 },
+    proud: { mouth: 1, alert: 1, happy: 0.25 },
+    sleepy: { sleepy: 1, mouth: 0, mouthO: 0.5 },
+    jealous: { brow: 0.6, mouth: -0.5, blush: 0.3, earBack: 0.4, tilt: 0.1 },
+    disgusted: { brow: 0.4, mouth: -1, earBack: 0.5, tilt: -0.1 },
+    nervous: { wide: 0.5, mouth: -0.2, earBack: 0.3, brow: -0.5, shake: 0.03 },
+    lonely: { brow: -0.8, mouth: -0.7, sleepy: 0.5, earBack: 0.4 },
+  };
+  const EMO_KEYS = ['brow', 'mouth', 'mouthO', 'wide', 'blush', 'earBack', 'sleepy', 'happy', 'alert', 'thinking'];
+  st.emo = { name: 'neutral', until: 0, cur: {} };
+  function setEmotion(name, ms) {
+    if (name === 'sad') { goSad(); return; }
+    if (!EMO[name]) name = 'neutral';
+    if (st.away) comeBack();
+    st.emo.name = name;
+    st.emo.until = name === 'neutral' ? 0 : performance.now() + (ms || 9000);
+    st.emo.t0 = performance.now();
+    if (name === 'excited') for (const dx of [50, -50]) st.queue.push({ tx: clamp(st.x + dx, minPetX(), maxPetX()), h: 50 });
+    if (name === 'love') startDance('sway');
+    if (name === 'surprised') st.queue.push({ tx: st.x, h: 80 });
+    if (name === 'proud') startDance('flourish');
+  }
+  function emoStep(now) { // eases the face toward the emotion; returns body offsets
+    const e = st.emo, T = (now < e.until ? EMO[e.name] : EMO.neutral) || {};
+    if (now >= e.until && e.name !== 'neutral') e.name = 'neutral';
+    for (const k of EMO_KEYS) e.cur[k] = (e.cur[k] || 0) + ((T[k] || 0) - (e.cur[k] || 0)) * 0.12;
+    const o = { tilt: 0, hop: 0, crouch: 0 };
+    if (T.shake) o.tilt += Math.sin(now * 0.06) * T.shake;
+    if (T.tilt) o.tilt += T.tilt * Math.min(1, (now - e.t0) / 400);
+    if (T.stomp && !st.hop) o.hop = -Math.max(0, Math.sin(now / 160)) * 7;
+    if (T.bounce && !st.hop) o.hop = -Math.abs(Math.sin(now / 150)) * 12;
+    if (T.crouch) o.crouch = T.crouch;
+    return o;
+  }
+  // quick reactions to what the user types, so he shows feelings even if the AI does not call the tool
+  function reactToText(t) {
+    const x = String(t).toLowerCase();
+    if (/\b(stupid|idiot|dumb|shut up|hate you|useless|annoying|you suck)\b/.test(x)) setEmotion('mad');
+    else if (/\b(go away|leave me alone)\b/.test(x)) setEmotion('sad');
+    else if (/\b(love you|i love|you.?re (the )?best|so cute|adorable)\b/.test(x)) setEmotion('love');
+    else if (/\b(thanks|thank you|great job|well done|good job|awesome|amazing)\b/.test(x)) setEmotion('happy');
+    else if (/\b(sorry|my bad|forgive me)\b/.test(x) && st.away) comeBack();
+    else if (/\b(boo|scary|ghost|spider|snake)\b/.test(x)) setEmotion('scared');
+    else if (/\b(omg|no way|wow|whoa)\b/.test(x)) setEmotion('surprised');
+  }
+
+  // ---------------------------------------------------------------- feelings: sad = walk off the screen until asked back
+  function goSad() {
+    if (st.away) return;
+    st.dance = null; st.queue = []; st.stay = false;
+    const now = performance.now();
+    const dir = st.x + SIZE / 2 < area.w / 2 ? -1 : 1;
+    const off = dir < 0 ? st.x + SIZE + 80 : area.w - st.x + 80;
+    st.away = { phase: 'sulk', t0: now, dir, off };
+    showBubble('...okay', 2400);
+  }
+  function comeBack(msg) {
+    const a = st.away;
+    if (!a || a.phase === 'in') return;
+    a.phase = 'in'; a.t0 = performance.now();
+    petEl.style.visibility = ''; shEl.style.visibility = '';
+    st.face = -a.dir;
+    cheer(2500); alertUntil = performance.now() + 3000;
+    showBubble(msg || "I'm back!", 3500);
+  }
+  function awayStep(now) { // returns extra hop; updates st.ax, st.sadAmt
+    const a = st.away;
+    if (!a) { st.ax = 0; st.sadAmt = 0; return 0; }
+    const e = now - a.t0;
+    let hop = 0;
+    st.sadAmt = 1;
+    if (a.phase === 'sulk') { st.ax = 0; if (e > 2400) { a.phase = 'out'; a.t0 = now; st.face = a.dir; } }
+    else if (a.phase === 'out') {
+      const p = clamp(e / 2600, 0, 1);
+      st.ax = a.dir * a.off * p * p;
+      hop = -Math.abs(Math.sin(p * Math.PI * 5)) * 10;
+      if (p >= 1) { a.phase = 'gone'; petEl.style.visibility = 'hidden'; shEl.style.visibility = 'hidden'; }
+    } else if (a.phase === 'gone') { st.ax = a.dir * a.off; }
+    else if (a.phase === 'in') {
+      const p = clamp(e / 1600, 0, 1);
+      st.ax = a.dir * a.off * (1 - p) * (1 - p);
+      hop = -Math.abs(Math.sin(p * Math.PI * 4)) * 14;
+      st.sadAmt = 1 - p;
+      if (p >= 1) { st.away = null; st.ax = 0; st.sadAmt = 0; }
+    }
+    return hop;
   }
 
   // Commands from the chat (the pet_do tool): hop, dance, cheer, go/fly somewhere, land, stay, roam.
   function petCommand(c) {
     if (!c || typeof c !== 'object' || st.dragging) return;
     // already flying: do the new move once Pip has landed
+    if (st.away && c.action !== 'sad' && !(c.action === 'feel' && c.emotion === 'sad')) { comeBack(); if (c.action === 'return') return; if (['hop', 'dance', 'cheer', 'feel'].includes(c.action)) setTimeout(() => petCommand(c), 1700); return; }
+    if (c.action === 'feel') { setEmotion(c.emotion); return; }
+    if (c.action === 'return') return;
+    if (c.action === 'sad') {
+      if (st.flight) { st.pendingCmd = c; return; }
+      if (st.perch) { st.pendingCmd = c; startFlight(st.x, floorY(), { branch: false }); return; }
+      goSad(); return;
+    }
     if (st.flight && ['go', 'fly', 'land', 'hop', 'dance'].includes(c.action)) { st.pendingCmd = c; return; }
     const minX = minPetX(), maxX = maxPetX();
     const at = (x) => clamp(x, minX, maxX);
@@ -484,7 +617,7 @@
       if (st.chatOpen) st.perch.until = Math.max(st.perch.until, now + 15000);
       else if (now > st.perch.until) startFlight(st.x, floorY(), { branch: false }); // time to glide home
     }
-    if (!st.hop && !st.flight && !st.perch && !st.dragging && !st.chatOpen && settings.wander && !quiet() && !st.stay && now > st.nextHop) {
+    if (!st.away && !st.hop && !st.flight && !st.perch && !st.dragging && !st.chatOpen && settings.wander && !quiet() && !st.stay && now > st.nextHop) {
       const dir = Math.random() < 0.5 ? -1 : 1;
       const big = Math.random() < 0.3;
       const span = big ? rand(500, Math.max(600, area.w * 0.5)) : rand(120, 380);
@@ -493,7 +626,7 @@
       if (Math.abs(tx - st.x) >= 90) startHop(tx, big ? 150 : 60);
       st.nextHop = now + rand(10000, 24000);
     }
-    if (!st.hop && !st.flight && !st.dragging && st.queue.length) {
+    if (!st.away && !st.hop && !st.flight && !st.dragging && st.queue.length) {
       const q = st.queue.shift();
       startHop(q.tx, q.h);
       if (q.cheer) cheer(q.cheer);
@@ -541,6 +674,12 @@
     st.thinking += ((thinkingFlag ? 1 : 0) - st.thinking) * 0.14;
 
     const dz = danceOffsets(now);
+    dz.hop += awayStep(now);
+    if (st.away) { st.happy = 0; st.emo.until = 0; }
+    const sadAmt = st.sadAmt || 0;
+    const eo = emoStep(now), ec = st.emo.cur;
+    dz.hop += eo.hop; dz.tilt += eo.tilt;
+    const sadBrow = sadAmt, sadMouth = sadAmt;
     if (gl) {
       draw(Model.buildParts({
         t: now / 1000,
@@ -548,22 +687,29 @@
         lookYaw: st.lookYaw,
         lookPitch: st.lookPitch,
         glide: clamp(st.glide + dz.glide, 0, 1),
-        crouch: st.crouch,
+        crouch: Math.max(st.crouch, eo.crouch),
         blink,
-        happy: st.happy,
-        thinking: st.thinking,
-        sleepy: st.sleepy,
-        alert: st.alert,
+        happy: Math.max(st.happy, ec.happy || 0),
+        thinking: Math.max(st.thinking, ec.thinking || 0),
+        sleepy: Math.max(st.sleepy || 0, sadAmt * 0.8, ec.sleepy || 0),
+        brow: (ec.brow || 0) - sadBrow * 0.9,
+        mouth: (ec.mouth || 0) - sadMouth,
+        mouthO: ec.mouthO || 0,
+        wide: ec.wide || 0,
+        blush: ec.blush || 0,
+        earBack: Math.max(ec.earBack || 0, sadAmt * 0.6),
+        flip: dz.flip,
+        alert: Math.max(st.alert, ec.alert || 0),
         palette: settings.palette,
         style: settings.style,
       }));
     }
 
-    petEl.style.transform = `translate(${st.x.toFixed(1)}px, ${(st.y + st.hopY + dz.hop).toFixed(1)}px) rotate(${(st.tilt + dz.tilt).toFixed(3)}rad)`;
+    petEl.style.transform = `translate(${(st.x + st.ax + dz.x).toFixed(1)}px, ${(st.y + st.hopY + dz.hop).toFixed(1)}px) rotate(${(st.tilt + dz.tilt).toFixed(3)}rad)`;
     updateBranch(now);
     const above = floorY() - (st.y + st.hopY); // how high above the floor Pip is
     const sc = clamp(1 + st.hopY / 260 - above / 900, 0.4, 1);
-    shEl.style.transform = `translate(${(st.x + SIZE / 2 - 42).toFixed(1)}px, ${(floorY() + SIZE * FEET - 6).toFixed(1)}px) scale(${sc.toFixed(2)})`;
+    shEl.style.transform = `translate(${(st.x + st.ax + dz.x + SIZE / 2 - 42).toFixed(1)}px, ${(floorY() + SIZE * FEET - 6).toFixed(1)}px) scale(${sc.toFixed(2)})`;
     shEl.style.opacity = String(st.perch ? 0 : clamp(1 + st.hopY / 140 - above / 500, 0.15, 1));
 
     if (settings.quips && !quiet() && !st.chatOpen && !st.dragging && now > st.nextQuip) {
@@ -787,7 +933,7 @@
       l.textContent = lang || 'code';
       const cp = document.createElement('button');
       cp.textContent = 'Copy';
-      cp.addEventListener('click', () => { pip.copyText(code); cp.textContent = 'Copied ✓'; setTimeout(() => { cp.textContent = 'Copy'; }, 1400); });
+      cp.addEventListener('click', () => { pip.copyText(code); cp.textContent = 'Copied'; setTimeout(() => { cp.textContent = 'Copy'; }, 1400); });
       head.append(l, cp);
       const pre = document.createElement('pre');
       const c = document.createElement('code');
@@ -799,6 +945,7 @@
   }
 
   function addMsg(role, text) {
+    if (role === 'pet') text = noEmoji(text);
     const d = document.createElement('div');
     d.className = 'm ' + role;
     if (role === 'pet' && (text.includes('`') || text.includes('**'))) renderRich(d, text);
@@ -821,6 +968,7 @@
   }
 
   function openChat() {
+    comeBack("You called?");
     st.chatOpen = true;
     bubble.classList.remove('show');
     panel.classList.add('open');
@@ -879,6 +1027,8 @@
     addMsg('user', text);
     if (opts.ctx) convoCtx = opts.ctx;
     history.push({ role: 'user', content: text });
+    reactToText(text);
+    if (st.away && !/\b(go away|leave|bye)\b/i.test(text)) comeBack();
     busy = true;
     thinkingFlag = true;
     stopBtn.hidden = false;
@@ -889,7 +1039,7 @@
       if (liveEl) { liveEl.remove(); liveEl = null; } // the final message below replaces the live one
       if (res.error === 'no_key') {
         history.pop();
-        addMsg('pet', `I need ${res.provider === 'gemini' ? 'a Google Gemini key' : res.provider === 'groq' ? 'a Groq key' : res.provider === 'cloudflare' ? 'a Cloudflare token' : 'an Anthropic key'} before I can chat! Tap the ⚙ above and paste one in. (Simple things like opening sites, volume, timers, maths and coin flips work without it 🪙)`);
+        addMsg('pet', `I need ${res.provider === 'gemini' ? 'a Google Gemini key' : res.provider === 'groq' ? 'a Groq key' : res.provider === 'cloudflare' ? 'a Cloudflare token' : 'an Anthropic key'} before I can chat! Tap the gear button above and paste one in. (Simple things like opening sites, volume, timers, maths and coin flips work without it)`);
       } else if (res.error) {
         history.pop();
         addMsg('pet', 'Oops, something went wrong: ' + res.error);
@@ -922,7 +1072,7 @@
     const danger = risk === 'high';
     card.className = 'm card' + (danger ? ' danger' : '');
     const h = document.createElement('b');
-    h.textContent = (danger ? '⚠️ ' : '🔒 ') + title;
+    h.textContent = (danger ? 'Warning: ' : '') + title;
     const pre = document.createElement('pre');
     pre.textContent = details;
     const acts = document.createElement('div');
@@ -942,8 +1092,8 @@
       res.textContent = label;
       if (approved !== null) pip.respondApproval(id, approved);
     };
-    ok.addEventListener('click', () => settle(true, '✓ Approved'));
-    no.addEventListener('click', () => settle(false, '✗ Declined'));
+    ok.addEventListener('click', () => settle(true, ' Approved'));
+    no.addEventListener('click', () => settle(false, ' Declined'));
     acts.append(ok, no, res);
     card.append(h, pre, acts);
     msgs.appendChild(card);
@@ -952,7 +1102,7 @@
     pip.focus();
   }
   pip.onApproval(showApproval);
-  pip.onApprovalExpired(({ id, label }) => { const f = cards.get(id); if (f) f(label || '⏱ Expired'); });
+  pip.onApprovalExpired(({ id, label }) => { const f = cards.get(id); if (f) f(label || 'Expired'); });
   pip.onProgress(({ n, title }) => {
     const el = typingEl && typingEl.querySelector('.step');
     if (!el) return;
@@ -1110,7 +1260,7 @@
         inp.setSelectionRange(inp.value.length, inp.value.length);
         break;
       case 'coin':
-        localReply('Flip a coin', Math.random() < 0.5 ? 'Heads! 🪙' : 'Tails! 🪙');
+        localReply('Flip a coin', Math.random() < 0.5 ? 'Heads!' : 'Tails!');
         break;
       case 'fact':
         send('Tell me a surprising, fun fact I probably do not know.');
@@ -1119,7 +1269,7 @@
         send('I could use a little cheering up!');
         break;
       case 'screen':
-        if (settings.actions === false) localReply('🖥️ Help with my screen', 'Turn on "Let Pip do things for me" in the ⚙ settings, and I can look at your screen (only after you approve each look).');
+        if (settings.actions === false) localReply('Help with my screen', 'Turn on "Let Pip do things for me" in the gear button settings, and I can look at your screen (only after you approve each look).');
         else send('Look at my screen and help me with the question on it. Give me the answer.');
         break;
       case 'sys':
@@ -1135,7 +1285,7 @@
       case 'clip': {
         let text = '';
         try { text = (await pip.readClipboard()).trim(); } catch (_) {}
-        if (!text) localReply('📋 What I copied', 'Your clipboard is empty. Copy some text first, then ask me again!');
+        if (!text) localReply('What I copied', 'Your clipboard is empty. Copy some text first, then ask me again!');
         else send('Explain or summarize what I copied.', { ctx: { text } });
         break;
       }
@@ -1160,7 +1310,7 @@
       const row = document.createElement('div');
       row.className = 'cal';
       const name = document.createElement('span');
-      name.textContent = (c.kind === 'file' ? '📄 ' : '🔗 ') + c.label;
+      name.textContent = (c.kind === 'file' ? '' : '') + c.label;
       const rm = document.createElement('button');
       rm.textContent = 'Remove';
       rm.addEventListener('click', async () => renderCals(await pip.removeCalendar(c.id)));
@@ -1175,7 +1325,7 @@
     renderCals(r.calendars);
     $('s-calname').value = '';
     $('s-calurl').value = '';
-    calStatus(`Added ✓ (found ${r.events} event${r.events === 1 ? '' : 's'})`);
+    calStatus(`Added (found ${r.events} event${r.events === 1 ? '' : 's'})`);
   }
   $('s-caladd').addEventListener('click', async () => {
     const url = $('s-calurl').value.trim();
@@ -1203,14 +1353,14 @@
 
   function openSettings() {
     $('s-key').value = '';
-    $('s-key').placeholder = settings.hasAnthropicKey ? 'Key saved ✓ (type to replace)' : 'sk-ant-...';
+    $('s-key').placeholder = settings.hasAnthropicKey ? 'Key saved (type to replace)' : 'sk-ant-...';
     $('s-gkey').value = '';
-    $('s-gkey').placeholder = settings.hasGeminiKey ? 'Key saved ✓ (type to replace)' : 'AIza...';
+    $('s-gkey').placeholder = settings.hasGeminiKey ? 'Key saved (type to replace)' : 'AIza...';
     $('s-grkey').value = '';
-    $('s-grkey').placeholder = settings.hasGroqKey ? 'Key saved ✓ (type to replace)' : 'gsk_...';
+    $('s-grkey').placeholder = settings.hasGroqKey ? 'Key saved (type to replace)' : 'gsk_...';
     $('s-grmodel').value = settings.groqModel || 'openai/gpt-oss-120b';
     $('s-cfkey').value = '';
-    $('s-cfkey').placeholder = settings.hasCloudflareKey ? 'Token saved ✓ (type to replace)' : 'API token';
+    $('s-cfkey').placeholder = settings.hasCloudflareKey ? 'Token saved (type to replace)' : 'API token';
     $('s-cfacct').value = settings.cloudflareAccountId || '';
     $('s-cfmodel').value = settings.cloudflareModel || '@cf/google/gemma-4-26b-a4b-it';
     $('s-provider').value = settings.provider || 'anthropic';
@@ -1288,24 +1438,24 @@
     });
     Object.assign(settings, saved);
     applySettings();
-    $('s-status').textContent = 'Saved ✓';
+    $('s-status').textContent = 'Saved';
     setTimeout(() => settingsEl.classList.remove('open'), 700);
   });
 
   pip.onMood((m) => {
     const now = performance.now();
-    if (m.type === 'call') { st.inCall = !!m.on; if (m.on) showBubble("Zoom meeting, I'll stay quiet 🤫", 5000); return; }
+    if (m.type === 'call') { st.inCall = !!m.on; if (m.on) showBubble("Zoom meeting, I'll stay quiet", 5000); return; }
     if (quiet()) return;
     if (m.type === 'return') {
       alertUntil = now + 4000;
       cheer(2200);
       if (!st.hop && !st.chatOpen) startHop(st.x, 38);
-      showBubble(m.away >= 60 ? 'Welcome back! It has been a while 🐾' : 'Welcome back! 🐾', 6000);
+      showBubble(m.away >= 60 ? 'Welcome back! It has been a while' : 'Welcome back!', 6000);
     } else if (m.type === 'stretch') {
       alertUntil = now + 3000;
-      showBubble(`You've been at it for ${m.mins >= 120 ? Math.round(m.mins / 60) + ' hours' : m.mins + ' minutes'}. Quick stretch? 🙆`, 10000);
+      showBubble(`You've been at it for ${m.mins >= 120 ? Math.round(m.mins / 60) + ' hours' : m.mins + ' minutes'}. Quick stretch?`, 10000);
     } else if (m.type === 'late') {
-      showBubble("It's getting late... maybe time to wind down? 🌙", 9000);
+      showBubble("It's getting late... maybe time to wind down?", 9000);
     }
   });
   pip.onSettings((s) => { Object.assign(settings, s); applySettings(); });
@@ -1317,7 +1467,7 @@
     if (typeof s.petX === 'number') { st.x = s.petX; clampX(); }
     applySettings();
     if (!s.seenIntro) {
-      setTimeout(() => showBubble(`Hi! I'm ${settings.petName} 🐾 Click me to chat, right-click for the menu!`, 8000), 1200);
+      setTimeout(() => showBubble(`Hi! I'm ${settings.petName} Click me to chat, right-click for the menu!`, 8000), 1200);
       cheer(1500);
       pip.saveSettings({ seenIntro: true });
     }
