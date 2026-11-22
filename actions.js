@@ -74,6 +74,7 @@ function parseRegion(r) {
 }
 const MAX_WRITE = 200000;
 const MAX_ITEMS = 100;
+const DANCE_STYLES = ['routine', 'sway', 'bounce', 'spin', 'wiggle', 'flourish'];
 const PET_ACTIONS = ['hop', 'dance', 'cheer', 'go', 'fly', 'land', 'stay', 'roam'];
 const PET_PLACES = ['left', 'right', 'middle', 'cursor'];
 const MAX_LIST = 200;
@@ -718,21 +719,23 @@ function createActions({
         title: 'Play the next chess move',
         details: 'Waits for the opponent, then plays the best reply by clicking the squares.',
         async run() {
-          if ((input && input.new_game) || fen || !chessGame) {
+          let firstCall = true; // later turns of the loop below reuse the game and never re-read the inputs
+          const step = async () => {
+          if ((firstCall && ((input && input.new_game) || fen)) || !chessGame) {
             const myWhite = color ? color === 'white' : (chessGame ? chessGame.myWhite : true);
             chessGame = { st: fen ? chess.parseFen(fen) : chess.startState(), region: region || (chessGame && chessGame.region), myWhite, snap: null, moves: [],
               flipped: input && input.flipped !== undefined ? !!input.flipped : (chessGame ? chessGame.flipped : !myWhite) };
           } else {
-            if (region) { chessGame.region = region; chessGame.snap = null; }
-            if (input && input.flipped !== undefined) chessGame.flipped = !!input.flipped;
-            if (color) chessGame.myWhite = color === 'white';
+            if (firstCall && region) { chessGame.region = region; chessGame.snap = null; }
+            if (firstCall && input && input.flipped !== undefined) chessGame.flipped = !!input.flipped;
+            if (firstCall && color) chessGame.myWhite = color === 'white';
           }
           const g = chessGame;
           const grab = () => grabBoard(g.region);
           if (!g.snap) g.snap = await grab();
           const settle = async (first) => { // wait until pieces stop sliding
             let cur = first;
-            for (let i = 0; i < 4; i++) { await sleep(250); const nxt = await grab(); const still = Math.max(...cellDiffs(cur, nxt)) < 6; cur = nxt; if (still) break; }
+            for (let i = 0; i < 4; i++) { await sleep(100); const nxt = await grab(); const still = Math.max(...cellDiffs(cur, nxt)) < 6; cur = nxt; if (still) break; }
             return cur;
           };
           const uci = (m) => chess.sqName(m.from) + chess.sqName(m.to) + (m.promo || '');
@@ -741,7 +744,7 @@ function createActions({
             const until = Date.now() + waitMs;
             let seen = null;
             while (!seen && Date.now() < until && gameOn) {
-              await sleep(500);
+              await sleep(250);
               let cur = await grab();
               if (cellDiffs(g.snap, cur).filter((v) => v > CHESS_T).length < 2) continue;
               cur = await settle(cur);
@@ -753,7 +756,8 @@ function createActions({
           }
           const over = chess.status(g.st);
           if (over) return `${said}Game over: ${over}${over === 'checkmate' ? (g.st.white === g.myWhite ? ' (I was checkmated).' : ' (I won!).') : ' (a draw).'} Call end_game and tell the user.`;
-          const best = chess.bestMoveState(g.st, { ms: thinkMs, queen: true });
+          const quick = !(input && input.think_ms) && g.moves.length < 14; // opening moves are well known: think less there
+          const best = chess.bestMoveState(g.st, { ms: quick ? 500 : thinkMs, queen: true });
           const mv = chess.legal(g.st).find((m) => chess.sqName(m.from) === best.from && chess.sqName(m.to) === best.to && (m.promo || null) === best.promo);
           const spot = (sq) => { // middle of a square, as a fraction of the whole screen
             const col = sq & 7, row = sq >> 3, c = g.flipped ? 7 - col : col, r = g.flipped ? 7 - row : row;
@@ -784,6 +788,20 @@ function createActions({
           g.moves.push(uci(mv));
           const end = chess.status(g.st);
           return `${said}Played ${best.from} to ${best.to}${mv.promo ? ' (queen)' : ''}${mv.castle ? ' (castling)' : ''}. ${end === 'checkmate' ? 'Checkmate, I won! Call end_game and tell the user.' : end ? 'Stalemate, a draw. Call end_game and tell the user.' : 'Now the opponent moves: call chess_play again.'}`;
+          };
+          // Keep playing on its own: no AI round trip between moves (that was the slow part). It stops at the end
+          // of the game, when the opponent takes too long, when a click fails, or when Stop is pressed.
+          const maxMoves = clamp(input && input.moves, 1, 150, 60);
+          const out = [];
+          for (let n = 0; n < maxMoves && gameOn; n++) {
+            const r = await step();
+            firstCall = false;
+            out.push(r);
+            if (!/^(?:Opponent played [^.]*\. )?Played /.test(r) || /end_game/.test(r)) break;
+          }
+          if (!out.length) return 'The game was stopped.';
+          const last = out[out.length - 1];
+          return out.length > 1 ? `I played ${out.length} turns in a row. Latest: ${last}` : last;
         },
       };
     },
@@ -1409,6 +1427,10 @@ function createActions({
       if (!PET_ACTIONS.includes(action)) throw new Error(`action must be one of: ${PET_ACTIONS.join(', ')}.`);
       const cmd = { action };
       if (action === 'hop') cmd.times = Math.min(5, Math.max(1, Math.round(Number(input.times)) || 1));
+      if (action === 'dance' && input.style !== undefined) {
+        if (!DANCE_STYLES.includes(String(input.style))) throw new Error(`style must be one of: ${DANCE_STYLES.join(', ')}.`);
+        cmd.style = String(input.style);
+      }
       if (action === 'go') {
         const where = String(input.where || '');
         if (!PET_PLACES.includes(where)) throw new Error(`where must be one of: ${PET_PLACES.join(', ')}.`);
@@ -1520,7 +1542,7 @@ function createActions({
       {
         name: 'pet_do',
         description: "Move Pip's own body on the screen. Needs no approval. action: hop (jump in place, optionally 'times' 1-5), dance, cheer (look happy), go (fly to 'where': left, right, middle of the screen, or cursor = next to the mouse; a branch grows there for Pip to perch on), fly (fly to a spot given by x and y, each 0 to 1 measured from the top-left corner of the screen; a branch grows just there and Pip perches on it), land (glide back down to the floor), stay (stop wandering around and stay put), roam (wander around again). Use fly when the user needs you at a particular place, for example 'help me click this' or 'help me open that': find out where the thing is first (find_ui if you have it, otherwise look_at_screen), then fly to it. Use go cursor for 'come here'.",
-        input_schema: { type: 'object', properties: { action: { type: 'string', enum: PET_ACTIONS }, times: { type: 'number', description: 'For hop: how many hops (1 to 5).' }, where: { type: 'string', enum: PET_PLACES, description: 'For go: where to go.' }, x: { type: 'number', description: 'For fly: horizontal position, 0 = left edge of the screen, 1 = right edge.' }, y: { type: 'number', description: 'For fly: vertical position, 0 = top edge of the screen, 1 = bottom edge.' } }, required: ['action'] },
+        input_schema: { type: 'object', properties: { action: { type: 'string', enum: PET_ACTIONS }, times: { type: 'number', description: 'For hop: how many hops (1 to 5).' }, style: { type: 'string', enum: DANCE_STYLES, description: 'For dance: routine (default, a mix of everything), sway, bounce, spin, wiggle or flourish (spreads his wings).' }, where: { type: 'string', enum: PET_PLACES, description: 'For go: where to go.' }, x: { type: 'number', description: 'For fly: horizontal position, 0 = left edge of the screen, 1 = right edge.' }, y: { type: 'number', description: 'For fly: vertical position, 0 = top edge of the screen, 1 = bottom edge.' } }, required: ['action'] },
       },
       {
         name: 'find_ui',
@@ -1599,7 +1621,7 @@ function createActions({
       {
         name: 'chess_play',
         description: "PLAY CHESS: the easiest way, one call per move, no reading pieces from a picture. First call: board = the chessboard's area as fractions of the WHOLE screen ({x, y, w, h}, top-left corner and size), my_color ('white' or 'black', the user's side), flipped (true when black is at the bottom), new_game true. Later calls need no arguments. Each call waits for the opponent's reply (it works out their move from which squares changed), picks the best move with the built-in engine and clicks it, then tells you what happened. Keep calling it until it says the game is over. If it says it cannot tell the opponent's move, look_at_screen, write the position as FEN, and call it again with fen.",
-        input_schema: { type: 'object', properties: { board: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } }, required: ['x', 'y', 'w', 'h'] }, my_color: { type: 'string', enum: ['white', 'black'] }, flipped: { type: 'boolean' }, new_game: { type: 'boolean' }, fen: str('Only to resync: the current position in FEN, side to move included.'), wait_ms: { type: 'number', description: 'How long to wait for the opponent (default 45000).' }, think_ms: { type: 'number', description: 'Engine thinking time (default 1200).' } } },
+        input_schema: { type: 'object', properties: { board: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } }, required: ['x', 'y', 'w', 'h'] }, my_color: { type: 'string', enum: ['white', 'black'] }, flipped: { type: 'boolean' }, new_game: { type: 'boolean' }, fen: str('Only to resync: the current position in FEN, side to move included.'), wait_ms: { type: 'number', description: 'How long to wait for the opponent (default 45000).' }, think_ms: { type: 'number', description: 'Engine thinking time (default 1200).' }, moves: { type: 'number', description: 'Most turns to play in a row before reporting back (default 60). It keeps playing by itself.' } } },
       },
       {
         name: 'chess_best_move',

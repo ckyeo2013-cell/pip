@@ -1271,7 +1271,7 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
         world.hl = new Set([chess.sqIndex(b.from), chess.sqIndex(b.to)]); theirMoves.push(`${b.from} to ${b.to}`);
       }, ms);
       if (!myIsWhite) opponentReplies(700); // black waits for white's first move
-      const call = async (extra) => (await P.prepare('chess_play', { think_ms: 200, wait_ms: 8000, ...extra })).run();
+      const call = async (extra) => (await P.prepare('chess_play', { think_ms: 200, wait_ms: 8000, moves: 1, ...extra })).run();
       const r1 = await call({ board: REG, my_color: side, flipped, new_game: true });
       if (myIsWhite) assert.match(r1, /^Played [a-h][1-8] to [a-h][1-8]/, r1);
       else assert.match(r1, new RegExp(`^Opponent played ${theirMoves[0]}\\. Played `), r1);

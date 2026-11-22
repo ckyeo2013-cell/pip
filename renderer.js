@@ -390,6 +390,36 @@
   }
   function cheer(ms = 1300) { happyUntil = performance.now() + ms; }
 
+  // ---------------------------------------------------------------- dance moves
+  // A dance is a short sequence of moves layered on top of whatever Pip is doing (hopping, perched...).
+  const DANCE_SEG = 1300; // ms per move
+  const DANCE_ROUTINE = ['sway', 'bounce', 'spin', 'wiggle', 'flourish', 'bounce', 'spin'];
+  function startDance(style) {
+    const move = DANCE_ROUTINE.includes(style) ? style : null;
+    const seq = move ? [move, move, move, move] : DANCE_ROUTINE.slice();
+    st.dance = { t0: performance.now(), seq, total: seq.length * DANCE_SEG };
+  }
+  function danceOffsets(now) {
+    const z = { yaw: 0, tilt: 0, hop: 0, glide: 0 };
+    const d = st.dance;
+    if (!d) return z;
+    const e = now - d.t0;
+    if (e >= d.total || st.dragging) { st.dance = null; return z; }
+    const i = Math.min(d.seq.length - 1, Math.floor(e / DANCE_SEG)), q = (e - i * DANCE_SEG) / DANCE_SEG;
+    const w = clamp(Math.min(e, d.total - e) / 350, 0, 1); // ease in and out
+    const TAU = Math.PI * 2, s = (n) => Math.sin(q * TAU * n);
+    switch (d.seq[i]) {
+      case 'sway': z.yaw = s(2) * 0.5; z.tilt = s(2) * 0.22; break;
+      case 'bounce': z.hop = -Math.abs(Math.sin(q * Math.PI * 4)) * 34; z.tilt = s(2) * 0.06; break;
+      case 'spin': z.yaw = q * q * (3 - 2 * q) * TAU; break;
+      case 'wiggle': z.tilt = s(6) * 0.14; z.yaw = s(3) * 0.25; break;
+      case 'flourish': z.glide = Math.sin(q * Math.PI); z.tilt = s(1) * 0.1; z.yaw = s(1) * 0.3; break;
+    }
+    happyUntil = Math.max(happyUntil, now + 250); // ears wiggle and he waves while dancing
+    for (const k of Object.keys(z)) z[k] *= w;
+    return z;
+  }
+
   // Commands from the chat (the pet_do tool): hop, dance, cheer, go/fly somewhere, land, stay, roam.
   function petCommand(c) {
     if (!c || typeof c !== 'object' || st.dragging) return;
@@ -411,7 +441,8 @@
         break;
       case 'dance':
         // on a branch he dances in place; on the floor he hops side to side
-        for (const dx of [70, -70, 70, -70, 0]) st.queue.push({ tx: st.perch ? x0 : at(x0 + dx), h: 55, cheer: 1500 });
+        if (!c.style || c.style === 'routine') for (const dx of [70, -70, 70, -70, 0]) st.queue.push({ tx: st.perch ? x0 : at(x0 + dx), h: 55, cheer: 1500 });
+        startDance(c.style);
         break;
       case 'cheer':
         cheer(2500);
@@ -509,13 +540,14 @@
     st.alert = (st.alert || 0) + (((now < alertUntil || st.chatOpen) ? 1 : 0) - (st.alert || 0)) * 0.15;
     st.thinking += ((thinkingFlag ? 1 : 0) - st.thinking) * 0.14;
 
+    const dz = danceOffsets(now);
     if (gl) {
       draw(Model.buildParts({
         t: now / 1000,
-        bodyYaw: st.bodyYaw,
+        bodyYaw: st.bodyYaw + dz.yaw,
         lookYaw: st.lookYaw,
         lookPitch: st.lookPitch,
-        glide: st.glide,
+        glide: clamp(st.glide + dz.glide, 0, 1),
         crouch: st.crouch,
         blink,
         happy: st.happy,
@@ -527,7 +559,7 @@
       }));
     }
 
-    petEl.style.transform = `translate(${st.x.toFixed(1)}px, ${(st.y + st.hopY).toFixed(1)}px) rotate(${st.tilt.toFixed(3)}rad)`;
+    petEl.style.transform = `translate(${st.x.toFixed(1)}px, ${(st.y + st.hopY + dz.hop).toFixed(1)}px) rotate(${(st.tilt + dz.tilt).toFixed(3)}rad)`;
     updateBranch(now);
     const above = floorY() - (st.y + st.hopY); // how high above the floor Pip is
     const sc = clamp(1 + st.hopY / 260 - above / 900, 0.4, 1);

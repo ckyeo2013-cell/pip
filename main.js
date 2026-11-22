@@ -276,6 +276,7 @@ function buildMenu() {
       click: () => { if (win) { win.showInactive(); win.webContents.send('open-chat'); } },
     },
     { label: win && win.isVisible() ? `Hide ${name}` : `Show ${name}`, click: toggleVisible },
+    { label: 'Dance!', click: () => { if (win) { win.showInactive(); send('pet', { action: 'dance' }); } } },
     {
       label: 'Quiet mode (no chatter)',
       type: 'checkbox',
@@ -471,7 +472,7 @@ async function captureScreen(opts = {}) {
     const d = screen.getPrimaryDisplay();
     const sf = d.scaleFactor || 1;
     // ask for a smaller picture straight away (faster to capture, upload and read); 1280px is plenty to read text
-    const k0 = Math.min(1, (opts.region ? 2400 : 1280) / Math.max(d.size.width * sf, d.size.height * sf));
+    const k0 = Math.min(1, (opts.region ? (opts.raw ? 1280 : 2400) : 1280) / Math.max(d.size.width * sf, d.size.height * sf));
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
       thumbnailSize: { width: Math.round(d.size.width * sf * k0), height: Math.round(d.size.height * sf * k0) },
