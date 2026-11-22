@@ -614,10 +614,10 @@ function createActions({
 
     start_game(input) {
       const game = String((input && input.game) || 'a game').replace(/\s+/g, ' ').trim().slice(0, 60);
-      const steps = Math.max(10, Math.min(60, Math.round(Number(input && input.max_steps) || 30)));
+      const steps = Math.max(10, Math.min(150, Math.round(Number(input && input.max_steps) || 30)));
       return {
         title: `Play ${game}`,
-        details: `For this one request, Pip will look at your screen, type letters and Enter, and press ordinary buttons without asking each time, for up to ${steps} steps.\n\nIt stops when the game is over or you press Stop. Buttons that sound risky (Delete, Send, Pay...) still ask. Pip cannot use the mouse, so the game must work with the keyboard or normal buttons.\n\nPip sends screenshots of your main screen to its AI while playing, so close private things first.`,
+        details: `For this one request, Pip will look at your screen, type letters and Enter, click squares and ordinary buttons without asking each time, for up to ${steps} steps.\n\nIt stops when the game is over or you press Stop. Buttons that sound risky (Delete, Send, Pay...) still ask. Pip cannot use the mouse, so the game must work with the keyboard or normal buttons.\n\nPip sends screenshots of your main screen to its AI while playing, so close private things first.`,
         async run() { gameOn = true; gameBudget = steps; return `Game mode is on for up to ${steps} steps. Play with look_at_screen and game_keys. Call end_game when done.`; },
       };
     },
@@ -1409,8 +1409,8 @@ function createActions({
       },
       {
         name: 'start_game',
-        description: "Start game mode before playing a turn-based or puzzle game on screen (Wordle, a trivia game like Krillion, a keyboard puzzle). The user approves ONCE; then looking, game_keys and ordinary buttons need no approval until the request ends or they press Stop. Call it once at the start, never for real-time action games, online ranked play, anything with money, or accounts.",
-        input_schema: { type: 'object', properties: { game: str("Name of the game, like 'Wordle'."), max_steps: { type: 'number', description: 'Most steps to allow (10 to 60, default 30). A Wordle needs about 15; a 7-prompt trivia round about 25.' } }, required: ['game'] },
+        description: "Start game mode before playing a turn-based or puzzle game on screen (Wordle, a trivia game like Krillion, chess or another board game, a keyboard or mouse puzzle). The user approves ONCE; then looking, game_keys, clicking on the screen and ordinary buttons need no approval until the request ends or they press Stop. Call it once at the start, never for real-time action games, online ranked play, anything with money, or accounts.",
+        input_schema: { type: 'object', properties: { game: str("Name of the game, like 'Wordle'."), max_steps: { type: 'number', description: 'Most steps to allow (10 to 150, default 30). A Wordle needs about 15; a 7-prompt trivia round about 25; a chess game about 3 per move, so 150.' } }, required: ['game'] },
       },
       {
         name: 'end_game',
