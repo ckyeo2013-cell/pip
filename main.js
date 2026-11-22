@@ -4,7 +4,7 @@
 
 const {
   app, BrowserWindow, Tray, Menu, screen, ipcMain, clipboard, nativeImage, safeStorage, dialog, shell,
-  desktopCapturer, systemPreferences, Notification, globalShortcut,
+  desktopCapturer, systemPreferences, Notification, globalShortcut, powerMonitor,
 } = require('electron');
 const crypto = require('crypto');
 const path = require('path');
@@ -32,6 +32,8 @@ const DEFAULTS = {
   workFolder: '',
   petName: 'Pip',
   palette: 'classic',
+  style: 'classic',
+  quiet: false,       // no chatter: no quips, wandering or nudges (also switches on by itself during Zoom meetings)
   model: 'claude-haiku-5-5',
   provider: 'anthropic',            // 'anthropic' | 'gemini' | 'groq' | 'cloudflare'
   geminiModel: 'gemini-2.5-flash',
@@ -209,6 +211,44 @@ function sendArea() {
   win.webContents.send('area', { w: wa.width, h: wa.height });
 }
 
+// ---- awareness: welcome-back, stretch and late-night nudges, quiet during Zoom calls, due tasks
+const aware = { streakStart: Date.now(), lastIdle: 0, lastStretch: 0, lateDay: '', inCall: false };
+const quietNow = () => !!settings.quiet || aware.inCall;
+function checkTasks() {
+  if (!store || quietNow()) return;
+  const now = Date.now();
+  for (const t of store.dueTasks(now)) {
+    send('say', { text: `📝 ${t.text}${t.due < now - 60000 ? ' (this was due earlier)' : ' (due soon)'}`, ms: 20000 });
+    try { if (Notification.isSupported()) new Notification({ title: `${settings.petName || 'Pip'}: to do`, body: t.text }).show(); } catch (_) {}
+    store.nudgeTask(t.id);
+  }
+}
+function checkCall() {
+  const [cmd, args] = process.platform === 'win32' ? ['tasklist', ['/fo', 'csv', '/nh']] : ['ps', ['-A', '-o', 'comm=']];
+  execFile(cmd, args, { timeout: 8000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, out) => {
+    if (err) return;
+    const on = /cpthost/i.test(String(out)); // Zoom's meeting helper only runs during a meeting
+    if (on !== aware.inCall) { aware.inCall = on; send('mood', { type: 'call', on }); }
+  });
+}
+function startAwareness() {
+  setInterval(() => {
+    if (!win || win.isDestroyed()) return;
+    let idle = 0;
+    try { idle = powerMonitor.getSystemIdleTime(); } catch (_) { return; }
+    const now = Date.now();
+    if (aware.lastIdle >= 600 && idle < 20) send('mood', { type: 'return', away: Math.round(aware.lastIdle / 60) });
+    if (idle >= 300) aware.streakStart = now; // a 5-minute break resets the "working for hours" clock
+    aware.lastIdle = idle;
+    const mins = (now - aware.streakStart) / 60000;
+    if (mins >= 90 && now - aware.lastStretch > 60 * 60000 && !quietNow()) { aware.lastStretch = now; send('mood', { type: 'stretch', mins: Math.round(mins) }); }
+    const d = new Date(), h = d.getHours();
+    if ((h >= 23 || h < 4) && idle < 60 && aware.lateDay !== d.toDateString() && !quietNow()) { aware.lateDay = d.toDateString(); send('mood', { type: 'late' }); }
+    checkTasks();
+  }, 15000);
+  setInterval(checkCall, 30000);
+}
+
 function startCursorPolling() {
   // Polling works on every OS, even when the window ignores mouse events.
   cursorTimer = setInterval(() => {
@@ -236,6 +276,12 @@ function buildMenu() {
       click: () => { if (win) { win.showInactive(); win.webContents.send('open-chat'); } },
     },
     { label: win && win.isVisible() ? `Hide ${name}` : `Show ${name}`, click: toggleVisible },
+    {
+      label: 'Quiet mode (no chatter)',
+      type: 'checkbox',
+      checked: !!settings.quiet,
+      click: (item) => update({ quiet: item.checked }),
+    },
     {
       label: settings.wander ? 'Stay still' : `Let ${name} wander`,
       click: () => update({ wander: !settings.wander }),
@@ -550,7 +596,7 @@ function buildActionRules() {
     `A later question about the screen needs a new look. If the user has allowed looking without asking, just look whenever it helps; do not ask first or announce it at length.` +
     `\n\nCalendar: for birthdays, appointments or plans, use search_calendar with just the person's name or a keyword (like "Sam", ` +
     `not "Sam's birthday"). State the date plainly with its weekday. If nothing matches, say so and suggest another spelling or a ` +
-    `nickname; never invent a date. To put something on their calendar use add_calendar_event; for "remind me in 20 minutes" use set_reminder.` +
+    `nickname; never invent a date. To put something on their calendar use add_calendar_event; for "remind me in 20 minutes" use set_reminder. For to-dos and notes-to-self ("remember I need to email Sam", "add buy milk to my list", "what is on my list") use add_task, list_tasks and finish_task: no approval needed, and give a deadline when they mention one (Pip nudges them before it). Use remember only for lasting facts about the user.` +
     `\n\nWeb: to look something up or read a page, use fetch_url (for example https://duckduckgo.com/html/?q=search+words) and answer from what you read, ` +
     `naming the site; use open_url only when the user wants the page opened on screen.` +
     `\n\nGAMES: when the user wants you to play a turn-based or puzzle game on screen (Wordle, a trivia game like Krillion, chess or another board game, a keyboard or mouse puzzle), call start_game ONCE (for chess pass max_steps 150; a move takes about 3 steps) (they approve once), then loop with no chatter between steps: look_at_screen, decide, game_keys (text for letters or digits, keys like enter or backspace), look again. Use the game's keyboard controls, or find_ui and press_ui for real buttons. If the game needs mouse clicks (chess, board games, puzzles), you do the clicks yourself with click_screen (no approval needed in game mode); NEVER ask the user to make a move or click for you, and never hand the game back unless it is over or something truly blocks you. CHESS: use chess_play. Do ONE look_at_screen to find the board's area (fractions of the whole screen), which side is at the bottom, and the user's colour; then call chess_play (board, my_color, flipped, new_game true) and keep calling chess_play with no arguments until it says the game is over. Do not read pieces from the picture and do not call anything else between moves. Only if chess_play says it cannot tell the opponent's move, look_at_screen, write the FEN, and call chess_play with fen. (chess_best_move and board_move are the manual fallback.) ` +
@@ -762,6 +808,7 @@ function registerIpc() {
     if (s && typeof s === 'object') {
       if (typeof s.petName === 'string') patch.petName = s.petName.trim().slice(0, 20) || 'Pip';
       if (PALETTES.includes(s.palette)) patch.palette = s.palette;
+      if (s.style === 'classic' || s.style === 'yarn') patch.style = s.style;
       if (MODELS.includes(s.model)) patch.model = s.model;
       for (const k of ['wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'macCalendar']) {
         if (typeof s[k] === 'boolean') patch[k] = s[k];
@@ -922,6 +969,7 @@ if (!app.requestSingleInstanceLock()) {
     setupActions();
     createTray();
     startCursorPolling();
+    startAwareness();
     registerVoiceHotkey();
     try { globalShortcut.register('CommandOrControl+Alt+X', () => stopChat()); } catch (_) { /* the tray item and the Stop button still work */ }
     for (const ev of ['display-metrics-changed', 'display-added', 'display-removed']) {

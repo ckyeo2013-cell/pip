@@ -22,7 +22,7 @@ body { font: 14px/1.5 "Google Sans", Roboto, "Segoe UI", system-ui, -apple-syste
 
 #pet { position: fixed; left: 0; top: 0; width: 220px; height: 220px; pointer-events: none; will-change: transform; z-index: 2; transform-origin: 50% 55%; }
 #branch { position: fixed; left: 0; top: 0; display: none; pointer-events: none; will-change: transform; z-index: 1; }
-canvas { width: 220px; height: 220px; display: block; }
+canvas { width: 220px; height: 220px; display: block; pointer-events: auto; }
 canvas.hot { cursor: grab; }
 canvas.drag { cursor: grabbing; }
 #sh { position: fixed; left: 0; top: 0; width: 84px; height: 14px; border-radius: 50%; background: radial-gradient(ellipse at center, rgba(40,30,30,.3), rgba(40,30,30,0) 70%); pointer-events: none; z-index: 1; will-change: transform; }

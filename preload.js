@@ -40,4 +40,5 @@ contextBridge.exposeInMainWorld('pip', {
   onVoiceHotkey: (cb) => on('voice-hotkey', cb),
   onOpenChat: (cb) => on('open-chat', cb),
   onArea: (cb) => on('area', cb),
+  onMood: (cb) => on('mood', cb),
 });

@@ -9,7 +9,7 @@
 
   const SIZE = 220;
   const FEET = 0.8; // where the feet sit inside the 220px square (fraction of height)
-  const settings = { petName: 'Pip', palette: 'classic', wander: true, quips: true, seenIntro: false, hasKey: false };
+  const settings = { petName: 'Pip', palette: 'classic', style: 'classic', wander: true, quips: true, seenIntro: false, hasKey: false };
   const area = { w: window.innerWidth, h: window.innerHeight };
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -40,8 +40,9 @@
   const VS = `
     attribute vec3 aP;
     uniform vec3 uC; uniform vec3 uR; uniform mat3 uM; uniform float uScale; uniform float uShellLen;
-    varying vec3 vN; varying vec3 vL;
+    varying vec3 vN; varying vec3 vL; varying vec2 vK;
     void main() {
+      vK = vec2((uR.x + uR.z) * 0.5, uR.y);
       vec3 n = normalize(uM * (aP / uR));
       vec3 wp = uM * (aP * uR) + uC + n * uShellLen;
       vN = n;
@@ -56,8 +57,8 @@
     #else
     precision mediump float;
     #endif
-    varying vec3 vN; varying vec3 vL;
-    uniform vec3 uColor; uniform float uSpec; uniform float uFur; uniform float uShell;
+    varying vec3 vN; varying vec3 vL; varying vec2 vK;
+    uniform vec3 uColor; uniform float uSpec; uniform float uFur; uniform float uShell; uniform float uYarn;
     float hash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
     void main() {
       float strand = hash(floor(vL * 95.0));
@@ -76,6 +77,17 @@
       shade *= 1.0 + (strand - 0.5) * 0.30 * uFur + sp * 0.22 * uFur;
       // strands darker near the skin, lighter at the tips
       shade *= mix(1.0, 0.6 + uShell * 0.4, step(0.001, uShell));
+      if (uYarn > 0.5) {
+        // knitted yarn: rows of little V-shaped stitches wrapped around each part, plus a bit of loose-fibre fuzz
+        float cols = max(6.0, floor(max(vK.x, 0.1) * 6.2832 / 0.06));
+        float u = atan(vL.z, vL.x) / 6.2832 * cols;
+        float v = asin(clamp(vL.y, -1.0, 1.0)) * max(vK.y, 0.1) / 0.06;
+        float fx = fract(u), s = fract(v + 0.45 * abs(fx * 2.0 - 1.0));
+        float lum = 0.7 + 0.42 * sin(s * 3.14159) * (0.8 + 0.2 * sin(fx * 3.14159));
+        lum *= 0.88 + 0.12 * smoothstep(0.0, 0.18, fx) * smoothstep(1.0, 0.82, fx);
+        lum *= 0.94 + 0.12 * hash(floor(vec3(u, v, 1.0)) + 5.0);
+        shade *= lum;
+      }
       vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
       shade += vec3(pow(max(dot(n, H), 0.0), 60.0) * uSpec);
       gl_FragColor = vec4(shade, 1.0);
@@ -95,7 +107,7 @@
     g.attachShader(prog, sh(g.FRAGMENT_SHADER, FS));
     g.linkProgram(prog);
     g.useProgram(prog);
-    for (const n of ['C', 'R', 'M', 'Color', 'Spec', 'Fur', 'Scale', 'Shell', 'ShellLen']) U[n] = g.getUniformLocation(prog, 'u' + n);
+    for (const n of ['C', 'R', 'M', 'Color', 'Spec', 'Fur', 'Scale', 'Shell', 'ShellLen', 'Yarn']) U[n] = g.getUniformLocation(prog, 'u' + n);
 
     const lat = 20, lon = 28, pos = [], idx = [];
     for (let i = 0; i <= lat; i++) {
@@ -136,6 +148,7 @@
             g.uniform3fv(U.Color, p.color);
             g.uniform1f(U.Spec, p.spec);
             g.uniform1f(U.Fur, p.fur);
+            g.uniform1f(U.Yarn, p.yarn || 0);
             g.drawElements(g.TRIANGLES, count, g.UNSIGNED_SHORT, 0);
           }
         };
@@ -242,6 +255,8 @@
   const mouse = { x: area.w / 2, y: area.h / 2 };
   let thinkingFlag = false;
   let happyUntil = 0;
+  let alertUntil = 0;
+  const quiet = () => !!settings.quiet || !!st.inCall;
   let bubbleTimer = 0;
   let interactive = false;
   let panelPos = null;  // where the user dragged the chat window to (null = sit next to Pip)
@@ -438,7 +453,7 @@
       if (st.chatOpen) st.perch.until = Math.max(st.perch.until, now + 15000);
       else if (now > st.perch.until) startFlight(st.x, floorY(), { branch: false }); // time to glide home
     }
-    if (!st.hop && !st.flight && !st.perch && !st.dragging && !st.chatOpen && settings.wander && !st.stay && now > st.nextHop) {
+    if (!st.hop && !st.flight && !st.perch && !st.dragging && !st.chatOpen && settings.wander && !quiet() && !st.stay && now > st.nextHop) {
       const dir = Math.random() < 0.5 ? -1 : 1;
       const big = Math.random() < 0.3;
       const span = big ? rand(500, Math.max(600, area.w * 0.5)) : rand(120, 380);
@@ -489,6 +504,9 @@
     }
 
     st.happy += ((now < happyUntil ? 1 : 0) - st.happy) * 0.2;
+    const hr = new Date().getHours();
+    st.sleepy = (st.sleepy || 0) + (((hr >= 23 || hr < 6) && !st.chatOpen && !st.dragging && now > alertUntil ? 0.85 : 0) - (st.sleepy || 0)) * 0.02;
+    st.alert = (st.alert || 0) + (((now < alertUntil || st.chatOpen) ? 1 : 0) - (st.alert || 0)) * 0.15;
     st.thinking += ((thinkingFlag ? 1 : 0) - st.thinking) * 0.14;
 
     if (gl) {
@@ -502,7 +520,10 @@
         blink,
         happy: st.happy,
         thinking: st.thinking,
+        sleepy: st.sleepy,
+        alert: st.alert,
         palette: settings.palette,
+        style: settings.style,
       }));
     }
 
@@ -513,7 +534,7 @@
     shEl.style.transform = `translate(${(st.x + SIZE / 2 - 42).toFixed(1)}px, ${(floorY() + SIZE * FEET - 6).toFixed(1)}px) scale(${sc.toFixed(2)})`;
     shEl.style.opacity = String(st.perch ? 0 : clamp(1 + st.hopY / 140 - above / 500, 0.15, 1));
 
-    if (settings.quips && !st.chatOpen && !st.dragging && now > st.nextQuip) {
+    if (settings.quips && !quiet() && !st.chatOpen && !st.dragging && now > st.nextQuip) {
       showBubble(QUIPS[Math.floor(Math.random() * QUIPS.length)], 6000);
       cheer(900);
       st.nextQuip = now + rand(90000, 180000);
@@ -1167,6 +1188,7 @@
     showProvider();
     $('s-name').value = settings.petName;
     $('s-palette').value = settings.palette;
+    $('s-style').value = settings.style || 'classic';
     $('s-model').value = settings.model || 'claude-haiku-5-5';
     $('s-wander').checked = !!settings.wander;
     $('s-quips').checked = !!settings.quips;
@@ -1216,6 +1238,7 @@
       cloudflareModel: $('s-cfmodel').value,
       petName: $('s-name').value,
       palette: $('s-palette').value,
+      style: $('s-style').value,
       model: $('s-model').value,
       wander: $('s-wander').checked,
       quips: $('s-quips').checked,
@@ -1237,6 +1260,22 @@
     setTimeout(() => settingsEl.classList.remove('open'), 700);
   });
 
+  pip.onMood((m) => {
+    const now = performance.now();
+    if (m.type === 'call') { st.inCall = !!m.on; if (m.on) showBubble("Zoom meeting, I'll stay quiet 🤫", 5000); return; }
+    if (quiet()) return;
+    if (m.type === 'return') {
+      alertUntil = now + 4000;
+      cheer(2200);
+      if (!st.hop && !st.chatOpen) startHop(st.x, 38);
+      showBubble(m.away >= 60 ? 'Welcome back! It has been a while 🐾' : 'Welcome back! 🐾', 6000);
+    } else if (m.type === 'stretch') {
+      alertUntil = now + 3000;
+      showBubble(`You've been at it for ${m.mins >= 120 ? Math.round(m.mins / 60) + ' hours' : m.mins + ' minutes'}. Quick stretch? 🙆`, 10000);
+    } else if (m.type === 'late') {
+      showBubble("It's getting late... maybe time to wind down? 🌙", 9000);
+    }
+  });
   pip.onSettings((s) => { Object.assign(settings, s); applySettings(); });
   pip.onOpenChat(() => { if (!st.chatOpen) openChat(); else pip.focus(); });
 

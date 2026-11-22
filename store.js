@@ -5,17 +5,38 @@ const MAX_NOTES = 30, NOTE_LEN = 160, MAX_ROUTINES = 10, MAX_STEPS = 8;
 const cleanName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 30);
 
 function createStore(file) {
-  let data = { notes: [], routines: {} };
+  let data = { notes: [], routines: {}, tasks: [] };
   try {
     const d = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (Array.isArray(d.notes)) data.notes = d.notes.filter((n) => typeof n === 'string').slice(0, MAX_NOTES);
     if (d.routines && typeof d.routines === 'object') {
       for (const [k, v] of Object.entries(d.routines)) if (Array.isArray(v)) data.routines[k] = v.filter((x) => typeof x === 'string').slice(0, MAX_STEPS);
     }
+    if (Array.isArray(d.tasks)) data.tasks = d.tasks.filter((x) => x && typeof x.text === 'string').slice(0, 50);
   } catch (_) { /* first run */ }
   const save = () => { try { fs.writeFileSync(file, JSON.stringify(data)); } catch (_) { /* best effort */ } };
 
   return {
+    tasks: () => data.tasks.map((x) => ({ ...x })),
+    addTask(text, due) {
+      const t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+      if (!t) throw new Error('What is the task?');
+      const task = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5), text: t, due: Number.isFinite(due) ? due : null, nudged: false };
+      data.tasks.push(task);
+      if (data.tasks.length > 50) data.tasks.shift();
+      save();
+      return task;
+    },
+    finishTask(query) {
+      const q = String(query || '').toLowerCase().trim();
+      if (!q) throw new Error('Say which task is done.');
+      const before = data.tasks.length;
+      data.tasks = q === 'all' ? [] : data.tasks.filter((x) => !x.text.toLowerCase().includes(q));
+      save();
+      return before - data.tasks.length;
+    },
+    dueTasks(now) { return data.tasks.filter((x) => x.due && !x.nudged && x.due - now <= 15 * 60000).map((x) => ({ ...x })); },
+    nudgeTask(id) { const x = data.tasks.find((y) => y.id === id); if (x) { x.nudged = true; save(); } },
     notes: () => data.notes.slice(),
     remember(text) {
       const t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, NOTE_LEN);

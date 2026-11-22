@@ -654,6 +654,31 @@ function createActions({
       return { auto: true, title: 'Remember this', details: t, async run() { store.remember(t); return 'Remembered.'; } };
     },
 
+    add_task(input) {
+      if (!store) throw new Error('Tasks are not available here.');
+      const text = String((input && input.text) || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+      if (!text) throw new Error('What is the task?');
+      let due = null;
+      if (input && Number(input.minutes) > 0) due = Date.now() + Math.min(Number(input.minutes), 60 * 24 * 60) * 60000;
+      else if (input && typeof input.due === 'string') { const d = Date.parse(input.due); if (Number.isFinite(d)) due = d; }
+      return { auto: true, title: 'Add to your list', details: text, async run() { store.addTask(text, due); return due ? `Added. I will nudge you around ${new Date(due).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}.` : 'Added to your list.'; } };
+    },
+
+    list_tasks() {
+      if (!store) throw new Error('Tasks are not available here.');
+      return { auto: true, title: 'Look at your list', details: '', async run() {
+        const t = store.tasks();
+        if (!t.length) return 'Your list is empty.';
+        return t.map((x) => `- ${x.text}${x.due ? ` (due ${new Date(x.due).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })})` : ''}`).join('\n');
+      } };
+    },
+
+    finish_task(input) {
+      if (!store) throw new Error('Tasks are not available here.');
+      const q = String((input && input.query) || '');
+      return { auto: true, title: 'Tick off a task', details: q, async run() { const n = store.finishTask(q); return n ? `Done: removed ${n} task${n === 1 ? '' : 's'}.` : 'No task matched.'; } };
+    },
+
     forget(input) {
       if (!store) throw new Error('Memory is not available here.');
       const q = String((input && input.query) || '');
@@ -1595,6 +1620,21 @@ function createActions({
         name: 'remember',
         description: "Save one short lasting fact about the user (their usual browser, favourite sites, interests, preferred search site, how they like things done). Use it ONLY when they ask you to remember something or clearly state a lasting preference, never for passing remarks, secrets or passwords. No approval needed.",
         input_schema: { type: 'object', properties: { note: str('One short plain sentence, max 160 characters.') }, required: ['note'] },
+      },
+      {
+        name: 'add_task',
+        description: "Add a to-do or note-to-self to the user's list, e.g. 'remember I need to email Sam' or 'add buy milk, due tomorrow 5pm'. Optionally give a deadline as 'minutes' from now or an ISO 'due' time; Pip nudges them shortly before it. No approval needed. For lasting facts about the user use 'remember' instead.",
+        input_schema: { type: 'object', properties: { text: str('The task, short.'), minutes: { type: 'number' }, due: str('Optional ISO date-time deadline') }, required: ['text'] },
+      },
+      {
+        name: 'list_tasks',
+        description: "Read out the user's to-do list with deadlines. Use for 'what's on my list' or 'what do I need to do'. No approval needed.",
+        input_schema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'finish_task',
+        description: "Remove tasks containing the given words (or 'all') once the user says they are done.",
+        input_schema: { type: 'object', properties: { query: str("Words from the task, or 'all'.") }, required: ['query'] },
       },
       {
         name: 'forget',

@@ -125,6 +125,8 @@
    */
   function buildParts(p) {
     const parts = [];
+    const yarnSkin = p.style === 'yarn';
+    const NU = yarnSkin ? 24 : MEM_NU, NV = yarnSkin ? 12 : MEM_NV; // finer wing tiles so the knit reads smooth
     const C = PALETTES[p.palette] || PALETTES.classic;
     const t = p.t || 0;
     const glide = clamp(p.glide || 0, 0, 1);
@@ -132,6 +134,8 @@
     const happy = clamp(p.happy || 0, 0, 1);
     const thinking = clamp(p.thinking || 0, 0, 1);
     const blink = p.blink === undefined ? 1 : p.blink;
+    const sleepy = clamp(p.sleepy || 0, 0, 1); // late at night: heavy eyes, drooping head and ears, slow tail
+    const alert = clamp(p.alert || 0, 0, 1);   // perked up: ears up, curious head tilt
 
     const child = (F, off, rot) => ({
       R: rot ? mul(F.R, rot) : F.R,
@@ -144,7 +148,8 @@
         M: rot ? mul(F.R, rot) : F.R,
         color,
         spec: spec || 0,
-        fur: fur === undefined ? 1 : fur,
+        fur: yarnSkin ? 0 : (fur === undefined ? 1 : fur),
+        yarn: yarnSkin && !(spec >= 1) ? 1 : 0, // yarn skin; glossy bead eyes stay smooth
       });
     };
 
@@ -175,9 +180,9 @@
       P(B, L.wr, [0.055, 0.05, 0.065], null, C.feet, 0, 0.4); // small hand
       P(B, [L.an[0], L.an[1] - 0.02, L.an[2] + 0.07], [0.1, 0.05, 0.19], rotY(s * 0.15), C.feet, 0, 0.4); // foot
 
-      for (let i = 0; i < MEM_NU; i++) {
-        for (let j = 0; j < MEM_NV; j++) {
-          const u = (i + 0.5) / MEM_NU, v = (j + 0.5) / MEM_NV;
+      for (let i = 0; i < NU; i++) {
+        for (let j = 0; j < NV; j++) {
+          const u = (i + 0.5) / NU, v = (j + 0.5) / NV;
           const c = memSurface(L, s, glide, t, u, v);
           const tu = sub(memSurface(L, s, glide, t, u + 0.01, v), memSurface(L, s, glide, t, u - 0.01, v)).map((x) => x / 0.02);
           const tv = sub(memSurface(L, s, glide, t, u, v + 0.01), memSurface(L, s, glide, t, u, v - 0.01)).map((x) => x / 0.02);
@@ -185,7 +190,7 @@
           const n = norm(cross(tu, tv));
           const za = cross(xa, n);
           const col = v < 0.5 ? mix3(C.fur, C.membrane, v * 2 * (0.3 + 0.7 * glide)) : mix3(mix3(C.fur, C.membrane, 0.3 + 0.7 * glide), C.edge, Math.pow((v - 0.5) * 2, 1.6) * (0.15 + 0.85 * glide));
-          P(B, c, [(len3(tu) / MEM_NU) * 0.95, 0.03, (len3(tv) / MEM_NV) * 0.95],
+          P(B, c, [(len3(tu) / NU) * (yarnSkin ? 1.2 : 0.95), 0.03, (len3(tv) / NV) * (yarnSkin ? 1.2 : 0.95)],
             [xa[0], xa[1], xa[2], n[0], n[1], n[2], za[0], za[1], za[2]], col, 0, 1);
           parts[parts.length - 1].shell = false; // thin sheet: no fur layers
         }
@@ -193,10 +198,11 @@
     }
 
     // ---- tail ---------------------------------------------------------
-    const tailAmp = 0.14 + 0.25 * thinking + happy * 0.1;
+    const tailAmp = (0.14 + 0.25 * thinking + happy * 0.1) * (1 - 0.6 * sleepy);
     const tailSpd = 1.5 + thinking * 3 + happy * 2;
-    for (let i = 0; i < 28; i++) {
-      const u = i / 27;
+    const TN = yarnSkin ? 44 : 28;
+    for (let i = 0; i < TN; i++) {
+      const u = i / (TN - 1);
       const sway = Math.sin(t * tailSpd - u * 2.6) * tailAmp * u;
       const rest = [0.08 + 0.55 * Math.pow(u, 1.5) + sway, -0.4 + 0.75 * Math.pow(u, 1.4), -0.35 - 0.85 * u];
       const gld = [sway * 0.5, -0.3 - 0.1 * u, -0.4 - 1.4 * u];
@@ -209,8 +215,8 @@
     // ---- head ---------------------------------------------------------
     const headYaw = clamp((p.lookYaw || 0) - (p.bodyYaw || 0) * 0.65, -0.9, 0.9);
     const headRot = mul(
-      mul(rotY(headYaw), rotX(-(p.lookPitch || 0) - glide * 0.25 - crouch * 0.1)),
-      rotZ(0.05 + thinking * 0.25 + Math.sin(t * 1.3) * 0.03 + happy * Math.sin(t * 8) * 0.06)
+      mul(rotY(headYaw), rotX(-(p.lookPitch || 0) - glide * 0.25 - crouch * 0.1 + sleepy * 0.2)),
+      rotZ(0.05 + alert * 0.12 + thinking * 0.25 + Math.sin(t * 1.3) * 0.03 + happy * Math.sin(t * 8) * 0.06)
     );
     const H = child(B, [0, 0.66, 0.1], headRot);
 
@@ -219,7 +225,7 @@
     P(H, [0, 0.2, 0.3], [0.04, 0.3, 0.32], rotX(-0.3), C.dark); // nose-to-crown stripe
     P(H, [0, 0.36, -0.1], [0.05, 0.2, 0.3], rotX(0.5), C.dark);
 
-    const eyeOpen = clamp(Math.min(blink, 1 - 0.8 * happy), 0, 1);
+    const eyeOpen = clamp(Math.min(blink, 1 - 0.8 * happy) * (1 - 0.55 * sleepy), 0, 1);
     for (const s of [-1, 1]) {
       P(H, [s * 0.3, -0.15, 0.3], [0.1, 0.09, 0.12], null, C.cheek);
       P(H, [s * 0.3, 0.07, 0.3], [0.2, lerp(0.05, 0.23, eyeOpen), 0.13], null, C.dark); // dark eye patch
@@ -233,7 +239,7 @@
       // ears: big, thin, pinkish-grey
       const wig = Math.sin(t * (thinking > 0.1 ? 9 : 1.1) + s) * (thinking > 0.1 ? 0.1 : 0.05)
         + happy * Math.sin(t * 14 + s) * 0.08;
-      const E = child(H, [s * 0.36, 0.36, -0.02], rotZ(-s * 0.5 + s * wig));
+      const E = child(H, [s * 0.36, 0.36, -0.02], rotZ(-s * (0.5 - 0.18 * alert + 0.28 * sleepy) + s * wig));
       P(E, [0, 0.14, 0], [0.22, 0.4, 0.04], null, C.earOut, 0, 0.5);
       P(E, [0, 0.12, 0.03], [0.15, 0.32, 0.03], null, C.earIn, 0, 0.3);
     }
