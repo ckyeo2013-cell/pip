@@ -933,11 +933,19 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     const code = await W.prepare('open_app', { name: 'VS Code' });
     assert.notStrictEqual(code.auto, true);
     await code.run();
-    assert.deepStrictEqual(calls[calls.length - 1], ['cmd.exe', ['/c', 'start', '', 'code']]); // after the Start-menu lookup finds nothing
+    assert.deepStrictEqual(calls.filter((c) => c[0] !== 'powershell.exe').pop(), ['cmd.exe', ['/c', 'start', '', 'code']]); // after the Start-menu lookup finds nothing (the front-window checks are powershell too)
     assert.strictEqual((await W.prepare('open_app', { name: 'Spotify' })).auto, true);
     assert.strictEqual((await W.prepare('open_app', { name: 'Calculator' })).auto, true);
     assert.notStrictEqual((await W.prepare('open_app', { name: 'cmd' })).auto, true);
     assert.notStrictEqual((await W.prepare('open_app', { name: 'powershell' })).auto, true);
+  });
+  await t('open_app: an app that is already open is brought forward and verified; a failed raise is never reported as success', async () => {
+    const mk = (reply) => { const calls = []; return { calls, W: mkActions({ platform: 'win32', execFile: (c, a, o, cb) => { calls.push(c); cb(null, c === 'powershell.exe' ? reply : ''); } }) }; };
+    let x = mk('focused:Discord');
+    assert.strictEqual(await (await x.W.prepare('open_app', { name: 'discord' })).run(), 'Brought discord to the front.');
+    assert.ok(!x.calls.includes('explorer.exe'), 'no relaunch when the window was simply raised');
+    x = mk('already:Discord');
+    assert.match(await (await x.W.prepare('open_app', { name: 'discord' })).run(), /already in front/);
   });
   await t('open_app (Windows): finds apps like Discord in the Start menu and launches them by AppID; falls back to start', async () => {
     const calls = [];
@@ -949,7 +957,8 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     } });
     const r = await (await W.prepare('open_app', { name: 'discord' })).run();
     assert.match(r, /Opened Discord/);
-    assert.deepStrictEqual(calls[calls.length - 1], ['explorer.exe', ['shell:AppsFolder\\com.squirrel.Discord.Discord']]);
+    assert.deepStrictEqual(calls.filter((c) => c[0] !== 'powershell.exe').pop(), ['explorer.exe', ['shell:AppsFolder\\com.squirrel.Discord.Discord']]);
+    assert.match(r, /could NOT confirm it is in front/); // the focus check gave no answer, so Pip must not claim it is in front
     assert.ok(!calls.some((c) => c[0] === 'cmd.exe'));
   });
   await t('the new tools are offered to every provider', () => {

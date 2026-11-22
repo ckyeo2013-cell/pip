@@ -71,6 +71,25 @@ function matchApp(low) {
   return best;
 }
 
+// Different ways of saying the same thing, rewritten into the wording the patterns below understand.
+const NOT_OPEN = '(?!(?:the |my )?(?:volume|sound|brightness|timer|stopwatch|music|calendar|settings))';
+const SYNONYMS = [
+  [/^(?:make it (?:a bit |a little |much )?louder|turn it up(?: a (?:bit|little|notch))?|bump (?:it|the volume) up|pump (?:it|up the volume)|more volume|up the volume|volume higher|raise the sound|i can'?t hear(?: it| you| anything)?|it'?s too quiet|too quiet|can'?t hear anything)$/i, 'volume up'],
+  [/^(?:make it (?:a bit |a little |much )?(?:quieter|softer|lower)|turn it down(?: a (?:bit|little|notch))?|bump (?:it|the volume) down|less volume|down the volume|volume lower|lower the sound|it'?s too loud|too loud|tone it down|not so loud)$/i, 'volume down'],
+  [/^(?:silence(?: it)?|be quiet|shh+|sound off|mute the (?:tv|music|audio)|turn (?:off )?the sound(?: off)?|kill the sound)$/i, 'mute'],
+  [/^(?:pause it|stop (?:it|that|playing|the song))$/i, 'pause'],
+  [/^(?:skip it|skip that|next one|another one|change (?:the )?song|play something else)$/i, 'next'],
+  [/^(?:ping|alert|notify|nudge|wake) me (?=(?:in|after|at)\b)/i, 'remind me '],
+  [new RegExp(`^(?:launch|fire up|boot up|load up|start up|bring up|pull up|get into|jump into|hop (?:on|onto|in)|take me to|head (?:over )?to|navigate to|visit|buka)\\s+${NOT_OPEN}`, 'i'), 'open '],
+  [/^(?:put on|throw on|stick on|queue up|spin|blast)\s+(?=\S)/i, 'play '],
+  [/^(?:maximi[sz]e|unminimi[sz]e|un-minimi[sz]e|restore)\s+(?:the |my )?(?!.*\b(?:tabs?|pages?|files?|folders?|backup|default|settings?)\b)(.+?)(?: window| app)?$/i, 'bring $1 to the front'],
+  [/^(?:raise|get|move|put|send)\s+(?:the |my )?(.+?)\s+(?:to the (?:foreground|top)|to front|on top|up front|front and center|into view|in front)$/i, 'bring $1 to the front'],
+];
+function synonyms(t) {
+  for (const [re, to] of SYNONYMS) if (re.test(t)) return t.replace(re, to).trim();
+  return t;
+}
+
 function clean(text) {
   let t = String(text || '').trim().replace(/\s+/g, ' ');
   // greetings and politeness in front: "hey pip, can you please ..."
@@ -82,7 +101,7 @@ function clean(text) {
   for (let i = 0; i < 4; i++) {
     t = t.replace(/[.!,\s]+$/g, '').replace(/\s+(?:please|pls|for me|thanks|thank you)$/i, '').replace(TAIL_RE, '').replace(APP_TAIL_RE, '$1').trim();
   }
-  return t.replace(/[.!]+$/g, '').trim();
+  return synonyms(t.replace(/[.!]+$/g, '').trim());
 }
 
 function minutesFrom(str) {
@@ -269,6 +288,10 @@ function think(rawText, ctx = {}) {
   ];
   const browserDone = (o) => String(o[0] || 'Done.').split(' (')[0];
   for (const [re, action] of browserMap) if (re.test(t)) return { steps: [{ name: 'browser', input: { action } }], finish: browserDone };
+  // "bring discord to the front", "switch to spotify", "focus notepad": any app, and Pip checks it really came forward
+  if ((m = /^(?:bring|pull up|switch to|go to|focus|put|show|alt[- ]?tab to)(?: me)? (?:the |my )?([a-z0-9][a-z0-9 ._-]{0,40}?)(?: app| window)? (?:to the (?:front|top)|forward|up|in front)$/.exec(t)) && !/^(?:tab|page|site|website|video|song|music|picture|file|folder)s?\b/.test(m[1])) {
+    return { steps: [{ name: 'open_app', input: { name: m[1] } }], finish: (o) => String(o[0] || 'Done.') };
+  }
   // "go to tab 3", "switch to tab three", "go to the third tab", "go to the last tab" (voice often writes numbers as words)
   const NUM = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, last: 9, final: 9 };
   const NUMRE = Object.keys(NUM).join('|');
@@ -341,6 +364,12 @@ function think(rawText, ctx = {}) {
     if (id && (/\bsettings?\b/i.test(orig) || ['control_panel', 'task_manager', 'device_manager', 'firewall', 'services', 'event_viewer'].includes(id))) {
       return { steps: [{ name: 'open_system_settings', input: { page: id } }], finish: (o) => String(o[0] || 'Opened it.') };
     }
+  }
+
+  // "switch to discord", "alt tab to spotify", "focus notepad", "go back to chrome": only for apps Pip knows by name
+  if ((m = /^(?:switch (?:over )?to|alt[- ]?tab(?: over)? to|jump to|focus(?: on)?|go (?:back |over )?to|head back to|return to|get back to)\s+(?:the |my )?(.{1,40}?)(?: app| window)?$/i.exec(orig)) && !/^tabs?\b|\btab\b/i.test(m[1])) {
+    const known = matchApp(m[1].toLowerCase());
+    if (known) return { steps: [{ name: 'open_app', input: { name: known } }], finish: (o) => String(o[0] || `Opened ${known}.`) };
   }
 
   // ---- open sites and apps

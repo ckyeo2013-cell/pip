@@ -20,6 +20,16 @@ const step = (text, extra) => { const p = plan(text, extra); assert.ok(p && p.st
     assert.strictEqual(plan('15% of 80').reply, '12');
     assert.strictEqual(plan('what is 2 + 2 x 3').reply, '2 + 2 x 3 = 8');
   });
+  await t('phrases that mean the same thing work the same way', () => {
+    const name = (q) => { const s = step(q); return (s[0].name + ':' + (s[0].input.action || s[0].input.name || '')).toLowerCase(); };
+    for (const q of ['make it louder', 'turn it up a bit', 'too quiet', 'pump up the volume']) assert.strictEqual(name(q), 'media_control:volume_up', q);
+    for (const q of ['too loud', 'tone it down', 'make it a bit quieter']) assert.strictEqual(name(q), 'media_control:volume_down', q);
+    for (const q of ['silence', 'be quiet', 'kill the sound']) assert.strictEqual(name(q), 'media_control:mute', q);
+    for (const q of ['fire up spotify', 'launch spotify', 'hop on spotify', 'pull up spotify please', 'could you boot up spotify']) assert.strictEqual(name(q), 'open_app:spotify', q);
+    for (const q of ['bring discord to the front', 'switch to discord', 'alt tab to discord', 'focus discord', 'put discord on top', 'raise discord to the foreground', 'maximize discord']) assert.strictEqual(name(q), 'open_app:discord', q);
+    assert.strictEqual(name('start a timer for 5 minutes').split(':')[0], 'set_reminder');
+    assert.strictEqual(plan('switch to dark mode'), null);
+  });
   await t('maths never runs anything but numbers and operators', () => {
     assert.strictEqual(brain.safeMath('process.exit()'), null);
     assert.strictEqual(brain.safeMath('2**999999'), null);

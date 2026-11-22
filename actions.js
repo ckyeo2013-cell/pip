@@ -304,6 +304,13 @@ function createActions({
     const r = await new Promise((resolve) => execFile(c.cmd, c.args, { timeout: 15000, windowsHide: true }, (err, out) => resolve({ err, out })));
     return r.err ? 'error' : sys.parseFocusResult(r.out);
   }
+  // Brings a running app's window to the front and checks it got there: 'focused', 'already', 'failed', 'none', 'unsupported' or 'error'.
+  async function focusApp(...names) {
+    const c = sys.focusAppCommand(platform, names);
+    if (!c) return 'unsupported';
+    const r = await new Promise((resolve) => execFile(c.cmd, c.args, { timeout: 15000, windowsHide: true }, (err, out) => resolve({ err, out })));
+    return r.err ? 'error' : sys.parseFocusResult(r.out);
+  }
   // Opens a link in the default browser, then makes sure that window really comes to the front: Windows often just
   // flashes the taskbar instead. It runs in the background so Pip answers straight away.
   async function openLink(href) {
@@ -735,7 +742,7 @@ function createActions({
           const where = await raiseBrowser(); // the shortcut only works if the browser is the window in front
           if (action === 'bring_to_front') {
             if (where === 'none') { await openLink('https://www.google.com/'); return 'No browser was open, so I opened one.'; }
-            return where === 'error' || where === 'unsupported' ? 'I tried, but could not bring the browser forward. Click it in the taskbar or dock.' : k.label;
+            return where === 'focused' || where === 'already' ? k.label : 'I tried, but could NOT bring the browser to the front (Windows or macOS refused). Do not say it worked; ask the user to click it in the taskbar or dock.';
           }
           if (where === 'focused') await sleep(350); // let the window finish coming forward before the first key
           await new Promise((resolve, reject) => execFile(k.cmd.cmd, k.cmd.args, { timeout: 15000, windowsHide: true }, (err, _o, stderr) => {
@@ -749,7 +756,24 @@ function createActions({
       };
     },
 
+    // Opens an app, or brings it to the front if it is already running, and only says "in front" when that was checked.
     open_app(input) {
+      const p = tools.open_app_launch(input);
+      const asked = input.name, resolved = sys.resolveAppName(asked, platform);
+      const launch = p.run.bind(p);
+      p.run = async () => {
+        const was = await focusApp(asked, resolved);
+        if (was === 'already') return `${asked} is already in front.`;
+        if (was === 'focused') return `Brought ${asked} to the front.`;
+        const out = await launch();
+        let st = 'none';
+        for (const wait of [1500, 2500]) { await sleep(wait); st = await focusApp(asked, resolved); if (st === 'focused' || st === 'already') break; }
+        return st === 'focused' || st === 'already' ? `${out} It is now in front.` : `${out} I could NOT confirm it is in front (it may be behind other windows or still starting), so do not tell the user it is in front; ask them to click it in the taskbar or dock if they cannot see it.`;
+      };
+      return p;
+    },
+
+    open_app_launch(input) {
       const asked = input && input.name;
       if (typeof asked !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,59}$/.test(asked)) {
         throw new Error('That is not a usable app name.');
@@ -1479,7 +1503,7 @@ function createActions({
       },
       {
         name: 'open_app',
-        description: 'ACTUALLY OPENS an app by name (use this instead of telling the user how to find it), for example "Notepad", "Calculator", "Spotify", "VS Code", "Word". Friendly names like "VS Code" are translated for the OS. Windows and macOS only. Browsers and a few harmless apps (Calculator, Notepad, Spotify...) open with no approval; other apps need the user\'s approval. To then write in it, use type_text.',
+        description: 'ACTUALLY OPENS an app by name, and also BRINGS AN ALREADY-OPEN APP TO THE FRONT (use it for "bring Discord to the front" / "switch to Spotify"; use this instead of telling the user how to find it). It checks the window really came forward and says so; only claim it is in front if the result says so, for example "Notepad", "Calculator", "Spotify", "VS Code", "Word". Friendly names like "VS Code" are translated for the OS. Windows and macOS only. Browsers and a few harmless apps (Calculator, Notepad, Spotify...) open with no approval; other apps need the user\'s approval. To then write in it, use type_text.',
         input_schema: { type: 'object', properties: { name: str('App name') }, required: ['name'] },
       },
       {

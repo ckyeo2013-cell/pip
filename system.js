@@ -370,7 +370,8 @@ foreach ($n in $order) {
     if ([PipWin]::IsIconic($h)) { [void][PipWin]::ShowWindow($h, 9) }
     [PipWin]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [PipWin]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
     [void][PipWin]::SetForegroundWindow($h)
-    'focused:' + $n; exit 0
+    Start-Sleep -Milliseconds 300
+    if ([PipWin]::GetForegroundWindow() -eq $h) { 'focused:' + $n } else { 'failed:' + $n }; exit 0
   }
 }
 'none'`;
@@ -401,8 +402,78 @@ foreach ($n in $order) {
 // "focused:chrome" -> 'focused'; anything unexpected -> 'error'
 function parseFocusResult(out) {
   const word = String(out || '').trim().split(/\r?\n/).pop().split(':')[0];
-  return ['focused', 'already', 'none'].includes(word) ? word : 'error';
+  return ['focused', 'already', 'none', 'failed'].includes(word) ? word : 'error';
 }
+
+// Brings any running app's window to the front and CHECKS that it really got there.
+// Prints "already:<name>", "focused:<name>", "failed:<name>" (found but would not come forward) or "none" (no window found).
+function focusAppCommand(platform, names) {
+  const qs = [...new Set((names || []).map((n) => String(n || '').toLowerCase().replace(/[^a-z0-9]/g, '')).filter(Boolean))];
+  if (!qs.length) return null;
+  if (platform === 'win32') {
+    const script = `$qs = @(${qs.map((q) => `'${q}'`).join(',')})
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public class PipWin2 {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+}
+'@
+$hit = $null
+foreach ($p in (Get-Process | Where-Object { $_.MainWindowHandle -ne 0 })) {
+  $pn = ($p.ProcessName.ToLower() -replace '[^a-z0-9]', '')
+  $wt = ($p.MainWindowTitle.ToLower() -replace '[^a-z0-9]', '')
+  foreach ($q in $qs) { if ($pn -like "*$q*" -or ($wt.Length -gt 0 -and $wt -like "*$q*")) { $hit = $p; break } }
+  if ($hit) { break }
+}
+if (-not $hit) { 'none'; exit 0 }
+$h = $hit.MainWindowHandle
+if ([PipWin2]::GetForegroundWindow() -eq $h) { 'already:' + $hit.ProcessName; exit 0 }
+if ([PipWin2]::IsIconic($h)) { [void][PipWin2]::ShowWindow($h, 9) }
+[PipWin2]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [PipWin2]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+[void][PipWin2]::SetForegroundWindow($h)
+Start-Sleep -Milliseconds 350
+if ([PipWin2]::GetForegroundWindow() -eq $h) { 'focused:' + $hit.ProcessName } else { 'failed:' + $hit.ProcessName }`;
+    return { cmd: 'powershell.exe', args: psArgs(script) };
+  }
+  if (platform === 'darwin') {
+    const lines = [
+      `set targets to {${qs.map((q) => `"${q}"`).join(', ')}}`,
+      'tell application "System Events"',
+      'set procs to name of every application process whose background only is false',
+      'set fm to name of first application process whose frontmost is true',
+      'end tell',
+      'set hit to ""',
+      'repeat with p in procs',
+      'set pl to my squash(p as text)',
+      'repeat with q in targets',
+      'if pl contains (q as text) then set hit to (p as text)',
+      'end repeat',
+      'if hit is not "" then exit repeat',
+      'end repeat',
+      'if hit is "" then return "none"',
+      'if fm is hit then return "already:" & hit',
+      'tell application hit to activate',
+      'delay 0.4',
+      'tell application "System Events" to set fm to name of first application process whose frontmost is true',
+      'if fm is hit then return "focused:" & hit',
+      'return "failed:" & hit',
+      'on squash(s)',
+      'set out to ""',
+      'repeat with c in characters of s',
+      'if (c as text) is in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" then set out to out & (c as text)',
+      'end repeat',
+      'return out',
+      'end squash',
+    ];
+    return { cmd: 'osascript', args: lines.flatMap((l) => ['-e', l]) };
+  }
+  return null;
+}
+
 
 // ------------------------------------------------------------------ apps
 const APP_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,59}$/;
@@ -652,7 +723,7 @@ function mediaCommand(action, platform, value) {
 }
 
 module.exports = {
-  BROWSER_ACTIONS, browserKeys, focusBrowserCommand, parseFocusResult, BROWSER_PROCESSES,
+  BROWSER_ACTIONS, browserKeys, focusBrowserCommand, focusAppCommand, parseFocusResult, BROWSER_PROCESSES,
   START_APPS_SCRIPT, parseStartApps, pickStartApp, editDistance, APP_PROTOCOLS, SCROLL_DIRS, scrollCommands, gameKeyCommand, GAME_KEYS,
   clickCommand, chatApp, CHAT_APPS, SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
   PAGES, pageNames, settingsLaunch,
