@@ -1,6 +1,6 @@
 {
   "name": "pip-desktop",
-  "version": "1.16.0",
+  "version": "1.17.0",
   "description": "Pip the sugar glider: a friendly 3D desktop pet that chats, helps you decide and does things on your computer (asks first)",
   "main": "main.js",
   "author": "You <you@example.com>",

@@ -68,6 +68,7 @@ function attacked(b, sq, byWhite) {
   return false;
 }
 
+let queenOnly = false; // Pip's own moves only ever promote to a queen (that is the piece the click lands on)
 function pseudo(st, capturesOnly) {
   const { board: b, white } = st, out = [];
   const push = (from, to, extra) => out.push({ from, to, ...extra });
@@ -78,7 +79,7 @@ function pseudo(st, capturesOnly) {
     if (t === 'p') {
       const dir = white ? -1 : 1, start = white ? 6 : 1, last = white ? 0 : 7;
       const addP = (to, cap) => {
-        if ((to >> 3) === last) for (const pr of ['q', 'r', 'b', 'n']) push(i, to, { promo: pr, cap });
+        if ((to >> 3) === last) for (const pr of (queenOnly ? ['q'] : ['q', 'r', 'b', 'n'])) push(i, to, { promo: pr, cap });
         else push(i, to, { cap });
       };
       const one = i + dir * 8;
@@ -208,8 +209,17 @@ function search(st, opts) {
   return { move: best, score: bestScore, depth: depthDone };
 }
 
-function bestMove(fen, { ms = 1500, maxDepth = 8 } = {}) {
-  const st = parseFen(fen);
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+const startState = () => parseFen(START_FEN);
+// 'checkmate', 'stalemate' or null for the side to move
+function status(st) { return legal(st).length ? null : (inCheck(st) ? 'checkmate' : 'stalemate'); }
+
+function bestMove(fen, opts) { return bestMoveState(parseFen(fen), opts); }
+function bestMoveState(st, { ms = 1500, maxDepth = 8, queen = false } = {}) {
+  queenOnly = !!queen;
+  try { return bestMoveInner(st, { ms, maxDepth }); } finally { queenOnly = false; }
+}
+function bestMoveInner(st, { ms, maxDepth }) {
   // the side that is NOT to move must not be in check (a misread board)
   if (attacked(st.board, kingSq(st.board, !st.white), st.white)) throw new Error('That position is not legal: the side that just moved is still in check. The board was probably misread.');
   const r = search(st, { ms: Math.max(100, Math.min(10000, ms)), maxDepth });
@@ -226,4 +236,4 @@ function perft(fen, depth) {
   return go(parseFen(fen), depth);
 }
 
-module.exports = { bestMove, perft, parseFen };
+module.exports = { bestMove, bestMoveState, perft, parseFen, legal, apply, status, startState, sqName, sqIndex, START_FEN };

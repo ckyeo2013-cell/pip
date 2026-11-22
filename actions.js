@@ -26,6 +26,43 @@ const sys = require('./system');
 const chess = require('./chess');
 const ui = require('./ui');
 
+// ---- chess: see which squares changed between two board snapshots (128x128 BGRA bitmaps), and turn that into a move
+function cellDiffs(a, b) {
+  const out = new Array(64).fill(0), W = a.width, CELL = W / 8;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      let sum = 0, n = 0;
+      for (let y = Math.floor(r * CELL + 2); y < (r + 1) * CELL - 2; y += 2) {
+        for (let x = Math.floor(c * CELL + 2); x < (c + 1) * CELL - 2; x += 2) {
+          const i = (y * W + x) * 4;
+          sum += Math.abs(a.bitmap[i] - b.bitmap[i]) + Math.abs(a.bitmap[i + 1] - b.bitmap[i + 1]) + Math.abs(a.bitmap[i + 2] - b.bitmap[i + 2]);
+          n += 3;
+        }
+      }
+      out[r * 8 + c] = sum / n;
+    }
+  }
+  return out;
+}
+// board square (engine index: rank 8 first) -> cell in the picture (top-left first); flipped = black at the bottom
+const cellOf = (sq, flipped) => { const r = sq >> 3, c = sq & 7; return (flipped ? 7 - r : r) * 8 + (flipped ? 7 - c : c); };
+// the legal move whose two squares both changed the most
+function matchMove(d, st, flipped, T) {
+  const at = (sq) => d[cellOf(sq, flipped)];
+  let best = null, bestScore = 0;
+  for (const m of chess.legal(st)) {
+    if (m.promo && m.promo !== 'q') continue;
+    const a = at(m.from), b = at(m.to);
+    if (a < T || b < T) continue;
+    let score = a + b;
+    if (m.castle) score += at(m.castle === 'k' ? m.to + 1 : m.to - 2) + at(m.castle === 'k' ? m.to - 1 : m.to + 1);
+    if (m.ep) score += at(m.to + (st.white ? 8 : -8));
+    if (score > bestScore) { best = m; bestScore = score; }
+  }
+  return best;
+}
+const CHESS_T = 14; // a square counts as changed above this average colour difference (0 to 255)
+
 const MAX_TEXT = 20000;
 // {x, y, w, h} as fractions of the screen, or null
 function parseRegion(r) {
@@ -73,6 +110,7 @@ function createActions({
   hidePanel = () => {},
   blurWindow = () => {},
   countdown = 5,
+  grabBoard = null,       // async (region) => { bitmap, width, height }: a small raw picture of just the chessboard
   captureScreen = null,   // async () => { data (base64 jpeg), width, height }
   calendar = null,        // { search(input), describe() }
   getFull = () => false,  // is full access on?
@@ -292,6 +330,7 @@ function createActions({
   // ------------------------------------------------------------ tools
   // Game mode: one approval lets Pip look, type plain keys and press ordinary buttons for the rest of THIS request only.
   let gameOn = false, gameBudget = 0;
+  let chessGame = null; // chess_play remembers the position and the last board picture between calls
   let clipRestore = null; // the user's clipboard comes back a moment AFTER a paste, in the background, so typing does not wait for it
   const flushClipboard = () => { if (clipRestore) { clearTimeout(clipRestore.timer); const r = clipRestore; clipRestore = null; r.fn(); } };
   const autoLook = () => gameOn || !!getAutoLook();
@@ -627,12 +666,101 @@ function createActions({
       return {
         title: `Play ${game}`,
         details: `For this one request, Pip will look at your screen, type letters and Enter, click squares and ordinary buttons without asking each time, for up to ${steps} steps.\n\nIt stops when the game is over or you press Stop. Buttons that sound risky (Delete, Send, Pay...) still ask. Pip cannot use the mouse, so the game must work with the keyboard or normal buttons.\n\nPip sends screenshots of your main screen to its AI while playing, so close private things first.`,
-        async run() { gameOn = true; gameBudget = steps; return `Game mode is on for up to ${steps} steps. Play with look_at_screen and game_keys. Call end_game when done.`; },
+        async run() { gameOn = true; gameBudget = steps; chessGame = null; return `Game mode is on for up to ${steps} steps. Play with look_at_screen and game_keys. Call end_game when done.`; },
       };
     },
 
     end_game() {
-      return { auto: true, title: 'Finish the game', details: 'Back to asking before each action.', async run() { gameOn = false; gameBudget = 0; return 'Game mode is off.'; } };
+      return { auto: true, title: 'Finish the game', details: 'Back to asking before each action.', async run() { gameOn = false; gameBudget = 0; chessGame = null; return 'Game mode is off.'; } };
+    },
+
+    // One call = (wait for the opponent's reply and work out their move from which squares changed) + (think) + (click the move).
+    // Pip never has to read the pieces from a picture, which is what small models get wrong.
+    chess_play(input) {
+      if (!gameOn) throw new Error('Start a game first with start_game (the user approves once).');
+      if (!grabBoard) throw new Error('Reading the board is not available here.');
+      const region = input && input.board ? parseRegion(input.board) : null;
+      if (input && input.board && !region) throw new Error('board must be {x, y, w, h}: the chessboard\'s top-left corner and size as fractions (0 to 1) of the whole screen.');
+      const fen = input && typeof input.fen === 'string' && input.fen.trim() ? input.fen.trim().slice(0, 120) : null;
+      if (fen) chess.parseFen(fen); // throws a clear message on a misread board
+      const color = input && input.my_color ? String(input.my_color).toLowerCase() : null;
+      if (color && color !== 'white' && color !== 'black') throw new Error("my_color must be 'white' or 'black'.");
+      if (!chessGame && !region) throw new Error('The first chess_play needs board {x, y, w, h}, my_color, and flipped (true when black is at the bottom).');
+      const clamp = (v, lo, hi, d) => Math.max(lo, Math.min(hi, Number.isFinite(Number(v)) && Number(v) > 0 ? Math.round(Number(v)) : d));
+      const waitMs = clamp(input && input.wait_ms, 3000, 120000, 45000), thinkMs = clamp(input && input.think_ms, 200, 5000, 1200);
+      return {
+        auto: true,
+        title: 'Play the next chess move',
+        details: 'Waits for the opponent, then plays the best reply by clicking the squares.',
+        async run() {
+          if ((input && input.new_game) || fen || !chessGame) {
+            const myWhite = color ? color === 'white' : (chessGame ? chessGame.myWhite : true);
+            chessGame = { st: fen ? chess.parseFen(fen) : chess.startState(), region: region || (chessGame && chessGame.region), myWhite, snap: null, moves: [],
+              flipped: input && input.flipped !== undefined ? !!input.flipped : (chessGame ? chessGame.flipped : !myWhite) };
+          } else {
+            if (region) { chessGame.region = region; chessGame.snap = null; }
+            if (input && input.flipped !== undefined) chessGame.flipped = !!input.flipped;
+            if (color) chessGame.myWhite = color === 'white';
+          }
+          const g = chessGame;
+          const grab = () => grabBoard(g.region);
+          if (!g.snap) g.snap = await grab();
+          const settle = async (first) => { // wait until pieces stop sliding
+            let cur = first;
+            for (let i = 0; i < 4; i++) { await sleep(250); const nxt = await grab(); const still = Math.max(...cellDiffs(cur, nxt)) < 6; cur = nxt; if (still) break; }
+            return cur;
+          };
+          const uci = (m) => chess.sqName(m.from) + chess.sqName(m.to) + (m.promo || '');
+          let said = '';
+          if (g.st.white !== g.myWhite) { // the opponent's turn: watch the board until a legal move shows up
+            const until = Date.now() + waitMs;
+            let seen = null;
+            while (!seen && Date.now() < until && gameOn) {
+              await sleep(500);
+              let cur = await grab();
+              if (cellDiffs(g.snap, cur).filter((v) => v > CHESS_T).length < 2) continue;
+              cur = await settle(cur);
+              const m = matchMove(cellDiffs(g.snap, cur), g.st, g.flipped, CHESS_T);
+              if (m) { seen = m; g.st = chess.apply(g.st, m); g.snap = cur; g.moves.push(uci(m)); }
+            }
+            if (!seen) return gameOn ? 'The opponent has not moved yet, or I could not tell which move they made. If the board shows a new position, use look_at_screen, write the FEN, and call chess_play again with fen to resync; otherwise call chess_play again to keep waiting.' : 'The game was stopped.';
+            said = `Opponent played ${chess.sqName(seen.from)} to ${chess.sqName(seen.to)}. `;
+          }
+          const over = chess.status(g.st);
+          if (over) return `${said}Game over: ${over}${over === 'checkmate' ? (g.st.white === g.myWhite ? ' (I was checkmated).' : ' (I won!).') : ' (a draw).'} Call end_game and tell the user.`;
+          const best = chess.bestMoveState(g.st, { ms: thinkMs, queen: true });
+          const mv = chess.legal(g.st).find((m) => chess.sqName(m.from) === best.from && chess.sqName(m.to) === best.to && (m.promo || null) === best.promo);
+          const spot = (sq) => { // middle of a square, as a fraction of the whole screen
+            const col = sq & 7, row = sq >> 3, c = g.flipped ? 7 - col : col, r = g.flipped ? 7 - row : row;
+            return { x: g.region.x + g.region.w * (c + 0.5) / 8, y: g.region.y + g.region.h * (r + 0.5) / 8 };
+          };
+          const info = getScreenInfo ? getScreenInfo() : null;
+          if (!info || !getFull()) throw new Error('Clicking is turned off or not available here.');
+          const b = info.bounds || info.workArea, sf = platform === 'darwin' ? 1 : (info.scaleFactor || 1);
+          const px = (sq) => { const p = spot(sq); return { x: (b.x + p.x * b.width) * sf, y: (b.y + p.y * b.height) * sf }; };
+          const pts = [px(mv.from), px(mv.to)];
+          if (mv.promo) pts.push(px(mv.to)); // the queen appears on the square itself on the usual sites
+          hidePanel();
+          blurWindow();
+          const c = sys.clicksCommand(pts, platform);
+          await new Promise((resolve, reject) => execFile(c.cmd, c.args, { timeout: 20000, windowsHide: true }, (err, _o, stderr) => {
+            if (!err) return resolve();
+            if (platform === 'darwin' && /not allowed|1002|assistive/i.test(String(stderr))) return reject(new Error('macOS blocked the click. Allow Pip (or Electron) in System Settings > Privacy & Security > Accessibility.'));
+            if (err.code === 'ENOENT') return reject(new Error(platform === 'win32' || platform === 'darwin' ? 'The click tool is missing.' : 'Clicking on Linux needs "xdotool" (X11 only).'));
+            reject(new Error('Could not click: ' + (err.message || 'unknown error')));
+          }));
+          const after = await settle(await grab());
+          const d = cellDiffs(g.snap, after);
+          if (d[cellOf(mv.from, g.flipped)] < CHESS_T || d[cellOf(mv.to, g.flipped)] < CHESS_T) {
+            return `${said}I clicked ${best.from} then ${best.to} but the board did not change, so the move did not register. Use look_at_screen to see why (not my turn, a menu or pop-up open, or the board area is wrong), fix it, then call chess_play again with board and flipped.`;
+          }
+          g.st = chess.apply(g.st, mv);
+          g.snap = after;
+          g.moves.push(uci(mv));
+          const end = chess.status(g.st);
+          return `${said}Played ${best.from} to ${best.to}${mv.promo ? ' (queen)' : ''}${mv.castle ? ' (castling)' : ''}. ${end === 'checkmate' ? 'Checkmate, I won! Call end_game and tell the user.' : end ? 'Stalemate, a draw. Call end_game and tell the user.' : 'Now the opponent moves: call chess_play again.'}`;
+        },
+      };
     },
 
     chess_best_move(input) {
@@ -1444,6 +1572,11 @@ function createActions({
         input_schema: { type: 'object', properties: {} },
       },
       {
+        name: 'chess_play',
+        description: "PLAY CHESS: the easiest way, one call per move, no reading pieces from a picture. First call: board = the chessboard's area as fractions of the WHOLE screen ({x, y, w, h}, top-left corner and size), my_color ('white' or 'black', the user's side), flipped (true when black is at the bottom), new_game true. Later calls need no arguments. Each call waits for the opponent's reply (it works out their move from which squares changed), picks the best move with the built-in engine and clicks it, then tells you what happened. Keep calling it until it says the game is over. If it says it cannot tell the opponent's move, look_at_screen, write the position as FEN, and call it again with fen.",
+        input_schema: { type: 'object', properties: { board: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } }, required: ['x', 'y', 'w', 'h'] }, my_color: { type: 'string', enum: ['white', 'black'] }, flipped: { type: 'boolean' }, new_game: { type: 'boolean' }, fen: str('Only to resync: the current position in FEN, side to move included.'), wait_ms: { type: 'number', description: 'How long to wait for the opponent (default 45000).' }, think_ms: { type: 'number', description: 'Engine thinking time (default 1200).' } } },
+      },
+      {
         name: 'chess_best_move',
         description: "Chess engine (offline, instant, much stronger than guessing from a picture). Give the position as FEN (read it from the board: piece placement, then 'w' or 'b' for the side to move, castling rights, en passant square, e.g. 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'). Returns the best move. For chess: read the board ONCE per move with look_at_screen (region = the board), build the FEN, call this, then play it with board_move.",
         input_schema: { type: 'object', properties: { fen: str('The position in FEN notation.'), think_ms: { type: 'number', description: 'Thinking time in milliseconds (200 to 5000, default 1500).' } }, required: ['fen'] },
@@ -1629,7 +1762,7 @@ function createActions({
     return uiOn ? defs : defs.filter((d) => d.name !== 'find_ui' && d.name !== 'press_ui');
   }
 
-  return { prepare, toolDefs, endGame() { gameOn = false; gameBudget = 0; }, gameActive: () => gameOn, gameLimit: () => (gameOn ? gameBudget + 3 : 0) };
+  return { prepare, toolDefs, endGame() { gameOn = false; gameBudget = 0; chessGame = null; }, gameActive: () => gameOn, gameLimit: () => (gameOn ? gameBudget + 3 : 0) };
 }
 
 module.exports = { createActions };

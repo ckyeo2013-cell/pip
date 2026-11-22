@@ -1228,6 +1228,61 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     await assert.rejects(async () => P.prepare('board_move', { from: 'e2', to: 'e4' }), /board must be/);
   });
 
+  await t('chess_play: watches which squares changed to find the opponent\'s move, then clicks its own, as white and as black', async () => {
+    const chess = require('./chess.js');
+    for (const side of ['white', 'black']) {
+      const flipped = side === 'black';
+      const world = { pieces: new Map(), hl: new Set(), sel: null, clicks: 0 };
+      chess.startState().board.forEach((p, i) => { if (p) world.pieces.set(i, p); });
+      const REG = { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, SCR = { x: 0, y: 0, width: 1000, height: 1000 };
+      const cellOfSq = (sq) => { const r = sq >> 3, c = sq & 7; return [flipped ? 7 - r : r, flipped ? 7 - c : c]; };
+      const render = () => { // a 128x128 BGRA picture: board colours, a coloured block per piece, a tint on highlighted squares
+        const bm = Buffer.alloc(128 * 128 * 4);
+        for (let sq = 0; sq < 64; sq++) {
+          const [r, c] = cellOfSq(sq), p = world.pieces.get(sq), dark = (r + c) % 2;
+          let col = dark ? [90, 120, 60] : [220, 225, 200];
+          if (world.hl.has(sq)) col = [col[0] * 0.5, col[1] * 0.9, col[2] + 20];
+          for (let y = r * 16; y < r * 16 + 16; y++) for (let x = c * 16; x < c * 16 + 16; x++) {
+            let v = col;
+            if (p && x >= c * 16 + 4 && x < c * 16 + 12 && y >= r * 16 + 3 && y < r * 16 + 13) v = p === p.toUpperCase() ? [250, 250, 250] : [30, 30, 30];
+            const i = (y * 128 + x) * 4; bm[i] = v[0]; bm[i + 1] = v[1]; bm[i + 2] = v[2]; bm[i + 3] = 255;
+          }
+        }
+        return { bitmap: bm, width: 128, height: 128 };
+      };
+      const myIsWhite = side === 'white';
+      const sqAt = (px, py) => { const fx = px / 1000, fy = py / 1000; const c0 = Math.floor(((fx - REG.x) / REG.w) * 8), r0 = Math.floor(((fy - REG.y) / REG.h) * 8); const r = flipped ? 7 - r0 : r0, c = flipped ? 7 - c0 : c0; return r * 8 + c; };
+      const exec = (cmd, args, o, cb) => { // xdotool: mousemove x y click 1 [sleep s] ...
+        for (let i = 0; i < args.length; i++) if (args[i] === 'mousemove') {
+          const sq = sqAt(Number(args[i + 1]), Number(args[i + 2])); world.clicks++;
+          const p = world.pieces.get(sq);
+          if (world.sel === null) { if (p && (p === p.toUpperCase()) === myIsWhite) world.sel = sq; }
+          else if (sq !== world.sel) { world.pieces.set(sq, world.pieces.get(world.sel)); world.pieces.delete(world.sel); world.hl = new Set([world.sel, sq]); world.sel = null; }
+        }
+        cb(null, '');
+      };
+      const P = mkActions({ platform: 'linux', execFile: exec, getFull: () => true, getScreenInfo: () => ({ bounds: SCR, workArea: SCR, scaleFactor: 1 }), grabBoard: async () => render() });
+      await (await P.prepare('start_game', { game: 'Chess' })).run();
+      const theirMoves = [];
+      const opponentReplies = (ms) => setTimeout(() => { // the opponent moves on the fake board after a short think
+        const st = chess.parseFen([...Array(8).keys()].map((r) => { let row = '', n = 0; for (let f = 0; f < 8; f++) { const p = world.pieces.get(r * 8 + f); if (!p) n++; else { row += (n || '') + p; n = 0; } } return row + (n || ''); }).join('/') + ` ${myIsWhite ? 'b' : 'w'} - - 0 1`);
+        const b = chess.bestMoveState(st, { ms: 150, queen: true });
+        world.pieces.set(chess.sqIndex(b.to), world.pieces.get(chess.sqIndex(b.from))); world.pieces.delete(chess.sqIndex(b.from));
+        world.hl = new Set([chess.sqIndex(b.from), chess.sqIndex(b.to)]); theirMoves.push(`${b.from} to ${b.to}`);
+      }, ms);
+      if (!myIsWhite) opponentReplies(700); // black waits for white's first move
+      const call = async (extra) => (await P.prepare('chess_play', { think_ms: 200, wait_ms: 8000, ...extra })).run();
+      const r1 = await call({ board: REG, my_color: side, flipped, new_game: true });
+      if (myIsWhite) assert.match(r1, /^Played [a-h][1-8] to [a-h][1-8]/, r1);
+      else assert.match(r1, new RegExp(`^Opponent played ${theirMoves[0]}\\. Played `), r1);
+      opponentReplies(700);
+      const r2 = await call({});
+      assert.match(r2, new RegExp(`^Opponent played ${theirMoves[theirMoves.length - 1]}\\. Played [a-h][1-8] to [a-h][1-8]`), r2);
+      assert.ok(world.clicks >= 4);
+      P.endGame();
+    }
+  });
+
   await t('game mode: needs one approval, then plain keys run without asking; it ends cleanly and rejects risky keys', async () => {
     const sys = require('./system.js');
     const P = mkActions({ pet: () => {} });

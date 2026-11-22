@@ -246,6 +246,26 @@ function clickCommand(px, py, platform) {
   return { cmd: 'xdotool', args: ['mousemove', String(x), String(y), 'click', '1'] };
 }
 
+// Several clicks one after another in a single command (for a chess move: piece, then square), gap = pause between them.
+function clicksCommand(points, platform, gapMs = 250) {
+  const pts = (points || []).map((p) => ({ x: Math.round(Number(p.x)), y: Math.round(Number(p.y)) }));
+  if (!pts.length || pts.length > 4 || pts.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y) || p.x < 0 || p.y < 0 || p.x > 20000 || p.y > 20000)) throw new Error('That is not a spot on the screen.');
+  if (platform === 'win32') {
+    const script = "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class PipMouse { [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int x, int y); [DllImport(\"user32.dll\")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e); }'; [void][PipMouse]::SetProcessDPIAware(); " +
+      pts.map((p) => `[void][PipMouse]::SetCursorPos(${p.x}, ${p.y}); Start-Sleep -Milliseconds 60; [PipMouse]::mouse_event(2,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 40; [PipMouse]::mouse_event(4,0,0,0,[UIntPtr]::Zero)`).join(`; Start-Sleep -Milliseconds ${gapMs}; `);
+    return { cmd: 'powershell.exe', args: psArgs(script) };
+  }
+  if (platform === 'darwin') {
+    const lines = ['tell application "System Events"'];
+    pts.forEach((p, i) => { if (i) lines.push(`delay ${gapMs / 1000}`); lines.push(`click at {${p.x}, ${p.y}}`); });
+    lines.push('end tell');
+    return { cmd: 'osascript', args: lines.flatMap((l) => ['-e', l]) };
+  }
+  const args = [];
+  pts.forEach((p, i) => { if (i) args.push('sleep', String(gapMs / 1000)); args.push('mousemove', String(p.x), String(p.y), 'click', '1'); });
+  return { cmd: 'xdotool', args };
+}
+
 // Messaging apps: the app's own "jump to a conversation" shortcut (keyboard only, so it works even when the
 // app shows Pip nothing to look at). Windows/Linux use Ctrl, macOS uses Cmd.
 const CHAT_APPS = {
@@ -725,7 +745,7 @@ function mediaCommand(action, platform, value) {
 module.exports = {
   BROWSER_ACTIONS, browserKeys, focusBrowserCommand, focusAppCommand, parseFocusResult, BROWSER_PROCESSES,
   START_APPS_SCRIPT, parseStartApps, pickStartApp, editDistance, APP_PROTOCOLS, SCROLL_DIRS, scrollCommands, gameKeyCommand, GAME_KEYS,
-  clickCommand, chatApp, CHAT_APPS, SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
+  clickCommand, clicksCommand, chatApp, CHAT_APPS, SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
   PAGES, pageNames, settingsLaunch,
   psArgs, buildShell, shellName, checkCommand, isReadOnlyCommand,
   parseCombo, buildKeyCommand,

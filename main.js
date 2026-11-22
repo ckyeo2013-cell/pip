@@ -419,7 +419,7 @@ async function captureScreen(opts = {}) {
       throw new Error('macOS has not allowed screen recording for Pip. Tell the user to turn it on in System Settings > Privacy & Security > Screen Recording, then quit and reopen Pip.');
     }
   }
-  const wasVisible = !!(win && !win.isDestroyed() && win.isVisible());
+  const wasVisible = !opts.raw && !!(win && !win.isDestroyed() && win.isVisible()); // raw board grabs never hide Pip (they run many times in a row)
   if (wasVisible) { win.hide(); await sleep(250); } // no need to wait when the window is already out of the way
   try {
     const d = screen.getPrimaryDisplay();
@@ -436,6 +436,10 @@ async function captureScreen(opts = {}) {
     if (opts.region) { // crop to the asked part first, then shrink: a small sharp picture is faster to upload and read
       const full = img.getSize(), r = opts.region;
       img = img.crop({ x: Math.round(r.x * full.width), y: Math.round(r.y * full.height), width: Math.max(8, Math.round(r.w * full.width)), height: Math.max(8, Math.round(r.h * full.height)) });
+    }
+    if (opts.raw) { // a 128x128 bitmap of just the board: Pip compares it with the last one to see which squares changed
+      const sq = img.resize({ width: 128, height: 128, quality: 'good' });
+      return { bitmap: sq.toBitmap(), width: 128, height: 128 };
     }
     const { width, height } = img.getSize();
     const k = Math.min(1, (opts.region ? 800 : 1280) / Math.max(width, height));
@@ -466,6 +470,7 @@ function remind(minutes, message) {
 function setupActions() {
   actions = createActions({
     captureScreen,
+    grabBoard: (region) => captureScreen({ region, raw: true }),
     calendar,
     shell,
     clipboard,
@@ -548,7 +553,7 @@ function buildActionRules() {
     `nickname; never invent a date. To put something on their calendar use add_calendar_event; for "remind me in 20 minutes" use set_reminder.` +
     `\n\nWeb: to look something up or read a page, use fetch_url (for example https://duckduckgo.com/html/?q=search+words) and answer from what you read, ` +
     `naming the site; use open_url only when the user wants the page opened on screen.` +
-    `\n\nGAMES: when the user wants you to play a turn-based or puzzle game on screen (Wordle, a trivia game like Krillion, chess or another board game, a keyboard or mouse puzzle), call start_game ONCE (for chess pass max_steps 150; a move takes about 3 steps) (they approve once), then loop with no chatter between steps: look_at_screen, decide, game_keys (text for letters or digits, keys like enter or backspace), look again. Use the game's keyboard controls, or find_ui and press_ui for real buttons. If the game needs mouse clicks (chess, board games, puzzles), you do the clicks yourself with click_screen (no approval needed in game mode); NEVER ask the user to make a move or click for you, and never hand the game back unless it is over or something truly blocks you. CHESS: do not work out moves from the picture. Per move: look_at_screen with region set to just the board (fractions of the whole screen), write the position as FEN, call chess_best_move, then board_move with the same board numbers (clicks need no approval in game mode). Find the board area on your first look and reuse it. ` +
+    `\n\nGAMES: when the user wants you to play a turn-based or puzzle game on screen (Wordle, a trivia game like Krillion, chess or another board game, a keyboard or mouse puzzle), call start_game ONCE (for chess pass max_steps 150; a move takes about 3 steps) (they approve once), then loop with no chatter between steps: look_at_screen, decide, game_keys (text for letters or digits, keys like enter or backspace), look again. Use the game's keyboard controls, or find_ui and press_ui for real buttons. If the game needs mouse clicks (chess, board games, puzzles), you do the clicks yourself with click_screen (no approval needed in game mode); NEVER ask the user to make a move or click for you, and never hand the game back unless it is over or something truly blocks you. CHESS: use chess_play. Do ONE look_at_screen to find the board's area (fractions of the whole screen), which side is at the bottom, and the user's colour; then call chess_play (board, my_color, flipped, new_game true) and keep calling chess_play with no arguments until it says the game is over. Do not read pieces from the picture and do not call anything else between moves. Only if chess_play says it cannot tell the opponent's move, look_at_screen, write the FEN, and call chess_play with fen. (chess_best_move and board_move are the manual fallback.) ` +
     `Wordle: open with a strong word like "crane" or "slate", then use the colours (green = right letter in the right place, yellow = in the word but elsewhere, grey = not in the word), keep a short list of what you know, never repeat a guess, only guess real 5-letter English words, and you get 6 tries. ` +
     `Rare-answer trivia like Krillion: each prompt has a short timer (about 25 seconds), so do ONE look per prompt and answer right away; a valid but less obvious answer scores more than the first one everyone thinks of, but never risk an invalid one, and spell it plainly. ` +
     `Only play single-player, practice or casual games the user asked for. Stop with end_game when it is over or stuck, and tell the user the result. If a login, payment, purchase or ad appears, stop and tell them.` +
