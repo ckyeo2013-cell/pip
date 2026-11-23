@@ -206,6 +206,15 @@ for (const style of ['routine', 'disco', 'wave', 'floss', 'six_seven', 'backflip
   if (['disco', 'wave', 'floss', 'six_seven'].includes(style)) assert.ok(poses.some((q) => Math.abs((q.armL || 0) - (q.armR || 0)) > 0.4), style + ': arms move independently');
 }
 ok('every dance moves, uses its arms and tail, and ends in a neutral pose');
+for (const move of ['karate chop', 'do a kick', 'blorp the zibble']) { // moves Pip has no ready-made dance for: he invents one
+  posesSeen.length = 0;
+  pet({ action: 'act', move });
+  S.step(5000);
+  const ps = posesSeen.slice(), fin2 = ps[ps.length - 1];
+  assert.ok(ps.some((q) => q.armR || q.armL || q.crouch > 0.1 || q.tailSwing), move + ': he acts it out');
+  assert.ok(!fin2.armL && !fin2.armR && !fin2.tailSwing, move + ': ends neutral');
+}
+ok('unknown moves like a karate chop are acted out by Pip himself');
 { // jumps leave the ground and come back: the sprite goes up and returns exactly to the floor
   pet({ action: 'dance', style: 'backflip' });
   let minY = 1e9, flipped = false;

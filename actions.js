@@ -150,7 +150,7 @@ function learnPieces(lib, snap, cells) {
 }
 // Read a whole board. Returns { board (FEN piece placement), flipped, weak } or null when the pieces are not clear enough (then the AI has to read it).
 function recognizeBoard(snap, lib, flippedHint) {
-  if (!Object.keys(lib).length) return null;
+  if (!Object.keys(lib).length) return bootstrapBoard(snap, flippedHint);
   const occ = occupancy(snap), cells = new Array(64).fill('');
   let weak = 0;
   for (let i = 0; i < 64; i++) {
@@ -159,7 +159,7 @@ function recognizeBoard(snap, lib, flippedHint) {
     if (!r || r.score < 0.5 || r.gap < 0.03) weak++;
     cells[i] = r ? r.ch : '';
   }
-  if (weak > 2 || cells.some((c, i) => occ[i] && !c)) return null;
+  if (weak > 2 || cells.some((c, i) => occ[i] && !c)) return bootstrapBoard(snap, flippedHint); // learned shapes did not fit this site: read from scratch
   let wr = 0, wn = 0, br = 0, bn = 0;
   cells.forEach((c, i) => { if (c === 'P') { wr += i >> 3; wn++; } else if (c === 'p') { br += i >> 3; bn++; } });
   let flipped = !!flippedHint; // white pawns sit lower on the screen than black ones when white is at the bottom
@@ -171,6 +171,63 @@ function recognizeBoard(snap, lib, flippedHint) {
     rows.push(s + (e || ''));
   }
   return { board: rows.join('/'), flipped, weak };
+}
+// ---- no-AI fallback: read a board with NO learned pieces (mid-game join, new site). Group the pieces by silhouette, then name each
+// group from its shape (pawn smallest, king tallest, knight lopsided, rook blocky, bishop and queen the rest), and split colours by brightness.
+function bootstrapBoard(snap, flippedHint) {
+  const occ = occupancy(snap), cells = [];
+  for (let i = 0; i < 64; i++) if (occ[i]) { const f = cellFeatures(snap, i >> 3, i & 7); if (f.area < 8) return null; cells.push({ i, f, s: maskStr(f.mask) }); }
+  if (cells.length < 4 || cells.length > 32) return null;
+  const S = cells[0].f.S, shape = (c) => {
+    let y0 = S, y1 = -1, x0 = S, x1 = -1, top = 0, sym = 0, un = 0;
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) if (c.f.mask[y * S + x]) { if (y < y0) y0 = y; if (y > y1) y1 = y; if (x < x0) x0 = x; if (x > x1) x1 = x; }
+    const h = y1 - y0 + 1, w = x1 - x0 + 1, ty = y0 + Math.max(1, Math.round(h * 0.3));
+    for (let y = y0; y < y1 + 1; y++) for (let x = x0; x <= x1; x++) { const a = c.f.mask[y * S + x], b = c.f.mask[y * S + (x0 + x1 - x)]; if (a || b) { un++; if (a && b) sym++; } if (y < ty && a) top++; }
+    return { h, w, fill: c.f.area / (w * h), top: top / (w * Math.max(1, ty - y0)), sym: un ? sym / un : 1, area: c.f.area };
+  };
+  cells.forEach((c) => { c.sh = shape(c); });
+  // 1. colours first: white pieces are lighter than black ones
+  const ls = cells.map((c) => c.f.lum).sort((a, b) => a - b); let cut = (ls[0] + ls[ls.length - 1]) / 2;
+  if (ls[ls.length - 1] - ls[0] < 40) return null;
+  for (let it = 0; it < 8; it++) { const lo = ls.filter((v) => v < cut), hi = ls.filter((v) => v >= cut); if (!lo.length || !hi.length) break; cut = (lo.reduce((a, b) => a + b, 0) / lo.length + hi.reduce((a, b) => a + b, 0) / hi.length) / 2; }
+  const out = new Array(64).fill(''), sure = {};
+  for (const white of [true, false]) {
+    const mine = cells.filter((c) => (c.f.lum >= cut) === white);
+    // 2. group each colour's pieces by silhouette (strictly: same piece, same picture)
+    let groups = [];
+    for (const c of mine) {
+      let g = null, bs = 0.86;
+      for (const k of groups) { const sc = maskScore(c.f.mask, k.rep.s, S); if (sc > bs) { bs = sc; g = k; } }
+      if (g) g.m.push(c); else groups.push({ rep: c, m: [c] });
+    }
+    while (groups.length > 6) { groups.sort((a, b) => a.m.length - b.m.length); const sm = groups.shift(); let t = groups[0], bs = -1; for (const k of groups) { const sc = maskScore(sm.rep.f.mask, k.rep.s, S); if (sc > bs) { bs = sc; t = k; } } t.m.push(...sm.m); }
+    const avg = (g, k) => g.m.reduce((a, c) => a + c.sh[k], 0) / g.m.length;
+    groups.forEach((g) => { g.h = avg(g, 'h'); g.fill = avg(g, 'fill'); g.sym = avg(g, 'sym'); g.top = avg(g, 'top'); g.area = avg(g, 'area'); });
+    // 3. name the groups: pawn is the smallest, king the tallest, queen next if as big, knight the most lopsided, rook the blockiest, bishop what is left
+    const left = groups.slice(), put = (g, t) => { for (const c of g.m) { const ch = white ? t.toUpperCase() : t; out[c.i] = ch; sure[c.i] = ch; } left.splice(left.indexOf(g), 1); };
+    left.sort((a, b) => a.area - b.area); if (left.length < 2) return null; put(left[0], 'p');
+    left.sort((a, b) => b.h - a.h || a.top - b.top); const king = left[0], kh = king.h, ka = king.area; if (left.length > 1 && kh - left[1].h < 1 && Math.abs(king.top - left[1].top) < 0.05) return null; // cannot tell king from queen: let the AI read it
+    put(king, 'k');
+    if (left.length && kh - left[0].h <= 3 && left[0].area >= ka * 0.85) put(left[0], 'q');
+    if (left.length > 3) return null;
+    if (left.length) { const kn = left.reduce((a, b) => (b.sym < a.sym ? b : a)); if (kn.sym < 0.9 || left.length === 3) put(kn, 'n'); }
+    if (left.length) { const rk = left.reduce((a, b) => (b.fill + b.top * 0.5 > a.fill + a.top * 0.5 ? b : a)); put(rk, 'r'); }
+    if (left.length) put(left[0], 'b');
+  }
+  // 4. sanity: one king each, a sensible number of every piece, no pawns on the back ranks
+  const cnt = {}; for (const ch of out) if (ch) cnt[ch] = (cnt[ch] || 0) + 1;
+  if (cnt.K !== 1 || cnt.k !== 1 || (cnt.P || 0) > 8 || (cnt.p || 0) > 8) return null;
+  for (const [P, Q, R, B, N] of ['PQRBN', 'pqrbn']) { // extra pieces are only possible through promotion: a misread shape shows up as too many of one kind
+    const x = Math.max(0, (cnt[Q] || 0) - 1) + Math.max(0, (cnt[R] || 0) - 2) + Math.max(0, (cnt[B] || 0) - 2) + Math.max(0, (cnt[N] || 0) - 2);
+    if (x > 8 - (cnt[P] || 0) || Object.values(cnt).reduce((t, v, i) => t, 0) < 0) return null;
+  }
+  let wr = 0, wn = 0, br = 0, bn = 0;
+  out.forEach((c, i) => { if (c === 'P') { wr += i >> 3; wn++; } else if (c === 'p') { br += i >> 3; bn++; } });
+  let flipped = !!flippedHint; if (wn && bn && Math.abs(wr / wn - br / bn) > 0.5) flipped = !(wr / wn > br / bn);
+  const rows = [];
+  for (let r = 0; r < 8; r++) { let s = '', e = 0; for (let f = 0; f < 8; f++) { const p = out[cellOf(r * 8 + f, flipped)]; if (p) { if (e) { s += e; e = 0; } s += p; } else e++; } rows.push(s + (e || '')); }
+  if (/^[Pp]|[Pp]$/.test(rows[0]) || /[Pp]/.test(rows[0] + rows[7])) return null;
+  return { board: rows.join('/'), flipped, weak: 0, sure, boot: true };
 }
 // board square (engine index: rank 8 first) -> cell in the picture (top-left first); flipped = black at the bottom
 const cellOf = (sq, flipped) => { const r = sq >> 3, c = sq & 7; return (flipped ? 7 - r : r) * 8 + (flipped ? 7 - c : c); };
@@ -204,7 +261,7 @@ const MAX_WRITE = 200000;
 const MAX_ITEMS = 100;
 const DANCE_STYLES = ['routine', 'sway', 'bounce', 'spin', 'wiggle', 'flourish', 'backflip', 'cartwheel', 'six_seven', 'floss', 'moonwalk', 'shuffle', 'headbang', 'dab', 'robot', 'disco', 'wave', 'twirl', 'pogo', 'shimmy'];
 const EMOTIONS = ['neutral', 'happy', 'excited', 'sad', 'mad', 'scared', 'surprised', 'love', 'shy', 'bored', 'confused', 'proud', 'sleepy', 'embarrassed', 'jealous', 'disgusted', 'nervous', 'lonely', 'dizzy', 'yawn'];
-const PET_ACTIONS = ['hop', 'dance', 'cheer', 'go', 'fly', 'land', 'stay', 'roam', 'sad', 'return', 'feel'];
+const PET_ACTIONS = ['hop', 'dance', 'cheer', 'go', 'fly', 'land', 'stay', 'roam', 'sad', 'return', 'feel', 'act'];
 const PET_PLACES = ['left', 'right', 'middle', 'cursor'];
 const MAX_LIST = 200;
 const MAX_READ = 20000;
@@ -240,6 +297,7 @@ function createActions({
   status = () => {},
   emote = () => {},
   getChessLevel = () => 'max',
+  getChessConfirm = () => false, // ask before every chess move (one move per approval)
   hidePanel = () => {},
   blurWindow = () => {},
   countdown = 5,
@@ -259,7 +317,7 @@ function createActions({
   setOverlay = null,      // (visible) => void: hides Pip's full-screen window while a chess game runs, so it cannot cover or slow the browser, and brings it back afterwards
   getScreenInfo = null,   // () => { workArea: {x,y,width,height}, scaleFactor }: switches on find_ui / press_ui and flying to the typing spot
   pipPid = process.pid,   // Pip's own window is never read or pressed
-  flightMs = 2600,        // how long to wait for Pip to land before acting
+  flightMs = 1700,        // how long to wait for Pip to land before acting
   stageMs = 1700,         // how long Pip acts out a job (flies to the browser's top bar, the taskbar...) before doing it
   fetchFn = typeof fetch === 'function' ? fetch : null,
   lookup = (host) => dns.promises.lookup(host, { all: true }),
@@ -561,15 +619,15 @@ function createActions({
           blurWindow();
           let flew = false;
           if (atCursor) {
-            await sleep(400); // just enough for the app behind the chat to get the keyboard back
+            await sleep(220); // just enough for the app behind the chat to get the keyboard back
             flew = true;
           } else if (uiOn) {
             try {
-              await sleep(400); // let the app behind the chat get the keyboard back
+              await sleep(220); // let the app behind the chat get the keyboard back
               let norm = screenNorm(await runUi('list'));
               // keep checking (up to ~3s) until the app behind really is the front window; a paste sent too early lands nowhere or in the wrong place
               for (let tries = 0; tries < 6 && norm.window.foreground === false; tries++) {
-                await sleep(500);
+                await sleep(300);
                 norm = screenNorm(await runUi('list'));
               }
               const fg = norm.window.foreground !== false;
@@ -629,7 +687,7 @@ function createActions({
         title: 'Find the buttons and boxes in the front window',
         details: `Pip reads the names and positions of the buttons, boxes, links and menus in the window at the front${query ? ` (only ones matching "${query}")` : ''}. No picture is taken, and nothing you typed into a box is read; password boxes are skipped.\n\n(The names are shared with Pip's AI so it can find the right one.)`,
         async run() {
-          if (platform !== 'win32') { hidePanel(); blurWindow(); await sleep(700); }
+          if (platform !== 'win32') { hidePanel(); blurWindow(); await sleep(450); }
           const norm = screenNorm(await runUi('list'));
           lastUi = { norm, at: Date.now() };
           let els = norm.elements;
@@ -784,7 +842,7 @@ function createActions({
         async run() {
           hidePanel();
           blurWindow();
-          await sleep(700); // let the page behind the chat get the keyboard back
+          await sleep(450); // let the page behind the chat get the keyboard back
           for (const c of plan.cmds) {
             await new Promise((resolve, reject) => execFile(c.cmd, c.args, { timeout: 15000, windowsHide: true }, (err, _o, stderr) => {
               if (!err) return resolve();
@@ -864,9 +922,9 @@ function createActions({
       if (color && color !== 'white' && color !== 'black') throw new Error("my_color must be 'white' or 'black'.");
       if (!chessGame && !region) throw new Error('The first chess_play needs board {x, y, w, h}, my_color, and flipped (true when black is at the bottom).');
       const clamp = (v, lo, hi, d) => Math.max(lo, Math.min(hi, Number.isFinite(Number(v)) && Number(v) > 0 ? Math.round(Number(v)) : d));
-      const waitMs = clamp(input && input.wait_ms, 3000, 120000, 90000), thinkMs = clamp(input && input.think_ms, 200, 10000, 2500);
+      const waitMs = clamp(input && input.wait_ms, 3000, 120000, 90000), thinkMs = clamp(input && input.think_ms, 200, 15000, 4000);
       return {
-        auto: true,
+        auto: !getChessConfirm(),
         title: 'Play the next chess move',
         details: 'Waits for the opponent, then plays the best reply by clicking the squares.',
         async run() {
@@ -897,10 +955,11 @@ function createActions({
             if (g.fromStart) {
               let bad = 0; for (let i = 0; i < 64; i++) if (occ[i] !== (i < 16 || i >= 48)) bad++;
               if (bad > 6) {
-                const rec = recognizeBoard(g.snap, getLib(), g.flipped);
+                let rec = recognizeBoard(g.snap, getLib(), g.flipped);
+                if (!rec) { try { rec = bootstrapBoard(await grabBoard(g.region, 384), g.flipped); } catch (_) {} } // no learned pieces: read the shapes from a sharper picture
                 const fen2 = rec && `${rec.board} ${g.myWhite ? 'w' : 'b'} - - 0 1`;
                 let ok = false;
-                if (fen2) { try { const st2 = chess.parseFen(fen2); chess.bestMoveState(st2, { ms: 30 }); g.st = st2; g.hist = [st2]; g.fromStart = false; g.flipped = rec.flipped; ok = true; status('Chess: joined a game in progress, read the pieces myself'); } catch (_) { ok = false; } }
+                if (fen2) { try { const st2 = chess.parseFen(fen2); chess.bestMoveState(st2, { ms: 30 }); g.st = st2; g.hist = [st2]; g.fromStart = false; g.flipped = rec.flipped; ok = true; if (rec.boot && rec.sure && learnPieces(getLib(), g.snap, rec.sure)) saveLib(); status('Chess: joined a game in progress, read the pieces myself'); } catch (_) { ok = false; } }
                 if (!ok) { chessGame = null; throw new Error(`FEN needed: the board is not at the starting position (${bad} squares differ), so this game is already in progress. Look at the screen, read every piece into a FEN (side to move included) and call chess_play again with fen, my_color and flipped.`); }
               } else g.learnStart = occ;
             } else {
@@ -1097,7 +1156,7 @@ function createActions({
           };
           // Keep playing on its own: no AI round trip between moves (that was the slow part). It stops at the end
           // of the game, when the opponent takes too long, when a click fails, or when Stop is pressed.
-          const maxMoves = clamp(input && input.moves, 1, 150, 60);
+          const maxMoves = getChessConfirm() ? 1 : clamp(input && input.moves, 1, 150, 60);
           const out = [];
           let waited = 0, errs = 0;
           for (let n = 0; n < maxMoves && gameOn; n++) {
@@ -1317,7 +1376,7 @@ function createActions({
         auto: cards.every((c) => c.auto), // all safe sites: just open them; any other site makes the whole routine ask once
         title: `Run the "${String(input.name).slice(0, 30)}" routine`,
         details: cards.map((c) => c.details).join('\n'),
-        async run() { for (const c of cards) { await c.run(); await sleep(600); } return `Ran ${cards.length} step${cards.length === 1 ? '' : 's'} of the routine.`; },
+        async run() { for (const c of cards) { await c.run(); await sleep(300); } return `Ran ${cards.length} step${cards.length === 1 ? '' : 's'} of the routine.`; },
       };
     },
 
@@ -1332,13 +1391,13 @@ function createActions({
         async run() {
           hidePanel();
           blurWindow();
-          await sleep(700); // let whatever was behind the chat get the keyboard back
+          await sleep(450); // let whatever was behind the chat get the keyboard back
           const where = await raiseBrowser(); // the shortcut only works if the browser is the window in front
           if (action === 'bring_to_front') {
             if (where === 'none') { await openLink('https://www.google.com/'); return 'No browser was open, so I opened one.'; }
             return where === 'focused' || where === 'already' ? k.label : 'I tried, but could NOT bring the browser to the front (Windows or macOS refused). Do not say it worked; ask the user to click it in the taskbar or dock.';
           }
-          if (where === 'focused') await sleep(350); // let the window finish coming forward before the first key
+          if (where === 'focused') await sleep(220); // let the window finish coming forward before the first key
           await new Promise((resolve, reject) => execFile(k.cmd.cmd, k.cmd.args, { timeout: 15000, windowsHide: true }, (err, _o, stderr) => {
             if (!err) return resolve();
             if (platform === 'darwin' && /not allowed|1002|assistive/i.test(String(stderr))) return reject(new Error('macOS blocked that. Allow Pip (or Electron) in System Settings > Privacy & Security > Accessibility.'));
@@ -1871,9 +1930,10 @@ function createActions({
       const cmd = { action };
       if (action === 'hop') cmd.times = Math.min(5, Math.max(1, Math.round(Number(input.times)) || 1));
       if (action === 'dance' && input.style !== undefined) {
-        if (!DANCE_STYLES.includes(String(input.style))) throw new Error(`style must be one of: ${DANCE_STYLES.join(', ')}.`);
-        cmd.style = String(input.style);
+        if (DANCE_STYLES.includes(String(input.style))) cmd.style = String(input.style);
+        else { cmd.action = 'act'; cmd.move = String(input.style).slice(0, 60); } // a move Pip has no ready-made dance for: he acts it out himself
       }
+      if (cmd.action === 'act' && !cmd.move) cmd.move = String((input && (input.move || input.style)) || 'something fun').slice(0, 60);
       if (action === 'feel') {
         const emotion = String((input && input.emotion) || '');
         if (!EMOTIONS.includes(emotion)) throw new Error(`emotion must be one of: ${EMOTIONS.join(', ')}.`);
@@ -1990,7 +2050,7 @@ function createActions({
       {
         name: 'pet_do',
         description: "Move Pip's own body on the screen. Needs no approval. action: hop (jump in place, optionally 'times' 1-5), dance, cheer (look happy), go (fly to 'where': left, right, middle of the screen, or cursor = next to the mouse; a branch grows there for Pip to perch on), fly (fly to a spot given by x and y, each 0 to 1 measured from the top-left corner of the screen; a branch grows just there and Pip perches on it), land (glide back down to the floor), stay (stop wandering around and stay put), roam (wander around again), sad (Pip feels hurt or sad and walks off the screen until the user asks him back; use it when the user is harsh, says goodbye angrily or tells you to go away, never as a joke), return (come back after being sad), feel (show a real emotion on his face and body: pass 'emotion'; sad makes him walk off the screen). Show the feeling that fits the moment: mad when insulted or annoyed, happy or excited for good news, scared or surprised for shocks, love for kindness, shy or embarrassed when complimented, and so on. For dance you can pass a trend move as style, e.g. six_seven for the '67' meme, backflip, cartwheel, floss, moonwalk, shuffle, headbang, dab, robot, disco, wave (a friendly hello), twirl, pogo or shimmy. Without a style he performs a fresh routine every time. Use fly when the user needs you at a particular place, for example 'help me click this' or 'help me open that': find out where the thing is first (find_ui if you have it, otherwise look_at_screen), then fly to it. Use go cursor for 'come here'.",
-        input_schema: { type: 'object', properties: { action: { type: 'string', enum: PET_ACTIONS }, times: { type: 'number', description: 'For hop: how many hops (1 to 5).' }, style: { type: 'string', enum: DANCE_STYLES, description: 'For dance: routine (default, a fresh mix every time, ending in a bow), sway, bounce, spin, wiggle or flourish (spreads his wings), backflip, cartwheel, six_seven (the 67 meme), floss, moonwalk, shuffle, headbang, dab, robot, disco, wave, twirl, pogo, shimmy.' }, where: { type: 'string', enum: PET_PLACES, description: 'For go: where to go.' }, emotion: { type: 'string', enum: EMOTIONS, description: 'For feel: which emotion to show.' }, x: { type: 'number', description: 'For fly: horizontal position, 0 = left edge of the screen, 1 = right edge.' }, y: { type: 'number', description: 'For fly: vertical position, 0 = top edge of the screen, 1 = bottom edge.' } }, required: ['action'] },
+        input_schema: { type: 'object', properties: { action: { type: 'string', enum: PET_ACTIONS }, times: { type: 'number', description: 'For hop: how many hops (1 to 5).' }, move: { type: 'string', description: "For act: ANY move or pose, in your own words (karate chop, kick, bow, salute, flex, shiver, wave...). Pip invents the animation himself, so never refuse a physical request or just talk about it: call this." }, style: { type: 'string', enum: DANCE_STYLES, description: 'For dance: routine (default, a fresh mix every time, ending in a bow), sway, bounce, spin, wiggle or flourish (spreads his wings), backflip, cartwheel, six_seven (the 67 meme), floss, moonwalk, shuffle, headbang, dab, robot, disco, wave, twirl, pogo, shimmy.' }, where: { type: 'string', enum: PET_PLACES, description: 'For go: where to go.' }, emotion: { type: 'string', enum: EMOTIONS, description: 'For feel: which emotion to show.' }, x: { type: 'number', description: 'For fly: horizontal position, 0 = left edge of the screen, 1 = right edge.' }, y: { type: 'number', description: 'For fly: vertical position, 0 = top edge of the screen, 1 = bottom edge.' } }, required: ['action'] },
       },
       {
         name: 'find_ui',

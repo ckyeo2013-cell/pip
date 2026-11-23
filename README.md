@@ -162,3 +162,14 @@ This makes an installer for the OS you run it on (Windows .exe, macOS .dmg, Linu
 Say "play Wordle", "do today's Connections", "play Krillion", "solve this sudoku" or "play chess against me". Pip asks once, then for that one request looks at the screen, types, clicks and drags without asking each time. It ends when the game is over, at the step limit, or when you press Stop.
 
 Pip gets a **playbook** for the game when it starts (see `games.js`): Wordle and clones, Connections, Spelling Bee, crosswords and the Mini, Strands, Sudoku, 2048, Minesweeper, board games, trivia and quiz games, memory and word-search games, plus a general one for anything new. Tools for games: `game_keys` (typing and arrow keys), `click_many` (several clicks in one call), `drag_screen` (press, move along a path, release), `chess_play` (a full chess game), `sudoku_solve` (exact solver). Each of these sends back a screenshot, so no separate look is needed. Real-time action games, ranked play, money and accounts are excluded. Dragging uses the OS mouse events: it needs `xdotool` on Linux and the Accessibility permission on macOS. For trivia and harder puzzles choose **Sonnet** in settings.
+
+## Automatic updates (GitHub)
+1. Put this project in a GitHub repo and set `repository.url` in `package.json` to it.
+2. Bump `version` in `package.json`, commit, then push a tag: `git tag v1.20.1 && git push --tags`.
+3. The workflow in `.github/workflows/release.yml` builds the installers and publishes them (plus the `latest.yml` update files) to a GitHub Release.
+4. Installed copies of Pip check for updates at start and every 4 hours, download in the background, and install on the next close.
+Windows and Linux update fully on their own. macOS needs a signed app for silent updates, so there Pip only tells you a new version exists.
+
+## Voice
+- Ctrl/Cmd+Alt+Space: talk to Pip in the chat. Ctrl/Cmd+Alt+D: dictate into any app (fillers removed, "comma", "new line", "scratch that" work).
+- Pip's spoken voice uses Gemini, Cloudflare or Groq neural voices (same key as hearing); it falls back to the computer's voice.

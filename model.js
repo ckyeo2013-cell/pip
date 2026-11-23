@@ -257,6 +257,67 @@
     P(H, [0, -0.1, 0.69], [0.05, 0.04, 0.04], null, C.nose, 0.6, 0.3);
     if (mouthO > 0.05) P(H, [0, -0.24, 0.6], [0.04 + 0.05 * mouthO, 0.02 + 0.07 * mouthO, 0.03], null, C.dark, 0, 0); // open mouth
 
+
+    // ---- skins: real outfits and props (not recolours), built from the same ellipsoids ------------------
+    if (p.style && p.style !== 'classic' && p.style !== 'yarn') {
+      const O = (F, c, r, rot, col, spec) => P(F, c, r, rot, col, spec === undefined ? 0.35 : spec, 0);
+      const ringY = (F, y, rx, rz, n, sz, col, sy) => { for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; O(F, [Math.sin(a) * rx, y, Math.cos(a) * rz], [sz, sy || sz, sz], null, col); } };
+      const ringZ = (F, z, rx, ry, n, sz, col, cy) => { for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; O(F, [Math.sin(a) * rx, (cy || 0) + Math.cos(a) * ry, z], [sz, sz, sz * 0.9], null, col, 0.7); } };
+      const cone = (F, y0, h, r0, r1, n, col, bend) => { for (let i = 0; i < n; i++) { const u = i / (n - 1), r = lerp(r0, r1, u); O(F, [(bend || 0) * u * u, y0 + h * u, 0], [r, h / n * 0.85, r], null, col); } };
+      switch (p.style) {
+        case 'wizard': {
+          const c = [0.27, 0.17, 0.55], gold = [0.95, 0.8, 0.25];
+          O(H, [0, 0.43, 0], [0.82, 0.05, 0.8], rotZ(0.06), c); cone(H, 0.45, 0.95, 0.5, 0.05, 7, c, -0.25);
+          ringY(H, 0.5, 0.45, 0.43, 12, 0.05, gold, 0.045);
+          O(H, [0, 0.62, 0.43], [0.09, 0.09, 0.03], null, gold, 0.8);
+          break;
+        }
+        case 'cowboy': {
+          const br = [0.5, 0.31, 0.16], dk = [0.28, 0.17, 0.1];
+          O(H, [0, 0.44, 0.03], [0.9, 0.05, 0.74], rotX(-0.08), br); O(H, [0, 0.66, 0], [0.43, 0.26, 0.42], null, br); O(H, [0, 0.82, 0.02], [0.3, 0.1, 0.3], null, br);
+          ringY(H, 0.56, 0.44, 0.42, 12, 0.055, dk, 0.05);
+          break;
+        }
+        case 'chef': {
+          const w = [0.98, 0.98, 0.96];
+          O(H, [0, 0.52, 0], [0.45, 0.12, 0.43], null, w); O(H, [0, 0.76, 0], [0.4, 0.2, 0.4], null, w);
+          for (const [x, z] of [[0, 0], [0.22, 0.1], [-0.22, 0.1], [0.12, -0.18], [-0.12, -0.18]]) O(H, [x, 0.98 + (x || z ? -0.04 : 0.04), z], [0.24, 0.2, 0.24], null, w);
+          break;
+        }
+        case 'royal': {
+          const g = [0.97, 0.8, 0.2];
+          O(H, [0, 0.5, 0], [0.5, 0.08, 0.47], null, g, 0.8);
+          for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2; O(H, [Math.sin(a) * 0.44, 0.7, Math.cos(a) * 0.42], [0.06, 0.15, 0.06], null, g, 0.8); O(H, [Math.sin(a) * 0.44, 0.86, Math.cos(a) * 0.42], [0.05, 0.05, 0.05], null, i % 2 ? [0.9, 0.15, 0.2] : [1, 1, 1], 1); }
+          O(H, [0, 0.52, 0.5], [0.07, 0.07, 0.04], null, [0.85, 0.1, 0.2], 1);
+          ringY(H, -0.42, 0.42, 0.4, 14, 0.07, [0.85, 0.12, 0.2], 0.05); // a red velvet collar
+          break;
+        }
+        case 'ninja': {
+          const bk = [0.09, 0.09, 0.12];
+          ringY(H, 0.22, 0.5, 0.48, 16, 0.075, bk, 0.075);
+          O(H, [0, 0.22, 0.52], [0.17, 0.1, 0.03], null, [0.78, 0.8, 0.85], 0.9);
+          for (const s of [-1, 1]) { const sw = Math.sin(t * 3 + s) * 0.08; O(H, [s * 0.1, 0.18, -0.6], [0.07, 0.05, 0.2], rotY(s * (0.5 + sw)), bk); O(H, [s * 0.22, 0.14, -0.78], [0.06, 0.04, 0.2], rotY(s * (0.8 + sw)), bk); }
+          ringY(H, -0.1, 0.5, 0.45, 14, 0.06, bk, 0.15); // face mask over the lower half
+          break;
+        }
+        case 'pirate': {
+          const rd = [0.8, 0.12, 0.14], bk = [0.07, 0.07, 0.08];
+          ringY(H, 0.3, 0.44, 0.43, 14, 0.09, rd, 0.1);
+          O(H, [0, 0.45, 0], [0.42, 0.12, 0.4], null, rd); for (const s of [-1, 1]) O(H, [s * 0.1, 0.25, -0.62], [0.07, 0.07, 0.18], rotY(s * 0.4 + Math.sin(t * 2 + s) * 0.1), rd);
+          O(H, [0.31, 0.07, 0.46], [0.2, 0.2, 0.05], null, bk); O(H, [0.0, 0.2, 0.4], [0.64, 0.015, 0.03], rotZ(-0.45), bk, 0);
+          O(H, [0, 0.45, 0.4], [0.07, 0.07, 0.03], null, [1, 1, 1], 0.5);
+          break;
+        }
+        case 'astronaut': {
+          const w = [0.95, 0.96, 0.98], gr = [0.5, 0.55, 0.65];
+          ringZ(H, 0.28, 0.64, 0.62, 22, 0.075, w, 0.0); ringZ(H, 0.12, 0.7, 0.68, 22, 0.07, w, 0.0);
+          ringY(H, -0.46, 0.5, 0.48, 16, 0.1, w, 0.1);
+          O(H, [0.6, 0.45, -0.2], [0.03, 0.3, 0.03], null, gr, 0.8); O(H, [0.6, 0.78, -0.2], [0.06, 0.06, 0.06], null, [1, 0.3, 0.3], 1);
+          break;
+        }
+      }
+    }
+
     return parts;
   }
 

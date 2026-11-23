@@ -445,7 +445,7 @@ function evaluate() {
 }
 
 // ---- search
-const TT_BITS = 20, TT_SIZE = 1 << TT_BITS, TT_MASK = TT_SIZE - 1;
+const TT_BITS = 22, TT_SIZE = 1 << TT_BITS, TT_MASK = TT_SIZE - 1;
 const TTHi = new Int32Array(TT_SIZE), TTMove = new Int32Array(TT_SIZE), TTScore = new Int32Array(TT_SIZE), TTDepth = new Int8Array(TT_SIZE), TTFlag = new Int8Array(TT_SIZE);
 const K1 = new Int32Array(MAXD + 4), K2 = new Int32Array(MAXD + 4), HIST = new Int32Array(2 * 64 * 64);
 const LMR = [];

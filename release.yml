@@ -19,12 +19,7 @@ jobs:
         with:
           node-version: 20
       - run: npm install
-      - run: npx electron-builder --publish never
+      - run: npx electron-builder --publish always
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*.exe
-            dist/*.dmg
-            dist/*.AppImage

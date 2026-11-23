@@ -60,6 +60,11 @@ const DEFAULTS = {
   cloudflareKeyEnc: '',
   cloudflareKeyPlain: '',
   voiceProvider: 'auto',      // who turns speech into text: 'auto' (same as chat brain) | 'cloudflare' | 'groq' | 'gemini'
+  voiceTts: 'natural',       // 'natural' = a real neural voice from the same service that hears me | 'system' = the computer's own voice
+  chessConfirm: false, // ask before every chess move
+  actionLog: true,     // keep a list of what Pip did, so you can ask "what did you just do" or say "undo"
+  lastVersion: '',
+  autoUpdate: true,           // check GitHub for a new version and install it by itself
   voiceReply: 'voice',        // Pip talks back: 'voice' (after I talked) | 'always' | 'never'
   wander: true,
   quips: true,
@@ -102,6 +107,8 @@ function loadSettings() {
   if (!PROVIDERS.includes(settings.provider)) settings.provider = 'anthropic';
   if (!VOICE_PROVIDERS.includes(settings.voiceProvider)) settings.voiceProvider = 'auto';
   if (!VOICE_REPLIES.includes(settings.voiceReply)) settings.voiceReply = 'voice';
+  if (!VOICE_TTS.includes(settings.voiceTts)) settings.voiceTts = 'natural';
+  if (!SKINS.includes(settings.style)) settings.style = 'classic';
   // Groq moved this model to enterprise-only, so older saved settings are switched to the current free-friendly default.
   if (settings.groqModel === 'llama-3.3-70b-versatile') settings.groqModel = DEFAULTS.groqModel;
 }
@@ -116,6 +123,8 @@ function persist() {
 const PROVIDERS = ['anthropic', 'gemini', 'groq', 'cloudflare'];
 const VOICE_PROVIDERS = ['auto', ...voice.STT_PROVIDERS];
 const VOICE_REPLIES = ['voice', 'always', 'never'];
+const SKINS = ['classic','yarn','ninja','wizard','pirate','astronaut','royal','cowboy','chef'];
+const VOICE_TTS = ['natural', 'system'];
 const keyFields = (p) => (p === 'gemini' ? ['geminiKeyEnc', 'geminiKeyPlain'] : p === 'groq' ? ['groqKeyEnc', 'groqKeyPlain'] : p === 'cloudflare' ? ['cloudflareKeyEnc', 'cloudflareKeyPlain'] : ['apiKeyEnc', 'apiKeyPlain']);
 function getKey(provider = settings.provider) {
   const [encF, plainF] = keyFields(provider);
@@ -337,6 +346,7 @@ function toggleVisible() {
 function buildMenu() {
   const name = settings.petName || 'Pip';
   return Menu.buildFromTemplate([
+    ...(app.pipUpdateReady ? [{ label: 'Restart to update Pip', click: () => { try { require('electron-updater').autoUpdater.quitAndInstall(); } catch (_) {} } }] : []),
     {
       label: `Chat with ${name}`,
       click: () => { if (win) { win.showInactive(); win.webContents.send('open-chat'); } },
@@ -438,7 +448,7 @@ function applyPolicy(name, r, input) {
   const p = (settings.toolPolicy || {})[GROUP_OF[name]];
   if (p === 'always') { r.auto = false; r.forceAsk = true; }
   else if (p === 'never' && !POLICY_NO_NEVER.includes(GROUP_OF[name]) && r.risk !== 'high' && !NEVER_SKIP.includes(name)) r.auto = true;
-  if (typeof r.run === 'function' && !r.logged) {
+  if (typeof r.run === 'function' && !r.logged && settings.actionLog !== false) {
     const run = r.run.bind(r);
     r.logged = true;
     r.run = async () => {
@@ -551,8 +561,8 @@ async function captureScreen(opts = {}) {
       img = img.crop({ x: Math.round(r.x * full.width), y: Math.round(r.y * full.height), width: Math.max(8, Math.round(r.w * full.width)), height: Math.max(8, Math.round(r.h * full.height)) });
     }
     if (opts.raw) { // a 128x128 bitmap of just the board: Pip compares it with the last one to see which squares changed
-      const sq = img.resize({ width: 128, height: 128, quality: 'good' });
-      return { bitmap: sq.toBitmap(), width: 128, height: 128 };
+      const N = opts.size || 128, sq = img.resize({ width: N, height: N, quality: 'good' });
+      return { bitmap: sq.toBitmap(), width: N, height: N };
     }
     const { width, height } = img.getSize();
     const k = Math.min(1, (opts.region ? 800 : 1280) / Math.max(width, height));
@@ -584,7 +594,7 @@ let overlayHeldForGame = false; // Pip's window is hidden on purpose while a che
 function setupActions() {
   actions = createActions({
     captureScreen,
-    grabBoard: (region) => captureScreen({ region, raw: true }),
+    grabBoard: (region, size) => captureScreen({ region, raw: true, size }),
     calendar,
     shell,
     clipboard,
@@ -606,6 +616,7 @@ function setupActions() {
     status: (text) => send('status', { text }),
     emote: (name) => send('mood', { type: 'emote', name }),
     getChessLevel: () => settings.chessLevel,
+    getChessConfirm: () => !!settings.chessConfirm,
     chessLib: {
       load: () => JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'chess-pieces.json'), 'utf8')),
       save: (o) => fs.writeFileSync(path.join(app.getPath('userData'), 'chess-pieces.json'), JSON.stringify(o)),
@@ -890,6 +901,27 @@ async function chat({ messages, ctx }) {
   }
 }
 
+// ------------------------------------------------------------ automatic updates
+// Publish a GitHub release (push a tag like v1.20.0, see .github/workflows/release.yml) and every installed Pip updates itself.
+// Windows and Linux update fully by themselves; on macOS an unsigned app cannot, so Pip just tells you a new version exists.
+function startAutoUpdate() {
+  if (!app.isPackaged || settings.autoUpdate === false) return;
+  try {
+    const { autoUpdater } = require('electron-updater');
+    autoUpdater.autoDownload = process.platform !== 'darwin';
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('update-downloaded', (info) => {
+      try { new Notification({ title: 'Pip updated', body: `Version ${info.version} is ready. It installs when you next close Pip (or restart it now from the tray).` }).show(); } catch (_) {}
+      app.pipUpdateReady = true; try { tray.setContextMenu(buildMenu()); } catch (_) {}
+    });
+    autoUpdater.on('update-available', (info) => { if (process.platform === 'darwin') try { new Notification({ title: 'New Pip version', body: `Version ${info.version} is out. Download it from the GitHub releases page.` }).show(); } catch (_) {} });
+    autoUpdater.on('error', () => {});
+    const check = () => { autoUpdater.checkForUpdates().catch(() => {}); };
+    setTimeout(check, 8000);
+    setInterval(check, 4 * 3600 * 1000);
+  } catch (_) { /* electron-updater missing: updates are manual */ }
+}
+
 // ------------------------------------------------------------ voice
 // Ctrl/Cmd+Alt+Space: press once to start listening, press again to finish. Pip only listens after this press or the mic button.
 function registerVoiceHotkey() {
@@ -900,6 +932,27 @@ function registerVoiceHotkey() {
       win.webContents.send('voice-hotkey');
     });
   } catch (_) { /* the mic button still works */ }
+}
+
+// Ctrl/Cmd+Alt+D: dictation anywhere. Speak, and the cleaned-up words are typed where your cursor is (Pip does not open the chat).
+const WHATS_NEW = 'Smoother moves, longer-lasting feelings, a natural voice, 7 new skins, Ctrl+Alt+D dictation, Ctrl+Alt+S to ask about your screen, and I invent moves like a karate chop myself.';
+function registerScreenHotkey() {
+  try {
+    globalShortcut.register('CommandOrControl+Alt+S', () => {
+      if (!win || win.isDestroyed()) return;
+      win.showInactive();
+      win.webContents.send('screen-ask');
+    });
+  } catch (_) {}
+}
+function registerDictateHotkey() {
+  try {
+    globalShortcut.register('CommandOrControl+Alt+D', () => {
+      if (!settings.voiceHotkey || !win || win.isDestroyed()) return;
+      win.showInactive();
+      win.webContents.send('voice-dictate');
+    });
+  } catch (_) { /* the chat mic still works */ }
 }
 
 function voiceStatus() {
@@ -919,9 +972,9 @@ function registerIpc() {
     if (s && typeof s === 'object') {
       if (typeof s.petName === 'string') patch.petName = s.petName.trim().slice(0, 20) || 'Pip';
       if (PALETTES.includes(s.palette)) patch.palette = s.palette;
-      if (s.style === 'classic' || s.style === 'yarn') patch.style = s.style;
+      if (SKINS.includes(s.style)) patch.style = s.style;
       if (MODELS.includes(s.model)) patch.model = s.model;
-      for (const k of ['shapeWindow', 'wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'macCalendar', 'shortReplies', 'fallback', 'reactions', 'sounds', 'moodMemory']) {
+      for (const k of ['shapeWindow', 'wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'autoUpdate', 'chessConfirm', 'actionLog', 'macCalendar', 'shortReplies', 'fallback', 'reactions', 'sounds', 'moodMemory']) {
         if (typeof s[k] === 'boolean') patch[k] = s[k];
       }
       if (s.toolPolicy && typeof s.toolPolicy === 'object') {
@@ -939,6 +992,7 @@ function registerIpc() {
       if (PROVIDERS.includes(s.provider)) patch.provider = s.provider;
       if (VOICE_PROVIDERS.includes(s.voiceProvider)) patch.voiceProvider = s.voiceProvider;
       if (VOICE_REPLIES.includes(s.voiceReply)) patch.voiceReply = s.voiceReply;
+      if (VOICE_TTS.includes(s.voiceTts)) patch.voiceTts = s.voiceTts;
       if (typeof s.geminiModel === 'string') {
         const m = s.geminiModel.trim().replace(/^models\//, '');
         if (/^[A-Za-z0-9._-]{1,60}$/.test(m)) patch.geminiModel = m;
@@ -981,6 +1035,17 @@ function registerIpc() {
       if (st === 'not-determined') return (await systemPreferences.askForMediaAccess('microphone')) ? { ok: true } : denied;
       return denied;
     } catch (_) { return { ok: true }; }
+  });
+  ipcMain.handle('voice:speak', async (_e, text) => { // a natural neural voice; the page falls back to the computer's voice on any error
+    if (settings.voiceTts === 'system') return { error: 'system' };
+    const st = voiceStatus();
+    if (!st.ok) return { error: 'system' };
+    try { return await voice.synthesize({ fetchFn: fetch, provider: st.provider, apiKey: getKey(st.provider), accountId: settings.cloudflareAccountId, text: String(text || '') }); } catch (e) { return { error: e.message }; }
+  });
+  ipcMain.handle('voice:dictate', async (_e, text) => { // type the cleaned-up words where the user's cursor is
+    const t = voice.tidy(text);
+    if (!t) return { error: 'nothing to type' };
+    try { await (await actions.prepare('type_text', { text: t, at_cursor: true })).run(); return { text: t }; } catch (e) { return { error: e.message, text: t }; }
   });
   let voiceBusy = false;
   ipcMain.handle('voice:transcribe', async (_e, audio) => {
@@ -1066,6 +1131,10 @@ function registerIpc() {
     if (hello) send('say', { text: hello, ms: 3500 });
     let first = true, errs = 0;
     for (let i = 0; i < 400 && actions.gameActive() && !chessStopFlag; i++) {
+      if (settings.chessConfirm) { // the user wants to approve every move
+        const ans = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, { type: 'question', buttons: ['Play my move', 'Stop the game'], defaultId: 0, cancelId: 1, title: 'Chess', message: 'Pip is ready to play his next move.', detail: 'Turn off "Ask before every chess move" in settings to let him play on his own.' });
+        if (ans.response === 1) { final = 'The game was stopped.'; break; }
+      }
       const r = await (await actions.prepare('chess_play', first ? { board, my_color: pipColor, level, moves: 60, clock: settings.chessClock || undefined } : { level, moves: 60 })).run();
       first = false;
       if (/Game over|I resign|offer a draw|Checkmate|Stalemate|was stopped|hopelessly lost/i.test(r)) { final = r; break; }
@@ -1160,7 +1229,7 @@ function registerIpc() {
     try { final = await playOne(board, white ? 'black' : 'white', level, white ? 'Okay, you are white. Make your first move, I am watching the board.' : 'Okay, I am white. Here I go.'); } catch (e) { final = String((e && e.message) || e); }
     if (actions) actions.endGame();
     send('status', { text: '' });
-    if (/FEN needed|FEN does not match/.test(final)) return { message: 'This game is already in progress and I have not learned what the pieces on this site look like yet. Start the chess button at the beginning of a game once (I learn the pieces then), or ask me in chat to play chess and I will read the position with the AI.' };
+    if (/FEN needed|FEN does not match/.test(final)) return { message: 'This game is already in progress and I could not read the pieces on my own this time. Start the chess button at the beginning of a game once (I learn the pieces then), or ask me in chat to play chess and I will read the position with the AI.' };
     console.log('[chess] ended:', String(final).slice(0, 300), chessStopFlag ? '(stop pressed)' : '');
     const msg = /I was checkmated/.test(final) ? 'Well played, you got me.' : /I won|Checkmate, I won/.test(final) ? 'Checkmate. Good game!' : /resign/i.test(final) ? 'I am lost, so I resign. Good game!' : /draw/i.test(final) ? 'This looks like a draw. Maybe offer one on the site.' : chessStopFlag ? 'Okay, I stopped the game.' : (final ? final.slice(0, 160) : 'The game ended.');
     return { message: msg };
@@ -1233,6 +1302,12 @@ app.whenReady().then(() => {
     startCursorPolling();
     startAwareness();
     registerVoiceHotkey();
+    registerDictateHotkey();
+    registerScreenHotkey();
+    setTimeout(() => { // after an update, say what changed (once)
+      try { const v = app.getVersion(); if (settings.lastVersion && settings.lastVersion !== v && win && !win.isDestroyed()) win.webContents.send('say', { text: `Updated to ${v}! ${WHATS_NEW}`, ms: 14000 }); if (settings.lastVersion !== v) update({ lastVersion: v }); } catch (_) {}
+    }, 6000);
+    startAutoUpdate();
     try { globalShortcut.register('CommandOrControl+Alt+X', () => stopChat()); } catch (_) { /* the tray item and the Stop button still work */ }
     for (const ev of ['display-metrics-changed', 'display-added', 'display-removed']) {
       screen.on(ev, sendArea);

@@ -111,4 +111,55 @@ async function transcribe({ fetchFn, provider, apiKey, accountId, audioB64, time
   return { text };
 }
 
-module.exports = { STT_HINT, transcribe, pickProvider, STT_PROVIDERS, LABELS, MAX_AUDIO_B64 };
+// ---- dictation clean-up (Wispr-Flow style): drop fillers and stutters, turn spoken punctuation into marks, tidy capitals
+function tidy(text) {
+  let t = ' ' + clean(text) + ' ';
+  t = t.replace(/\b(?:um+|uh+|er+|erm|ah+|hmm+|you know,?|i mean,?|sort of like|kind of like)\b[,.]?/gi, ' ');
+  t = t.replace(/\b(\w+)(\s+\1\b)+/gi, '$1'); // "I I want" -> "I want"
+  const sp = [[/\s*\b(?:new paragraph)\b[,.]?\s*/gi, '\n\n'], [/\s*\b(?:new line|next line)\b[,.]?\s*/gi, '\n'], [/\s*\bquestion mark\b/gi, '?'], [/\s*\bexclamation (?:mark|point)\b/gi, '!'],
+    [/\s*\bfull stop\b|\s*\bperiod\b(?=\s|$)/gi, '.'], [/\s*\bcomma\b/gi, ','], [/\s*\bcolon\b/gi, ':'], [/\s*\bsemicolon\b/gi, ';']];
+  for (const [re, r] of sp) t = t.replace(re, r);
+  const scratch = t.match(/^(.*[.!?\n])?[^.!?\n]*\bscratch that\b[,.]?\s*(.*)$/is); // "scratch that" drops what came before it in the sentence
+  if (scratch) t = (scratch[1] || '') + ' ' + scratch[2];
+  t = t.replace(/\s+([,.!?:;])/g, '$1').replace(/[ \t]{2,}/g, ' ').replace(/ ?\n ?/g, '\n').trim();
+  t = t.replace(/(^|[.!?]\s+|\n)([a-z])/g, (_m, a, b) => a + b.toUpperCase()).replace(/\bi\b(?=['\s,.!?]|$)/g, 'I');
+  return t;
+}
+
+// ---- natural speech (text to voice) with the same providers and keys as hearing
+const TTS_TEXT_MAX = 700;
+function wavFromPcm16(pcm, rate) {
+  const h = Buffer.alloc(44); h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length, 4); h.write('WAVEfmt ', 8); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([h, pcm]);
+}
+async function synthesize({ fetchFn, provider, apiKey, accountId, text, timeoutMs = 30000 }) {
+  const t = clean(text).slice(0, TTS_TEXT_MAX);
+  if (!t || !STT_PROVIDERS.includes(provider)) return { error: 'no voice' };
+  let url, init;
+  if (provider === 'gemini') {
+    url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent';
+    init = { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify({
+      contents: [{ parts: [{ text: 'Say this in a warm, bright, natural, friendly voice, like a cheerful friend: ' + t }] }],
+      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Leda' } } } } }) };
+  } else if (provider === 'cloudflare') {
+    url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/@cf/myshell-ai/melotts`;
+    init = { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ prompt: t, lang: 'en' }) };
+  } else {
+    url = 'https://api.groq.com/openai/v1/audio/speech';
+    init = { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model: 'canopylabs/orpheus-v1-english', voice: 'hannah', input: t, response_format: 'wav' }) };
+  }
+  const ac = new AbortController(), timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const res = await fetchFn(url, { ...init, signal: ac.signal });
+    if (!res.ok) return { error: errorMessage(provider, res.status, await readDetail(res)) };
+    if (provider === 'groq') return { audio: Buffer.from(await res.arrayBuffer()).toString('base64'), mime: 'audio/wav' };
+    const data = await res.json();
+    if (provider === 'cloudflare') { const a = data && data.result && data.result.audio; return a ? { audio: a, mime: 'audio/mpeg' } : { error: 'no audio' }; }
+    const part = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
+    const b64 = Array.isArray(part) && part.find((p) => p && p.inlineData && p.inlineData.data);
+    return b64 ? { audio: wavFromPcm16(Buffer.from(b64.inlineData.data, 'base64'), 24000).toString('base64'), mime: 'audio/wav' } : { error: 'no audio' };
+  } catch (e) { return { error: e.name === 'AbortError' ? 'timed out' : e.message }; } finally { clearTimeout(timer); }
+}
+
+module.exports = { STT_HINT, transcribe, tidy, synthesize, pickProvider, STT_PROVIDERS, LABELS, MAX_AUDIO_B64 };

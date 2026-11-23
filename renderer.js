@@ -443,7 +443,33 @@
     groom:     { beats: 5, fn(z, c) { z.tilt = c.s(5) * 0.1; z.yaw = c.s(2.5) * 0.35; z.hop = -Math.abs(c.s(5)) * 3; z.glide = 0.25 + 0.15 * c.s(5); } },
     stretch:   { beats: 2.5, fn(z, c) { z.glide = c.arc; z.tilt = -0.12 * c.arc; z.nod = 0.3 * c.arc; z.crouch = 0.25 * (1 - c.arc); } },
   };
-  const DANCE_ALL = Object.keys(MOVES);
+  // Pip invents an animation for any move he has no ready-made dance for (karate chop, kick, bow, salute...) from the words in its name.
+  const IMPROV = [
+    [/karate|chop|punch|hit|slap|smash|jab|strike|hadouken|fight/, 'Hi-YAH!', 2, (z, c, sd) => { const wind = sstep(c.q / 0.35), hit = sstep((c.q - 0.38) / 0.1), rec = sstep((c.q - 0.6) / 0.35), k = hit * (1 - rec); z.armR = wind * (1 - hit) - 0.35 * k; z.armL = 0.3 * wind * (1 - rec); z.tilt = sd * (-0.12 * wind * (1 - hit) + 0.22 * k); z.crouch = 0.25 * wind * (1 - hit) + 0.35 * k; z.x = sd * 26 * k; z.nod = -0.3 * k; z.yaw = sd * 0.35 * k; z.hop = -5 * k; z.tail = -sd * k; }],
+    [/kick|karate kick|stomp/, 'Hyaa!', 2, (z, c, sd) => { const up = sstep(c.q / 0.3) * (1 - sstep((c.q - 0.55) / 0.3)); z.tilt = -sd * 0.3 * up; z.hop = -14 * up; z.armL = z.armR = 0.7 * up; z.x = sd * 18 * up; z.crouch = 0.2 * (1 - up); z.tail = sd * up; }],
+    [/bow|curtsy|thank|respect|salute/, '', 2, (z, c) => { const p = sstep(c.q / 0.3) * (1 - sstep((c.q - 0.65) / 0.3)); z.nod = -0.55 * p; z.crouch = 0.4 * p; z.armR = 0.5 * p; z.armL = 0.5 * p; z.tilt = 0.05 * p; }],
+    [/wave|hello|hi\b|greet|bye/, 'Hi!', 2, (z, c) => { const p = sstep(c.q / 0.15) * (1 - sstep((c.q - 0.85) / 0.15)); z.armR = (0.8 + 0.2 * Math.sin(c.q * TAU * 5)) * p; z.tilt = 0.06 * p; z.yaw = 0.2 * p; z.tail = Math.sin(c.q * TAU * 3) * 0.4 * p; }],
+    [/flex|muscle|strong|lift|pump|hero/, 'Strong!', 2, (z, c) => { const p = sstep(c.q / 0.25) * (1 - sstep((c.q - 0.75) / 0.25)); z.armL = z.armR = p; z.crouch = 0.2 * p; z.tilt = Math.sin(c.q * TAU * 3) * 0.05 * p; z.nod = 0.1 * p; z.hop = -2 * p; }],
+    [/shiver|cold|freez|scared|tremble|shake/, 'Brrr!', 2, (z, c) => { const p = sstep(c.q / 0.15) * (1 - sstep((c.q - 0.85) / 0.15)); z.tilt = Math.sin(c.q * 120) * 0.07 * p; z.x = Math.sin(c.q * 110) * 3 * p; z.crouch = 0.35 * p; z.armL = z.armR = 0.3 * p; }],
+    [/jump|leap|hop|bounce|boing/, '', 2, (z, c) => { z.hop = -Math.abs(Math.sin(c.q * Math.PI * 2)) * 40; z.crouch = Math.max(0, Math.cos(c.q * Math.PI * 4)) * 0.3; z.armL = z.armR = Math.abs(Math.sin(c.q * Math.PI * 2)) * 0.6; }],
+    [/ninja|sneak|stealth|spy/, 'Shh...', 2, (z, c, sd) => { const p = sstep(c.q / 0.2) * (1 - sstep((c.q - 0.8) / 0.2)); z.crouch = 0.6 * p; z.x = sd * 50 * Math.sin(c.q * Math.PI) ; z.tilt = sd * 0.15 * p; z.armR = 0.5 * p; z.tail = sd * 0.5 * p; }],
+  ];
+  function improvise(text) {
+    const w = String(text || '').toLowerCase(), hit = IMPROV.find(([re]) => re.test(w)), sd = st.face || 1;
+    let beats = 2, fn, say = '';
+    if (hit) { say = hit[1]; beats = hit[2]; fn = (z, c) => hit[3](z, c, sd); }
+    else { // never heard of it: act it out with a lively made-up move, different for each phrase
+      let h = 7; for (const ch of w) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      const a = 1 + (h % 3), b = 1 + ((h >> 3) % 3), side = (h >> 6) & 1 ? 1 : -1; beats = 2;
+      fn = (z, c) => { const p = sstep(c.q / 0.15) * (1 - sstep((c.q - 0.85) / 0.15)); z.armR = (0.5 + 0.5 * Math.sin(c.q * TAU * a)) * p; z.armL = (0.5 + 0.5 * Math.sin(c.q * TAU * b + 1.5)) * p; z.tilt = side * 0.18 * Math.sin(c.q * TAU * a) * p; z.yaw = side * 0.4 * Math.sin(c.q * TAU * b) * p; z.hop = -Math.abs(Math.sin(c.q * TAU * a)) * 12 * p; z.crouch = 0.2 * p; z.nod = 0.15 * Math.sin(c.q * TAU * b) * p; z.tail = Math.sin(c.q * TAU * a) * 0.6 * p; };
+    }
+    if (st.dance || st.rag || st.dragging) return;
+    MOVES._imp = { beats, fn };
+    sfx('dance'); if (say) showBubble(say, 1800);
+    st.dance = { t0: performance.now(), segs: [{ move: '_imp', t0: 0, dur: beats * BEAT }], total: beats * BEAT, lastSeg: -1 };
+    cheer(beats * BEAT + 600);
+  }
+  const DANCE_ALL = Object.keys(MOVES).filter((k) => k !== '_imp');
   const DANCE_POOL = ['disco', 'floss', 'shuffle', 'pogo', 'six_seven', 'headbang', 'moonwalk', 'robot', 'shimmy', 'spin', 'twirl', 'bounce', 'dab', 'wiggle', 'flourish'];
   const DANCE_BIG = ['backflip', 'cartwheel'];
   function buildDance(style) {
@@ -643,12 +669,16 @@
     if (m.level === 'friendly') return { mouth: 0.25 };
     return EMO.neutral;
   }
+  const EPRI = { neutral: 0, yawn: 0.5, bored: 1, sleepy: 1, happy: 1.5, confused: 1.5, proud: 2, excited: 2, surprised: 2, shy: 2, nervous: 2, dizzy: 2.5, embarrassed: 2.5, love: 3, jealous: 3, disgusted: 3, lonely: 3, mad: 4, scared: 4 };
   const refreshMood = () => pip.moodGet().then((m) => { st.mood = m; return m; }).catch(() => null);
   const EMO_KEYS = ['brow', 'mouth', 'mouthO', 'wide', 'blush', 'earBack', 'sleepy', 'happy', 'alert', 'thinking'];
   st.emo = { name: 'neutral', until: 0, cur: {} };
   function setEmotion(name, ms) {
     if (name === 'sad') { sfx('sad'); goSad(); return; }
     if (!EMO[name]) name = 'neutral';
+    const nowE = performance.now(), cp = EPRI[st.emo.name] || 1;
+    if (name !== 'neutral' && nowE < st.emo.until && st.emo.name !== name && (EPRI[name] || 1) < cp && nowE - st.emo.t0 < 12000) return; // a stronger feeling is not shoved aside by a weaker one
+    if (name !== 'neutral') ms = (ms || 9000) * 1.7; // feelings linger longer
     if (name !== 'neutral' && st.emo.name !== name) sfx(name);
     if (st.away) comeBack();
     st.emo.name = name;
@@ -663,7 +693,9 @@
   function emoStep(now) { // eases the face toward the emotion; returns body offsets
     const e = st.emo, T = (now < e.until ? EMO[e.name] : moodBase()) || {};
     if (now >= e.until && e.name !== 'neutral') e.name = 'neutral';
-    for (const k of EMO_KEYS) e.cur[k] = (e.cur[k] || 0) + ((T[k] || 0) - (e.cur[k] || 0)) * 0.12;
+    const edt = Math.min(0.06, (now - (e.ln || now)) / 1000); e.ln = now;
+    const er = now < e.until ? 7.9 : 2.2; // ease in quickly, let go of a feeling slowly
+    for (const k of EMO_KEYS) e.cur[k] = (e.cur[k] || 0) + ((T[k] || 0) - (e.cur[k] || 0)) * (1 - Math.exp(-edt * er));
     const o = { tilt: 0, hop: 0, crouch: 0 };
     if (T.shake) o.tilt += Math.sin(now * 0.06) * T.shake;
     if (T.tilt) o.tilt += T.tilt * Math.min(1, (now - e.t0) / 400);
@@ -679,6 +711,7 @@
     const rude = /\b(stupid|idiot|dumb|shut up|hate you|useless|annoying|you suck)\b/.test(x);
     const sorry = /\b(sorry|my bad|i apologi[sz]e|forgive me)\b/.test(x);
     const nice = /\b(love you|you.?re (the )?best|so cute|adorable|thanks|thank you|great job|well done|good job|awesome|amazing)\b/.test(x);
+    if (/\b(karate|chop|kick|punch|ninja|salute|flex|shiver|curtsy|high.?five)\b/.test(x) && /\b(do|show|give|try|can you|please)\b/.test(x)) setTimeout(() => improvise(x), 250); // act it out right away, whatever the AI says
     const hadGrudge = !!(st.mood && st.mood.grudge);
     pip.moodEvent(rude ? 'rude' : sorry ? 'apology' : nice ? 'kind' : 'chat');
     if (sorry && hadGrudge) { setEmotion('happy', 6000); showBubble('Okay. Apology accepted.', 4500); }
@@ -766,6 +799,7 @@
         if (!c.style || c.style === 'routine') for (const dx of [70, -70, 70, -70, 0]) st.queue.push({ tx: st.perch ? x0 : at(x0 + dx), h: 55, cheer: 1500 });
         startDance(c.style);
         break;
+      case 'act': improvise(c.move); break;
       case 'cheer':
         cheer(2500);
         break;
@@ -881,6 +915,12 @@
       dz.glide += r.glideAmt * 0.95 + (1 - r.glideAmt) * (r.mode === 'skid' ? 0 : (0.5 + 0.5 * Math.sin(now / 55)) * clamp(sp / 1200, 0.3, 1));
       dz.tail += clamp(r.vrot * 0.08, -1.2, 1.2) * (1 - r.glideAmt);
     } else if (st.ragRot) { st.ragRot *= 0.92; if (Math.abs(st.ragRot) < 0.01) st.ragRot = 0; dz.tilt += st.ragRot; }
+    { // smooth every pose channel so switching between hop, drag, dance, glide and emotion never snaps (flip stays raw: it is a full rotation)
+      const sm = st.sm || (st.sm = {}), fl = dz.flip ? 3 : 1, S = (k, v, r) => { let n = sm[k] === undefined ? v : sm[k] + (v - sm[k]) * (1 - Math.exp(-dt * r * fl)); if (Math.abs(n) < 0.004 && Math.abs(v) < 0.004) n = 0; return (sm[k] = n); };
+      dz.tilt = S('tilt', dz.tilt, 16); dz.x = S('x', dz.x, 16); dz.yaw = S('yaw', dz.yaw, 14); dz.nod = S('nod', dz.nod, 14);
+      dz.glide = S('glide', st.glide + dz.glide, 10); dz.armL = S('armL', dz.armL, 16); dz.armR = S('armR', dz.armR, 16); dz.tail = S('tail', dz.tail, 14); dz.hop = S('hop', dz.hop, 35);
+      dz.crouch = S('crouch', Math.max(dz.crouch, eo.crouch, st.crouch), 14); eo.crouch = 0; st.sCrouch = dz.crouch;
+    }
     const sadBrow = sadAmt, sadMouth = sadAmt;
     if (gl) {
       draw(Model.buildParts({
@@ -888,15 +928,15 @@
         bodyYaw: st.bodyYaw + dz.yaw,
         lookYaw: st.lookYaw,
         lookPitch: st.lookPitch + dz.nod,
-        glide: clamp(st.glide + dz.glide, 0, 1),
-        crouch: clamp(Math.max(st.crouch, eo.crouch, dz.crouch), 0, 1),
+        glide: clamp(dz.glide, 0, 1),
+        crouch: clamp(dz.crouch, 0, 1),
         blink,
         happy: Math.max(st.happy, ec.happy || 0),
         thinking: Math.max(st.thinking, ec.thinking || 0),
         sleepy: Math.max(st.sleepy || 0, sadAmt * 0.8, ec.sleepy || 0),
         brow: (ec.brow || 0) - sadBrow * 0.9,
         mouth: (ec.mouth || 0) - sadMouth,
-        mouthO: ec.mouthO || 0,
+        mouthO: Math.max(ec.mouthO || 0, (typeof PipVoice !== 'undefined' && PipVoice.isSpeaking()) ? 0.12 + 0.28 * Math.abs(Math.sin(now * 0.018) * Math.sin(now * 0.007 + 1)) : 0),
         wide: ec.wide || 0,
         blush: ec.blush || 0,
         earBack: Math.max(ec.earBack || 0, sadAmt * 0.6),
@@ -1455,6 +1495,28 @@
     }
   }
   mic.addEventListener('click', onMic);
+  // Dictation anywhere (Ctrl/Cmd+Alt+D): talk, pause, and the cleaned-up words are typed at your cursor. No chat window needed.
+  let dict = null;
+  async function onDictate() {
+    if (dict) { dict.stop(); return; }
+    if (micBusy || busy) return;
+    micBusy = true;
+    try {
+      const status = await pip.voiceStatus(); if (!status.ok) { showBubble(status.reason, 7000); return; }
+      const access = await pip.voiceMic(); if (!access.ok) { showBubble(access.reason, 7000); return; }
+      try { dict = await PipVoice.record({ silenceMs: 1100, noSpeechMs: 7000, maxMs: 120000, onLevel: () => { alertUntil = performance.now() + 400; } }); } catch (_) { showBubble("I can't open the microphone.", 4000); return; }
+      sfx('hop'); showBubble('Listening... just talk, then pause', 120000);
+      const r = await dict.done; dict = null;
+      if (!r.heard) { showBubble(r.reason === 'cancel' ? '' : "I didn't hear anything.", 2500); return; }
+      showBubble('Typing...', 8000); thinkingFlag = true;
+      const t = await pip.transcribe(r.audio);
+      if (t.error || !t.text) { showBubble(t.error || "I couldn't make out any words.", 5000); return; }
+      const d = await pip.dictate(t.text);
+      showBubble(d.error ? `${d.error}. Copied nothing; try again.` : 'Done!', 2000); if (!d.error) cheer(900);
+    } finally { dict = null; micBusy = false; thinkingFlag = false; }
+  }
+  pip.onVoiceDictate(onDictate);
+  pip.onScreenAsk(() => { if (!st.chatOpen) openChat(); send('Look at my screen and help me with whatever I am doing right now.'); });
   pip.onVoiceHotkey(() => { if (!st.chatOpen) openChat(); onMic(); });
 
   function onSubmit() {
@@ -1655,6 +1717,10 @@
     $('s-provider').value = settings.provider || 'anthropic';
     $('s-voiceprov').value = settings.voiceProvider || 'auto';
     $('s-voicereply').value = settings.voiceReply || 'voice';
+    $('s-voicetts').value = settings.voiceTts || 'natural';
+    $('s-autoupd').checked = settings.autoUpdate !== false;
+    $('s-chessconfirm').checked = !!settings.chessConfirm;
+    $('s-actionlog').checked = settings.actionLog !== false;
     $('s-gmodel').value = settings.geminiModel || 'gemini-2.5-flash';
     showProvider();
     $('s-name').value = settings.petName;
@@ -1736,6 +1802,10 @@
       provider: $('s-provider').value,
       voiceProvider: $('s-voiceprov').value,
       voiceReply: $('s-voicereply').value,
+      voiceTts: $('s-voicetts').value,
+      autoUpdate: $('s-autoupd').checked,
+      chessConfirm: $('s-chessconfirm').checked,
+      actionLog: $('s-actionlog').checked,
       geminiModel: $('s-gmodel').value,
       groqKey: $('s-grkey').value,
       groqModel: $('s-grmodel').value,
@@ -1872,6 +1942,9 @@
       else { sfx('draw'); setEmotion('neutral'); showBubble('A draw. Not bad!', 4500); }
     },
   });
+  $('s-style').addEventListener('change', () => { settings.style = $('s-style').value; startDance('twirl'); }); // preview a skin straight away
+  $('s-palette').addEventListener('change', () => { settings.palette = $('s-palette').value; });
+  $('s-trymove').addEventListener('click', () => { const v = $('s-move').value; if (v === 'karate chop' || v === 'kick' || v === 'bow' || v === 'flex') improvise(v); else startDance(v); });
   const openGames = (which) => { PipGames.setLevel(settings.chessLevel || 'medium'); PipGames.open(which); };
 
   // ---------------------------------------------------------------- start

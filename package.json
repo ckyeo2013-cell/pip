@@ -1,6 +1,6 @@
 {
   "name": "pip-desktop",
-  "version": "1.19.0",
+  "version": "1.20.0",
   "description": "Pip the sugar glider: a friendly 3D desktop pet that chats, helps you decide and does things on your computer (asks first)",
   "main": "main.js",
   "author": "You <you@example.com>",
@@ -53,6 +53,18 @@
     "linux": {
       "target": "AppImage",
       "category": "Utility"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR-GITHUB-NAME/pip-desktop.git"
   }
 }

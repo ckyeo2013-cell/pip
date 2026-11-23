@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:">
 <title>Pip</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -134,12 +134,29 @@
         <option value="always">Always</option>
         <option value="never">Never</option>
       </select>
+      <label for="s-voicetts">Pip's voice</label>
+      <select id="s-voicetts">
+        <option value="natural">Natural (neural voice from your voice service)</option>
+        <option value="system">My computer's own voice</option>
+      </select>
+      <label class="check"><input id="s-autoupd" type="checkbox"> Update Pip automatically when a new version is released on GitHub</label>
+      <label class="check"><input id="s-chessconfirm" type="checkbox"> Ask me before every chess move (off: Pip plays by himself once the game starts)</label>
+      <label class="check"><input id="s-actionlog" type="checkbox"> Keep an action log so I can ask "what did you just do?" and say "undo"</label>
+      <label for="s-move">Try a move</label>
+      <div style="display:flex;gap:6px"><select id="s-move" style="flex:1"><option value="disco">Disco</option><option value="floss">Floss</option><option value="moonwalk">Moonwalk</option><option value="backflip">Backflip</option><option value="robot">Robot</option><option value="dab">Dab</option><option value="karate chop">Karate chop</option><option value="kick">Kick</option><option value="bow">Bow</option><option value="flex">Flex</option></select><button id="s-trymove" type="button">Play</button></div>
       <label for="s-name">Name</label>
       <input id="s-name" type="text" maxlength="20">
       <label for="s-style">Skin</label>
       <select id="s-style">
         <option value="classic">Classic Pip</option>
         <option value="yarn">Knitted yarn</option>
+        <option value="ninja">Ninja (headband)</option>
+        <option value="wizard">Wizard (hat)</option>
+        <option value="pirate">Pirate (bandana and eyepatch)</option>
+        <option value="astronaut">Astronaut (helmet ring)</option>
+        <option value="royal">Royal (crown)</option>
+        <option value="cowboy">Cowboy (hat)</option>
+        <option value="chef">Chef (tall hat)</option>
       </select>
       <label for="s-palette">Fur colour</label>
       <select id="s-palette">

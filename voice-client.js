@@ -132,17 +132,52 @@
 
   // ---------------------------------------------------------------- reading replies aloud
   const canSpeak = () => !!(root.speechSynthesis && root.SpeechSynthesisUtterance);
-  function stopSpeaking() { try { if (canSpeak()) root.speechSynthesis.cancel(); } catch (_) {} }
-  function isSpeaking() { try { return canSpeak() && root.speechSynthesis.speaking; } catch (_) { return false; } }
-  function speak(text, onEnd) {
-    const t = speechText(text);
-    if (!t || !canSpeak()) { if (onEnd) onEnd(); return false; }
-    stopSpeaking();
-    const u = new root.SpeechSynthesisUtterance(t);
-    u.rate = 1.05; u.pitch = 1.15; // a little bright, like a small sugar glider
+  let audioEl = null, seq = 0;
+  function stopSpeaking() { seq++; try { if (audioEl) { audioEl.pause(); audioEl = null; } if (canSpeak()) root.speechSynthesis.cancel(); } catch (_) {} }
+  function isSpeaking() { try { return !!(audioEl && !audioEl.paused) || (canSpeak() && root.speechSynthesis.speaking); } catch (_) { return false; } }
+  // the computer's own voice is the fallback: pick the most human-sounding English one (neural/online first)
+  function bestVoice() {
+    try {
+      const vs = root.speechSynthesis.getVoices().filter((v) => /^en/i.test(v.lang)); if (!vs.length) return null;
+      const score = (v) => (/natural|neural|online/i.test(v.name) ? 50 : 0) + (/google/i.test(v.name) ? 30 : 0) + (/samantha|aria|jenny|ava|allison|serena|karen|moira|zira/i.test(v.name) ? 20 : 0) + (/^en-(us|gb)/i.test(v.lang) ? 5 : 0) - (/espeak|compact/i.test(v.name) ? 40 : 0);
+      return vs.sort((a, b) => score(b) - score(a))[0];
+    } catch (_) { return null; }
+  }
+  function speakSystem(t, onEnd) {
+    if (!canSpeak()) { if (onEnd) onEnd(); return false; }
+    const u = new root.SpeechSynthesisUtterance(t), v = bestVoice();
+    if (v) u.voice = v;
+    u.rate = 1; u.pitch = 1.05;
     u.onend = u.onerror = () => { if (onEnd) onEnd(); };
     root.speechSynthesis.speak(u);
     return true;
+  }
+  function speak(text, onEnd) {
+    const t = speechText(text);
+    if (!t) { if (onEnd) onEnd(); return false; }
+    stopSpeaking();
+    const my = seq;
+    if (root.pip && root.pip.speak) { // a natural neural voice, sentence by sentence: the first sentence plays while the next is still being made
+      const chunks = []; let cur = '';
+      for (const sen of t.match(/[^.!?]+[.!?]*\s*/g) || [t]) { if (cur && (cur + sen).length > 220) { chunks.push(cur); cur = ''; } cur += sen; }
+      if (cur) chunks.push(cur);
+      chunks.length = Math.min(chunks.length, 6);
+      const play = (i, pending) => pending.then((r) => {
+        if (my !== seq) return;
+        if (!r || !r.audio) { const rest = chunks.slice(i).join(' '); if (my === seq) speakSystem(rest, onEnd); return; }
+        const nextP = i + 1 < chunks.length ? root.pip.speak(chunks[i + 1]) : null;
+        const bin = root.atob(r.audio), bytes = new Uint8Array(bin.length);
+        for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+        const url = root.URL.createObjectURL(new root.Blob([bytes], { type: r.mime || 'audio/wav' }));
+        const a = new root.Audio(url); audioEl = a;
+        const done = () => { try { root.URL.revokeObjectURL(url); } catch (_) {} if (audioEl === a) audioEl = null; if (my !== seq) return; if (nextP) play(i + 1, nextP); else if (onEnd) onEnd(); };
+        a.onended = done; a.onerror = () => { if (audioEl === a) audioEl = null; if (my === seq) speakSystem(chunks.slice(i).join(' '), onEnd); };
+        a.play().catch(() => { if (audioEl === a) audioEl = null; if (my === seq) speakSystem(chunks.slice(i).join(' '), onEnd); });
+      }).catch(() => { if (my === seq) speakSystem(chunks.slice(i).join(' '), onEnd); });
+      play(0, root.pip.speak(chunks[0]));
+      return true;
+    }
+    return speakSystem(t, onEnd);
   }
 
   const api = { rms, downsample, floatTo16, encodeWav, toBase64, speechText, record, canSpeak, speak, stopSpeaking, isSpeaking, TARGET_RATE };
