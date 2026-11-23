@@ -550,12 +550,63 @@ function createActions({
   }
   // Opens a link in the default browser, then makes sure that window really comes to the front: Windows often just
   // flashes the taskbar instead. It runs in the background so Pip answers straight away.
-  async function openLink(href) {
+  // ---- reuse a tab that is already open for the site, instead of opening a duplicate next to it
+  const runP = (c, args) => new Promise((resolve) => execFile(c, args, { timeout: 15000, windowsHide: true }, (err, out) => resolve(err ? null : String(out || ''))));
+  const SITE_RE = { 'reddit.com': /reddit|\br\//i, 'google.com': /google search|^google\b/i };
+  async function fgInfo() { // process name and title of the window in front
+    let o;
+    if (platform === 'win32') {
+      const ps = `Add-Type 'using System;using System.Text;using System.Runtime.InteropServices;public class PT{[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();[DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);}';$h=[PT]::GetForegroundWindow();$s=New-Object Text.StringBuilder 512;[void][PT]::GetWindowText($h,$s,512);$p=[uint32]0;[void][PT]::GetWindowThreadProcessId($h,[ref]$p);(Get-Process -Id $p).ProcessName+'|'+$s.ToString()`;
+      o = await runP('powershell.exe', sys.psArgs(ps));
+    } else { const r = await runP('sh', ['-c', 'echo "$(xdotool getactivewindow getwindowclassname 2>/dev/null)|$(xdotool getactivewindow getwindowname 2>/dev/null)"']); o = r; }
+    const t = String(o || '').trim(), i = t.indexOf('|');
+    return i < 0 ? { proc: '', title: '' } : { proc: t.slice(0, i).toLowerCase(), title: t.slice(i + 1) };
+  }
+  async function reuseTab(href) { // true when an open tab for this site was brought to the front (and sent to href if it is a deeper page)
+    let u; try { u = new URL(href); } catch (_) { return false; }
+    const host = u.hostname.toLowerCase().replace(/^www\./, ''), parts = host.split('.');
+    if (parts.length !== 2 || !/^[a-z0-9-]+$/.test(parts[0])) return false; // plain sites only (youtube.com, reddit.com...)
+    const label = parts[0], re = SITE_RE[host] || new RegExp('\\b' + label + '\\b', 'i'), nav = u.pathname !== '/' || !!u.search;
+    if (platform === 'darwin') { // read every tab's address and jump to the matching one
+      const blk = (app, ch) => [`if procs contains "${app}" then`, 'try', `tell application "${app}"`, 'repeat with w in windows', 'set ti to 0', 'repeat with t in tabs of w', 'set ti to ti + 1', 'set v to URL of t',
+        `if v contains "//${host}" or v contains "//www.${host}" then`, ch ? 'set active tab index of w to ti' : 'set current tab of w to t',
+        nav ? (ch ? `set URL of active tab of w to "${u.href}"` : `set URL of t to "${u.href}"`) : '', 'set index of w to 1', 'activate', 'return "hit"', 'end if', 'end repeat', 'end repeat', 'end tell', 'end try', 'end if'];
+      const lines = ['tell application "System Events" to set procs to name of every application process', ...['Google Chrome', 'Microsoft Edge', 'Brave Browser'].flatMap((b) => blk(b, true)), ...blk('Safari', false), 'return "miss"'].filter(Boolean);
+      return /hit/.test(String(await runP('osascript', lines.flatMap((l) => ['-e', l]))));
+    }
+    if ((platform !== 'win32' && platform !== 'linux') || !sys.focusBrowserCommand(platform)) return false;
+    hidePanel(); blurWindow(); await sleep(450); // the keys must reach the browser, not Pip's chat
+    const where = await raiseBrowser();
+    if (where !== 'focused' && where !== 'already') return false;
+    if (where === 'focused') await sleep(250);
+    const before = await fgInfo();
+    if (!/chrome|chromium|edge|brave/.test(before.proc)) return false; // tab search (Ctrl+Shift+A) only exists in these
+    const press = (c) => runP(c.cmd, c.args);
+    if (!re.test(before.title)) {
+      await press(sys.browserKeys('find_tab', platform).cmd); await sleep(400);
+      await press(sys.gameKeyCommand(label, ['enter'], platform)); await sleep(500);
+      const after = await fgInfo();
+      if (!after.title || after.title === before.title) { await press(sys.buildKeyCommand(sys.parseCombo('escape'), platform)); return false; } // nothing matched: no such tab
+    }
+    if (nav) { // send that same tab to the page (paste the address; the user's clipboard comes back)
+      flushClipboard();
+      const oldText = clipboard.readText(), oldImage = clipboard.readImage();
+      clipboard.writeText(u.href);
+      await press(sys.browserKeys('address_bar', platform).cmd); await sleep(200);
+      await press(sys.buildKeyCommand(sys.parseCombo('ctrl+v'), platform)); await sleep(200);
+      await press(sys.gameKeyCommand('', ['enter'], platform)); await sleep(400);
+      if (oldImage && !oldImage.isEmpty()) clipboard.writeImage(oldImage); else clipboard.writeText(oldText);
+    }
+    return true;
+  }
+  async function openLink(href, opts) { // returns true when it reused an open tab
+    try { if (!(opts && opts.fresh) && await reuseTab(href)) return true; } catch (_) { /* fall back to a normal open */ }
     await shell.openExternal(href);
     if (platform === 'win32' || platform === 'darwin') {
       const timer = setTimeout(() => { raiseBrowser().catch(() => {}); }, 900);
       if (timer.unref) timer.unref();
     }
+    return false;
   }
   const safeUrl = (u) => isSafeUrl(u) || (u.protocol === 'https:' && !u.username && !u.password && !u.port &&
     getTrusted().some((h) => { const host = u.hostname.toLowerCase().replace(/\.$/, ''); return host === h || host.endsWith('.' + h); }));
@@ -776,7 +827,7 @@ function createActions({
         auto: safeUrl(u), // allowlisted safe sites open straight away; everything else asks
         title: 'Open this web page',
         details: u.href,
-        async run() { await openLink(u.href); return `Opened ${u.hostname} in the default browser. It is on the user's screen now.`; },
+        async run() { const reused = await openLink(u.href); return reused ? `${u.hostname} was already open in a tab, so I switched to it instead of opening a new one. It is on the user's screen now.` : `Opened ${u.hostname} in the default browser. It is on the user's screen now.`; },
       };
     },
 
@@ -799,12 +850,13 @@ function createActions({
               const res = await fetchFn(results.href, { headers: { 'user-agent': 'Mozilla/5.0 (compatible; PipDesktop/1.1)', 'accept-language': 'en' }, signal: AbortSignal.timeout(15000) });
               const id = res.ok ? sys.firstYoutubeId((await res.text()).slice(0, 900000)) : null;
               if (id) {
-                await openLink(`https://www.youtube.com/watch?v=${id}`);
-                return `Opened the top YouTube result for "${query}" and it is playing in the browser.`;
+                const re1 = await openLink(`https://www.youtube.com/watch?v=${id}`);
+                return `${re1 ? 'Used the YouTube tab that was already open and' : 'Opened'} the top YouTube result for "${query}" and it is playing in the browser.`;
               }
             } catch (_) { /* fall through to the results page */ }
           }
-          await openLink(results.href);
+          const re2 = await openLink(results.href);
+          if (re2) return `Used the ${site} tab that was already open (no new tab) and loaded the results for \"${query}\" there.`;
           return play
             ? `Could not pick a video automatically, so the YouTube results for "${query}" are open on screen.`
             : `Opened the ${site} results for "${query}" on screen.`;
@@ -1318,6 +1370,22 @@ function createActions({
       };
     },
 
+    // Exact offline Wordle solver: feed it every guess with its colours, get the best next word.
+    wordle_solve(input) {
+      const wordle = require('./wordle');
+      wordle.solve(input && input.guesses, input && input.rejected); // validates up front
+      return {
+        auto: true, // only thinks; touches nothing
+        title: 'Pick the next Wordle word',
+        details: 'Works out the best next guess from the clues.',
+        async run() {
+          const r = wordle.solve(input.guesses, input.rejected);
+          if (!r.count) return 'No word in my list fits those clues, so a colour was probably misread (or the word is unusual). Look at the board again, zoomed in, and fix the results; if they are right, guess any real word that fits by hand.';
+          return `${r.count} possible word${r.count === 1 ? '' : 's'} left. TYPE THIS NEXT: ${r.best}\nOther likely ones: ${r.candidates.filter((x) => x !== r.best).slice(0, 8).join(', ') || 'none'}\nIf the game rejects the word, backspace it and call wordle_solve again with it in "rejected".`;
+        },
+      };
+    },
+
     game_keys(input) {
       if (!gameOn) throw new Error('Start a game first with start_game (the user approves once).');
       const cmd = sys.gameKeyCommand(input && input.text, input && input.keys, platform); // validates
@@ -1394,7 +1462,7 @@ function createActions({
           await sleep(450); // let whatever was behind the chat get the keyboard back
           const where = await raiseBrowser(); // the shortcut only works if the browser is the window in front
           if (action === 'bring_to_front') {
-            if (where === 'none') { await openLink('https://www.google.com/'); return 'No browser was open, so I opened one.'; }
+            if (where === 'none') { await openLink('https://www.google.com/', { fresh: true }); return 'No browser was open, so I opened one.'; }
             return where === 'focused' || where === 'already' ? k.label : 'I tried, but could NOT bring the browser to the front (Windows or macOS refused). Do not say it worked; ask the user to click it in the taskbar or dock.';
           }
           if (where === 'focused') await sleep(220); // let the window finish coming forward before the first key
@@ -2156,6 +2224,11 @@ function createActions({
         name: 'drag_screen',
         description: "Press the mouse at the first spot, move through the other spots in order and let go at the last, in ONE call (only after start_game, no approval). Use it for Strands and word-search words (the centre of each letter in order), moving a solitaire card or a puzzle piece (from, to), sliders. 'points' is 2 to 16 spots, each {x, y} as fractions 0 to 1 of the screenshot from its top-left corner. It returns a screenshot of the result by itself.",
         input_schema: { type: 'object', properties: { points: { type: 'array', items: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] }, description: 'Spots in order: where to press, any spots to pass through, where to let go (2 to 16).' }, what: str('Short note, e.g. "the word PLANET".'), hold_ms: { type: 'number', description: 'Pause after pressing, before moving (0 to 500, default 60).' }, look: { type: 'boolean', description: 'Default true: a screenshot comes back. Set false to skip.' }, wait_ms: { type: 'number', description: 'Wait before the screenshot (0 to 3000, default 500).' } }, required: ['points'] },
+      },
+      {
+        name: 'wordle_solve',
+        description: "Exact Wordle solver, offline. Pass EVERY guess made so far on this board with its colours as 5 letters (g = green, y = yellow, x = grey); with no guesses it gives the opening word. It returns the best next word to type. Far more reliable than choosing words yourself; use it for every Wordle guess (once per board for Quordle and similar).",
+        input_schema: { type: 'object', properties: { guesses: { type: 'array', items: { type: 'object', properties: { word: str('The 5-letter guess.'), result: str('5 letters: g green, y yellow, x grey.') }, required: ['word', 'result'] }, description: 'All guesses so far, in order. Empty at the start.' }, rejected: strs('Words the game refused as not in its list.') }, required: ['guesses'] },
       },
       {
         name: 'sudoku_solve',

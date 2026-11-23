@@ -6,7 +6,7 @@
     if (ctx) return ctx;
     const AC = root.AudioContext || root.webkitAudioContext;
     if (!AC) return null;
-    try { ctx = new AC(); master = ctx.createGain(); master.gain.value = 0.3; master.connect(ctx.destination); } catch (_) { ctx = null; }
+    try { ctx = new AC(); master = ctx.createGain(); master.gain.value = 0.9; master.connect(ctx.destination); } catch (_) { ctx = null; }
     return ctx;
   }
   // one note: type, start frequency, end frequency (glide), length in seconds, loudness, delay, optional vibrato

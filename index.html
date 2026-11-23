@@ -54,6 +54,18 @@
     <div id="chats"><div class="ch-h">Past chats</div><div id="chat-list"></div></div>
 
     <div id="settings">
+      <input id="s-find" type="text" placeholder="Search settings..." autocomplete="off" style="margin-top:12px">
+      <div id="s-results"></div>
+      <div id="s-menu">
+        <button type="button" class="s-go" data-sec="ai"><b>AI brain</b><span>Provider, API keys, model</span></button>
+        <button type="button" class="s-go" data-sec="voice"><b>Voice</b><span>Talking, listening, shortcut</span></button>
+        <button type="button" class="s-go" data-sec="look"><b>Look & feel</b><span>Name, skin, colour, sounds, moves</span></button>
+        <button type="button" class="s-go" data-sec="access"><b>Approvals & access</b><span>What Pip may do and when it asks</span></button>
+        <button type="button" class="s-go" data-sec="cals"><b>Calendars</b><span>Birthdays and events</span></button>
+        <button type="button" class="s-go" data-sec="chess"><b>Chess</b><span>Strength, clock, move confirmation</span></button>
+        <button type="button" class="s-go" data-sec="general"><b>General</b><span>Updates, replies, startup, debug</span></button>
+      </div>
+      <div class="sec" id="sec-ai">
       <label for="s-provider">AI brain provider</label>
       <select id="s-provider">
         <option value="anthropic">Anthropic Claude (paid, very capable)</option>
@@ -120,6 +132,8 @@
         <div class="hint">The default reads pictures (so "look at my screen" works) and can use tools. The free allowance is 10,000 neurons a day; bigger models like Kimi use it up much faster. If a name is rejected, check developers.cloudflare.com/workers-ai/models.</div>
         <div class="hint warnbox">Privacy: what Pip sends (your chats, and anything you approve sharing, like screenshots, files and command output) goes to Cloudflare. Free services can have different data rules from paid ones, so check Cloudflare's privacy policy and don't use it for private things.</div>
       </div>
+      </div>
+      <div class="sec" id="sec-voice">
       <label for="s-voiceprov">Voice chat: who turns my speech into text</label>
       <select id="s-voiceprov">
         <option value="auto">Same as my AI brain (Gemini, Groq or Cloudflare)</option>
@@ -139,9 +153,13 @@
         <option value="natural">Natural (neural voice from your voice service)</option>
         <option value="system">My computer's own voice</option>
       </select>
-      <label class="check"><input id="s-autoupd" type="checkbox"> Update Pip automatically when a new version is released on GitHub</label>
-      <label class="check"><input id="s-chessconfirm" type="checkbox"> Ask me before every chess move (off: Pip plays by himself once the game starts)</label>
-      <label class="check"><input id="s-actionlog" type="checkbox"> Keep an action log so I can ask "what did you just do?" and say "undo"</label>
+      <label for="s-voicestyle">Natural voice character</label>
+      <select id="s-voicestyle"><option value="cheerful">Cheerful</option><option value="bright">Bright</option><option value="calm">Calm</option><option value="deep">Deep</option></select>
+      <div class="row tight"><button id="s-testvoice" type="button" class="ghost">Test voice</button></div>
+      <div class="hint">The natural voice needs a free Groq, Gemini or Cloudflare key (Anthropic has no speech). Without one, Pip uses your computer's built-in voice, which sounds robotic and can't be improved much. Add a key in AI brain or choose the provider above.</div>
+      <label class="check"><input id="s-hotkey" type="checkbox"> Voice shortcut: Ctrl/Cmd+Alt+Space starts listening, press again to finish. Pip only listens after you press it.</label>
+      </div>
+      <div class="sec" id="sec-look">
       <label for="s-move">Try a move</label>
       <div style="display:flex;gap:6px"><select id="s-move" style="flex:1"><option value="disco">Disco</option><option value="floss">Floss</option><option value="moonwalk">Moonwalk</option><option value="backflip">Backflip</option><option value="robot">Robot</option><option value="dab">Dab</option><option value="karate chop">Karate chop</option><option value="kick">Kick</option><option value="bow">Bow</option><option value="flex">Flex</option></select><button id="s-trymove" type="button">Play</button></div>
       <label for="s-name">Name</label>
@@ -149,6 +167,7 @@
       <label for="s-style">Skin</label>
       <select id="s-style">
         <option value="classic">Classic Pip</option>
+        <option value="season">Seasonal (changes with the date)</option>
         <option value="yarn">Knitted yarn</option>
         <option value="ninja">Ninja (headband)</option>
         <option value="wizard">Wizard (hat)</option>
@@ -157,6 +176,16 @@
         <option value="royal">Royal (crown)</option>
         <option value="cowboy">Cowboy (hat)</option>
         <option value="chef">Chef (tall hat)</option>
+        <option value="viking">Viking (horned helmet)</option>
+        <option value="robot">Robot (antenna and bolts)</option>
+        <option value="bunny">Bunny (long ears)</option>
+        <option value="angel">Angel (halo and wings)</option>
+        <option value="devil">Devil (horns)</option>
+        <option value="party">Party (party hat)</option>
+        <option value="cool">Cool (sunglasses)</option>
+        <option value="santa">Santa (Christmas)</option>
+        <option value="pumpkin">Pumpkin (Halloween)</option>
+        <option value="snowman">Snowman (winter)</option>
       </select>
       <label for="s-palette">Fur colour</label>
       <select id="s-palette">
@@ -171,13 +200,39 @@
       </select>
       <label class="check"><input id="s-wander" type="checkbox"> Hop and glide around on its own</label>
       <label class="check"><input id="s-quips" type="checkbox"> Friendly nudges (water, stretch...)</label>
-      <label class="check"><input id="s-short" type="checkbox"> Short replies (faster)</label>
-      <label class="check"><input id="s-fallback" type="checkbox"> Switch AI provider if one fails</label>
       <label class="check"><input id="s-react" type="checkbox"> React to music, copying, battery, long idle</label>
       <label class="check"><input id="s-sound" type="checkbox"> Sound effects</label>
       <label for="s-vol">Sound volume</label>
       <input id="s-vol" type="range" min="0" max="100" step="5">
+      <label class="check"><input id="s-apppersona" type="checkbox"> Pip adjusts his tone to the app you are using (only the app's name is shared with the AI)</label>
       <label class="check"><input id="s-memory" type="checkbox"> Pip remembers how I treat him (mood memory)</label>
+      </div>
+      <div class="sec" id="sec-access">
+      <label class="check"><input id="s-actions" type="checkbox"> Let Pip do things for me (always asks first)</label>
+      <label class="check"><input id="s-autotype" type="checkbox"> Let Pip type short one-line things (like a search) without asking each time. Longer text and code still ask first. Never into a terminal or password box.</label>
+      <label class="check"><input id="s-autopress" type="checkbox"> Let Pip press ordinary buttons without asking each time. Buttons that sound hard to undo (Delete, Send, Pay, Install...) still ask first.</label>
+      <label class="check"><input id="s-trustsaid" type="checkbox"> Skip the approval card when I clearly tell Pip to do exactly that thing (like "open YouTube"). Pip must quote my words, and risky things (commands, key presses, closing apps, moving or deleting files) still ask.</label>
+      <label>Sites you trust (they open without asking; separate with commas)<input id="s-trusted" type="text" placeholder="example.com, notion.so"></label>
+      <label class="check"><input id="s-autolook" type="checkbox"> Let Pip look at my screen without asking each time (screenshots and the button finder; pressing and typing still ask)</label>
+      <label class="check"><input id="s-full" type="checkbox"> Full access: run commands, press keys, close apps, use files anywhere (every action still asks first)</label>
+      <div class="hint">With this on, Pip can do almost anything on your computer, one approved step at a time. Risky steps show in red with the exact command. Turn it off to keep Pip to its own folder, the Control Panel and settings pages, web pages, reminders and calendar.</div>
+      <label>Folder Pip may work in</label>
+      <div class="folder"><span id="s-folder">None</span></div>
+      <div class="row"><button id="s-choose" class="ghost">Choose...</button><button id="s-clear" class="ghost">Clear</button></div>
+      <div class="hint">Without full access, Pip can only list, read, move and trash files inside this folder. Either way, every action needs your approval, and trashed files go to the Trash.</div>
+      </div>
+      <div class="sec" id="sec-cals">
+      <label>Calendars (for birthdays and events)</label>
+      <div id="s-cals"></div>
+      <label class="check hidden" id="s-maccal-wrap"><input id="s-maccal" type="checkbox"> Also search the Calendar app on this Mac (by name)</label>
+      <input id="s-calname" type="text" maxlength="30" placeholder="Name (optional)">
+      <input id="s-calurl" type="text" autocomplete="off" placeholder="Calendar link (https://... .ics)">
+      <div class="row tight"><button id="s-caladd" class="ghost">Add link</button><button id="s-calfile" class="ghost">Add .ics file...</button></div>
+      <div class="hint" id="s-calstatus"></div>
+      <div class="hint">Google Calendar: Settings > your calendar > "Secret address in iCal format". Outlook.com: Settings > Calendar > Shared calendars > Publish > ICS link. Links are stored encrypted. Pip only reads, and only after you approve each lookup.</div>
+      </div>
+      <div class="sec" id="sec-chess">
+      <label class="check"><input id="s-chessconfirm" type="checkbox"> Ask me before every chess move (off: Pip plays by himself once the game starts)</label>
       <label for="s-clock">Chess clock (so Pip speeds up when low on time)</label>
       <select id="s-clock"><option value="">Untimed</option><option value="1">1 min (bullet)</option><option value="1+1">1+1</option><option value="3">3 min (blitz)</option><option value="3+2">3+2</option><option value="5">5 min</option><option value="10">10 min (rapid)</option><option value="15+10">15+10</option></select>
       <label for="s-level">Chess strength</label>
@@ -188,31 +243,17 @@
         <option value="human">Human-like (strong, makes believable slips)</option>
         <option value="max">Maximum</option>
       </select>
+      </div>
+      <div class="sec" id="sec-general">
+      <label class="check"><input id="s-autoupd" type="checkbox"> Update Pip automatically when a new version is released on GitHub</label>
+      <label class="check"><input id="s-actionlog" type="checkbox"> Keep an action log so I can ask "what did you just do?" and say "undo"</label>
+      <label class="check"><input id="s-short" type="checkbox"> Short replies (faster)</label>
+      <label class="check"><input id="s-fallback" type="checkbox"> Switch AI provider if one fails</label>
       <label class="check"><input id="s-login" type="checkbox"> Launch at login</label>
-      <label class="check"><input id="s-actions" type="checkbox"> Let Pip do things for me (always asks first)</label>
-      <label class="check"><input id="s-autotype" type="checkbox"> Let Pip type short one-line things (like a search) without asking each time. Longer text and code still ask first. Never into a terminal or password box.</label>
-      <label class="check"><input id="s-autopress" type="checkbox"> Let Pip press ordinary buttons without asking each time. Buttons that sound hard to undo (Delete, Send, Pay, Install...) still ask first.</label>
-      <label class="check"><input id="s-trustsaid" type="checkbox"> Skip the approval card when I clearly tell Pip to do exactly that thing (like "open YouTube"). Pip must quote my words, and risky things (commands, key presses, closing apps, moving or deleting files) still ask.</label>
-      <label class="check"><input id="s-hotkey" type="checkbox"> Voice shortcut: Ctrl/Cmd+Alt+Space starts listening, press again to finish. Pip only listens after you press it.</label>
-      <label>Sites you trust (they open without asking; separate with commas)<input id="s-trusted" type="text" placeholder="example.com, notion.so"></label>
-      <label class="check"><input id="s-autolook" type="checkbox"> Let Pip look at my screen without asking each time (screenshots and the button finder; pressing and typing still ask)</label>
-      <label class="check"><input id="s-full" type="checkbox"> Full access: run commands, press keys, close apps, use files anywhere (every action still asks first)</label>
-      <div class="hint">With this on, Pip can do almost anything on your computer, one approved step at a time. Risky steps show in red with the exact command. Turn it off to keep Pip to its own folder, the Control Panel and settings pages, web pages, reminders and calendar.</div>
-      <label>Folder Pip may work in</label>
-      <div class="folder"><span id="s-folder">None</span></div>
-      <div class="row"><button id="s-choose" class="ghost">Choose...</button><button id="s-clear" class="ghost">Clear</button></div>
-      <div class="hint">Without full access, Pip can only list, read, move and trash files inside this folder. Either way, every action needs your approval, and trashed files go to the Trash.</div>
-      <label>Calendars (for birthdays and events)</label>
-      <div id="s-cals"></div>
-      <label class="check hidden" id="s-maccal-wrap"><input id="s-maccal" type="checkbox"> Also search the Calendar app on this Mac (by name)</label>
-      <input id="s-calname" type="text" maxlength="30" placeholder="Name (optional)">
-      <input id="s-calurl" type="text" autocomplete="off" placeholder="Calendar link (https://... .ics)">
-      <div class="row tight"><button id="s-caladd" class="ghost">Add link</button><button id="s-calfile" class="ghost">Add .ics file...</button></div>
-      <div class="hint" id="s-calstatus"></div>
-      <div class="hint">Google Calendar: Settings > your calendar > "Secret address in iCal format". Outlook.com: Settings > Calendar > Shared calendars > Publish > ICS link. Links are stored encrypted. Pip only reads, and only after you approve each lookup.</div>
       <label class="check"><input id="s-shape" type="checkbox"> Keep browsers running (stops browsers pausing because Pip's window covers them)</label>
       <div class="row"><button id="s-debug" class="ghost" title="Copies Pip's recent log to your clipboard (API keys are hidden)">Copy debug log</button></div>
-      <div class="row"><button id="s-save">Save</button><button id="s-cancel" class="ghost">Back</button><span id="s-status"></span></div>
+      </div>
+      <div class="row" id="s-foot"><button id="s-cancel" class="ghost">Back</button><span id="s-status"></span></div>
     </div>
   </div>
 

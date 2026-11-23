@@ -147,7 +147,7 @@
     if (!canSpeak()) { if (onEnd) onEnd(); return false; }
     const u = new root.SpeechSynthesisUtterance(t), v = bestVoice();
     if (v) u.voice = v;
-    u.rate = 1; u.pitch = 1.05;
+    u.rate = 0.96; u.pitch = 1.0; // a touch slower and flatter pitch sounds less synthetic
     u.onend = u.onerror = () => { if (onEnd) onEnd(); };
     root.speechSynthesis.speak(u);
     return true;
@@ -164,7 +164,7 @@
       chunks.length = Math.min(chunks.length, 6);
       const play = (i, pending) => pending.then((r) => {
         if (my !== seq) return;
-        if (!r || !r.audio) { const rest = chunks.slice(i).join(' '); if (my === seq) speakSystem(rest, onEnd); return; }
+        if (!r || !r.audio) { if (api.onFallback && !api.warned) { api.warned = true; try { api.onFallback(r && r.error); } catch (_) {} } const rest = chunks.slice(i).join(' '); if (my === seq) speakSystem(rest, onEnd); return; }
         const nextP = i + 1 < chunks.length ? root.pip.speak(chunks[i + 1]) : null;
         const bin = root.atob(r.audio), bytes = new Uint8Array(bin.length);
         for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
@@ -180,7 +180,7 @@
     return speakSystem(t, onEnd);
   }
 
-  const api = { rms, downsample, floatTo16, encodeWav, toBase64, speechText, record, canSpeak, speak, stopSpeaking, isSpeaking, TARGET_RATE };
+  const api = { onFallback: null, warned: false, rms, downsample, floatTo16, encodeWav, toBase64, speechText, record, canSpeak, speak, stopSpeaking, isSpeaking, TARGET_RATE };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.PipVoice = api;
 })(typeof window !== 'undefined' ? window : globalThis);

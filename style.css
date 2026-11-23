@@ -178,3 +178,10 @@ textarea:focus { background: var(--bg); border-color: var(--blue); box-shadow: 0
 #gm .gm-c4cell.yel { background: #fbc02d; }
 .pick { position: fixed; z-index: 7; background: var(--bg); color: var(--text); border-radius: 12px; box-shadow: var(--shadow); padding: 10px 12px; width: 260px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .pick button { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer; }
+
+#settings .sec{display:none}#settings .sec.on{display:block}#s-menu.off{display:none}
+#s-menu{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.s-go{all:unset;cursor:pointer;display:flex;flex-direction:column;gap:2px;padding:11px 14px;border:1px solid var(--line);border-radius:12px;color:var(--text)}
+.s-go:hover{background:var(--blue-soft)}.s-go b{font-weight:500;font-size:13.5px}.s-go span{font-size:12px;color:var(--sub)}
+#s-results{display:none;flex-direction:column;gap:8px;margin-top:10px}#s-results.on{display:flex}
+#settings .flash{background:var(--blue-soft);border-radius:6px}

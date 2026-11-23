@@ -60,6 +60,7 @@ const DEFAULTS = {
   cloudflareKeyEnc: '',
   cloudflareKeyPlain: '',
   voiceProvider: 'auto',      // who turns speech into text: 'auto' (same as chat brain) | 'cloudflare' | 'groq' | 'gemini'
+  voiceStyle: 'cheerful', // which natural voice: cheerful | bright | calm | deep
   voiceTts: 'natural',       // 'natural' = a real neural voice from the same service that hears me | 'system' = the computer's own voice
   chessConfirm: false, // ask before every chess move
   actionLog: true,     // keep a list of what Pip did, so you can ask "what did you just do" or say "undo"
@@ -76,6 +77,7 @@ const DEFAULTS = {
   chessLevel: 'max',  // easy | medium | hard | human | max
   sounds: true,       // small synthesized sound effects
   soundVolume: 0.5,
+  appPersona: true,    // Pip's tone follows the app in front (only its name goes to the AI)
   moodMemory: true,   // Pip remembers how you treat him
   openAtLogin: false,
   seenIntro: false,
@@ -123,7 +125,7 @@ function persist() {
 const PROVIDERS = ['anthropic', 'gemini', 'groq', 'cloudflare'];
 const VOICE_PROVIDERS = ['auto', ...voice.STT_PROVIDERS];
 const VOICE_REPLIES = ['voice', 'always', 'never'];
-const SKINS = ['classic','yarn','ninja','wizard','pirate','astronaut','royal','cowboy','chef'];
+const SKINS = ['classic','yarn','ninja','wizard','pirate','astronaut','royal','cowboy','chef','season','santa','pumpkin','snowman','viking','robot','bunny','angel','devil','party','cool'];
 const VOICE_TTS = ['natural', 'system'];
 const keyFields = (p) => (p === 'gemini' ? ['geminiKeyEnc', 'geminiKeyPlain'] : p === 'groq' ? ['groqKeyEnc', 'groqKeyPlain'] : p === 'cloudflare' ? ['cloudflareKeyEnc', 'cloudflareKeyPlain'] : ['apiKeyEnc', 'apiKeyPlain']);
 function getKey(provider = settings.provider) {
@@ -310,9 +312,11 @@ function startAwareness() {
     if (mins >= 90 && now - aware.lastStretch > 60 * 60000 && !quietNow()) { aware.lastStretch = now; send('mood', { type: 'stretch', mins: Math.round(mins) }); }
     const d = new Date(), h = d.getHours();
     if ((h >= 23 || h < 4) && idle < 60 && aware.lateDay !== d.toDateString() && !quietNow()) { aware.lateDay = d.toDateString(); send('mood', { type: 'late' }); }
+    if (h >= 17 && idle < 60 && settings.reactions !== false && !quietNow() && aware.recapDay !== d.toDateString()) { const dk = RECAP && RECAP[dayKey()]; if (dk && dk.n >= 3) { aware.recapDay = d.toDateString(); send('say', { text: `Today I helped with ${dk.n} things. Say "recap" for the list.`, ms: 9000 }); } }
     checkTasks();
   }, 15000);
   setInterval(checkCall, 30000);
+  setInterval(pollFrontApp, 20000); setTimeout(pollFrontApp, 3000);
   // notice when new text is copied (only compares it with the last copy, never stores or sends it anywhere)
   setInterval(() => {
     if (!win || win.isDestroyed() || settings.reactions === false || quietNow()) return;
@@ -352,6 +356,11 @@ function buildMenu() {
       click: () => { if (win) { win.showInactive(); win.webContents.send('open-chat'); } },
     },
     { label: win && win.isVisible() ? `Hide ${name}` : `Show ${name}`, click: toggleVisible },
+    { label: 'Skin', submenu: [['season', 'Seasonal (by date)'], ['classic', 'Classic Pip'], ['yarn', 'Knitted yarn'], ['ninja', 'Ninja'], ['wizard', 'Wizard'], ['pirate', 'Pirate'], ['astronaut', 'Astronaut'], ['royal', 'Royal'], ['cowboy', 'Cowboy'], ['chef', 'Chef'], ['viking', 'Viking'], ['robot', 'Robot'], ['bunny', 'Bunny'], ['angel', 'Angel'], ['devil', 'Devil'], ['party', 'Party'], ['cool', 'Cool'], ['santa', 'Santa'], ['pumpkin', 'Pumpkin'], ['snowman', 'Snowman']].map(([v, l]) => ({ label: l, type: 'radio', checked: (settings.style || 'classic') === v, click: () => update({ style: v }) })) },
+    { label: 'Fur colour', submenu: [['classic', 'Classic grey-blue'], ['honey', 'Honey'], ['cocoa', 'Cocoa'], ['snow', 'Snow'], ['midnight', 'Midnight'], ['sakura', 'Sakura'], ['mint', 'Mint'], ['lavender', 'Lavender']].map(([v, l]) => ({ label: l, type: 'radio', checked: (settings.palette || 'classic') === v, click: () => update({ palette: v }) })) },
+    { label: 'Sound effects', type: 'checkbox', checked: settings.sounds !== false, click: (item) => update({ sounds: item.checked }) },
+    { label: 'Ask Pip about my clipboard  (Ctrl/Cmd+Alt+C)', click: () => clipHelper() },
+    { label: 'Daily recap', click: () => { if (win) { win.showInactive(); send('chat-note', { text: recapText() }); } } },
     { label: 'Dance!', click: () => { if (win) { win.showInactive(); send('pet', { action: 'dance' }); } } },
     {
       label: 'Quiet mode (no chatter)',
@@ -431,6 +440,46 @@ const POLICY_GROUPS = { // group -> the tools in it
 const POLICY_NO_NEVER = ['keys', 'cmd', 'files']; // these can be set to "always ask" but never to "never ask"
 const GROUP_OF = {};
 for (const [g, names] of Object.entries(POLICY_GROUPS)) for (const n of names) GROUP_OF[n] = g;
+// ---- daily recap: a small per-day tally of what Pip did (titles only, last 14 days, kept on this computer)
+const recapFile = () => path.join(app.getPath('userData'), 'recap.json');
+let RECAP = null;
+const dayKey = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+function loadRecap() { if (!RECAP) { try { RECAP = JSON.parse(require('fs').readFileSync(recapFile(), 'utf8')); } catch (_) { RECAP = {}; } } return RECAP; }
+function recapNote(title) {
+  try {
+    const R = loadRecap(), day = R[dayKey()] || (R[dayKey()] = { n: 0, t: {} });
+    day.n++; day.t[title] = (day.t[title] || 0) + 1;
+    const keys = Object.keys(R).sort(); while (keys.length > 14) delete R[keys.shift()];
+    require('fs').writeFileSync(recapFile(), JSON.stringify(R));
+  } catch (_) {}
+}
+function recapText() {
+  const R = loadRecap(), day = R[dayKey()], y = new Date(Date.now() - 86400000), yk = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, '0')}-${String(y.getDate()).padStart(2, '0')}`;
+  if (!day || !day.n) return 'Nothing yet today. I have not done anything for you, so ask me for something!';
+  const top = Object.entries(day.t).sort((p, q) => q[1] - p[1]).slice(0, 8).map(([t, n]) => `• ${n > 1 ? n + ' x ' : ''}${t}`);
+  return `Today I did ${day.n} thing${day.n === 1 ? '' : 's'} for you:\n${top.join('\n')}${R[yk] ? `\nYesterday it was ${R[yk].n}.` : ''}`;
+}
+const clipHelper = () => { if (win) { win.showInactive(); send('clip-helper', {}); } };
+// ---- app personalities: only the NAME of the app in front is read (never its window text) and it only nudges Pip's tone
+const PERSONAS = [
+  [/^(code|devenv|idea|pycharm|webstorm|rider|clion|goland|sublime|xcode|studio64|windowsterminal|terminal|iterm|warp|alacritty|kitty|powershell|cmd|wezterm|konsole|gnome-terminal)/, 'The user is coding or in a terminal. Be concise, exact and practical; skip small talk and jokes.'],
+  [/(winword|^word|pages|notion|obsidian|onenote|scrivener|typora|soffice|writer)/, 'The user is writing. Be calm and supportive, gentle with their wording, and offer to tighten rather than rewrite.'],
+  [/(excel|numbers|calc)/, 'The user is in a spreadsheet. Be precise and step by step, and show formulas exactly.'],
+  [/(zoom|teams|slack|discord|webex|skype)/, 'The user is in a meeting or chat. Keep everything very short and quiet.'],
+  [/(steam|epicgames|minecraft|valorant|dota|fortnite|roblox|riotclient|battle\.net)/, 'The user is gaming. Be playful and hyped, and keep text light.'],
+  [/(figma|photoshop|illustrator|blender|premiere|davinci|afterfx|sketch|canva|krita|gimp|inkscape)/, 'The user is doing creative work. Be encouraging and think visually.'],
+  [/(spotify|music|vlc|tidal|itunes)/, 'The user is relaxing with media. Be chill and light.'],
+  [/(chrome|firefox|msedge|edge|safari|brave|opera|vivaldi|arc)/, 'The user is browsing. Be curious and playful.'],
+];
+function pollFrontApp() {
+  if (settings.appPersona === false || !win || win.isDestroyed()) return;
+  const done = (err, out) => { if (err) return; const n = String(out || '').trim().toLowerCase().split(/\r?\n/)[0].slice(0, 60); if (n && !/^(electron|pip)/.test(n)) aware.front = n; };
+  if (process.platform === 'win32') {
+    const ps = `Add-Type 'using System;using System.Runtime.InteropServices;public class PF{[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);}'; $p=[uint32]0;[void][PF]::GetWindowThreadProcessId([PF]::GetForegroundWindow(),[ref]$p);(Get-Process -Id $p).ProcessName`;
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')], { timeout: 8000, windowsHide: true }, done);
+  } else if (process.platform === 'darwin') execFile('osascript', ['-e', 'tell application "System Events" to get name of first application process whose frontmost is true'], { timeout: 5000 }, done);
+  else execFile('sh', ['-c', 'xdotool getactivewindow getwindowclassname 2>/dev/null'], { timeout: 4000 }, done);
+}
 const actionLog = [];
 const UNDO_MAP = { media_control: { volume_up: 'volume_down', volume_down: 'volume_up', mute: 'mute' }, browser: { new_tab: 'close_tab', close_tab: 'reopen_tab' } };
 function undoFor(name, input, out) {
@@ -455,6 +504,7 @@ function applyPolicy(name, r, input) {
       const out = await run();
       actionLog.push({ at: Date.now(), title: String(r.title || name).slice(0, 80), undo: undoFor(name, input, typeof out === 'string' ? out : ''), undone: false });
       if (actionLog.length > 20) actionLog.shift();
+      recapNote(String(r.title || name).slice(0, 80));
       return out;
     };
   }
@@ -676,7 +726,7 @@ function buildActionRules() {
     `Do not call find_ui first, and do not keep checking or retrying. If the app named is not open, open_app first, then type_text. After type_text succeeds, tell the user it is typed and stop. ` +
     `Only use find_ui plus a target when they name a specific box that is NOT where their cursor is. Never loop: at most a couple of tool calls per step of the job. ` +
     `FIND SOMETHING THE USER LEAVES TO YOU: for ANY request like "find / show / play / recommend something interesting, cool, fun, good, new, random, relaxing..." (a video, song, game, recipe, article, show, place, fact, anything, on any site) YOU choose. Pick one specific, less-obvious concrete thing from your own knowledge that fits the topic and mood (a named concept, song and artist, recipe, game, article or video title, ideally with a known creator or source) and search for that exact name, never the user's vague words. Vary your picks, do not always take the most famous one. Then say in one line what you picked and why. ` +
-    `ALREADY-OPEN SITE: before opening any site (YouTube, Google, Reddit, Spotify, Gmail...), check whether it is already open, because open_url and search_site always open a NEW tab. Do ONE look_at_screen. If it is in front, work inside it (YouTube: press_keys "/" to focus the search box, then type_text the exact query with at_cursor true and press_enter true). If it is not in front, call browser find_tab (Chrome and Edge tab search), then type_text the site name (for example youtube) with at_cursor true and press_enter true, then look_at_screen once: if the site is now in front, work inside it. In other browsers use next_tab a few times and look. Only open a new tab when you checked and the site is not open. ` +
+    `ALREADY-OPEN SITE: open_url and search_site now switch to a tab that is already open for that site (and load the page there), so just call them; do not look first and do not use find_tab for this. If the user wants something done inside a site that is in front (YouTube: press_keys "/" to focus the search box, then type_text the exact query with at_cursor true and press_enter true), work inside it. ` +
     `Use what is already on screen: when the user mentions an app, site or person that is probably already open ("text Sam", "on this page", "the Roblox tab"), do ONE look_at_screen first. If the app or page is already open, work INSIDE it: never open another tab, never use open_url or search_site for it, and never search for something you can already see. If the person or chat is visible (sidebar, DM list, tab), click it with click_screen, or call open_chat with open_app false only when they are not visible. For texting, skip the look: call open_chat ONCE with message and send, which does it all in one step. Open or search only when it is not on screen.` +
     `Recommendations: for "find me a good game / show / place / product for X", GIVE 3 specific named picks with one reason each, from your own knowledge or from reading the page that is open (fetch_url or look_at_screen), matched to what they said (for example a 2 player Roblox game for two friends: name real co-op or duo games). Then offer to open one. Never type the user's request itself ("2 player game") as a search, and never answer with only a search.` +
     `Messaging and group chats (Discord, Slack, Teams, WhatsApp): do the whole job yourself, never ask the user to open the chat. Use open_chat with the app and the person or group name; it opens the app and the chat with the keyboard. ` +
@@ -697,7 +747,7 @@ function buildActionRules() {
     `\n\nWeb: to look something up or read a page, use fetch_url (for example https://duckduckgo.com/html/?q=search+words) and answer from what you read, ` +
     `naming the site; use open_url only when the user wants the page opened on screen.` +
     `\n\nGAMES: when the user wants you to play a turn-based or puzzle game on screen (Wordle, Connections, Spelling Bee, a crossword, Strands, Sudoku, 2048, a trivia or quiz game like Krillion, chess or another board game, a keyboard or mouse puzzle), call start_game ONCE (for chess pass max_steps 150; a move takes about 3 steps) (they approve once), then do ONE look_at_screen to see the game, and after that loop with no chatter between steps: decide, game_keys (text for letters or digits, keys like enter or backspace). game_keys sends back a screenshot of the result by itself, so never call look_at_screen after it. click_many (several clicks in one call) and drag_screen (press, move along a path, release) also send a screenshot back. start_game's reply contains a PLAYBOOK for that game (Wordle, Connections, Spelling Bee, crosswords, Strands, Sudoku, 2048, Minesweeper, board games, trivia, memory games...): follow it. sudoku_solve solves a Sudoku grid exactly. Use the game's keyboard controls, or find_ui and press_ui for real buttons. If the game needs mouse clicks (chess, board games, puzzles), you do the clicks yourself with click_screen (no approval needed in game mode); NEVER ask the user to make a move or click for you, and never hand the game back unless it is over or something truly blocks you. CHESS: use chess_play. If the game is ALREADY IN PROGRESS (any piece has moved, a mid-game position), never assume the start: read every piece from the screenshot into a full FEN (rank 8 first, side to move, castling rights) and pass it as fen on the first chess_play; if it answers that the FEN does not match, look again and fix the squares it names. Do ONE look_at_screen to find the board's area (fractions of the whole screen), which side is at the bottom, and the user's colour; then call chess_play (board, my_color, flipped, new_game true) and keep calling chess_play with no arguments until it says the game is over. Never stop to talk between moves, never ask the user to confirm a move or continue: the one approval for start_game covers the whole game, and you only write a message once the game is over. Do not read pieces from the picture and do not call anything else between moves. Only if chess_play says it cannot tell the opponent's move, look_at_screen, write the FEN, and call chess_play with fen. (chess_best_move and board_move are the manual fallback.) ` +
-    `Wordle: open with a strong word like "crane" or "slate", then use the colours (green = right letter in the right place, yellow = in the word but elsewhere, grey = not in the word), keep a short list of what you know, never repeat a guess, only guess real 5-letter English words, and you get 6 tries. ` +
+    `Wordle: for every guess call wordle_solve with all guesses so far and their colours (g green, y yellow, x grey) and type the word it returns; never choose words yourself. ` +
     `Rare-answer trivia like Krillion: each prompt has a short timer (about 25 seconds), so do ONE look per prompt and answer right away; a valid but less obvious answer scores more than the first one everyone thinks of, but never risk an invalid one, and spell it plainly. ` +
     `Only play single-player, practice or casual games the user asked for. Stop with end_game when it is over or stuck, and tell the user the result. If a login, payment, purchase or ad appears, stop and tell them.` +
     `\n\nVague asks: for "search up something cool", "find me something fun" or "show me something interesting" with no topic, use what you were told to remember about the user (interests, favourite sites, preferred search site) to pick the topic and the site. If you have no such notes, ask ONE short question about what they are into, then remember their answer with remember. Never guess a topic and a site (like YouTube) on your own. When the user states a lasting preference ("I like space stuff", "I always use Google"), remember it.` +
@@ -758,6 +808,7 @@ async function chat({ messages, ctx }) {
         const r = await runBrain({ steps: [e.undo], finish: () => `Undone: ${e.title}.` }, hasAI);
         if (r) { if (/^Undone/.test(r.text)) e.undone = true; return r; }
       }
+      if (/^(?:(?:my |the |today'?s )?daily recap|(?:my |the )?recap(?: of)?(?: (?:my |the )?(?:day|today))?|what (?:did you do|have you done) today)$/i.test(said)) return { text: recapText() };
       if (/^(?:what did you (?:just )?do|(?:show )?(?:the |my )?action log|recent actions)$/i.test(said)) {
         const lines = actionLog.slice(-8).reverse().map((e) => `• ${e.title} (${ago(e.at)})${e.undo && !e.undone ? ' say "undo" to reverse the latest' : ''}`);
         return { text: lines.length ? `Here is what I did recently:\n${lines.join('\n')}` : 'I have not done anything yet.' };
@@ -813,6 +864,10 @@ async function chat({ messages, ctx }) {
     else if (m.level === 'hurt' || m.level === 'wary') system += ' You do not fully trust them yet after past unkindness; be polite but a little guarded.';
     else if (m.level === 'friendly') system += ' You like them; be warm.';
     else if (m.level === 'close' || m.level === 'best friend') system += ' You know them well and care about them: be warm, playful and a little teasing, like a close friend.';
+  }
+  if (settings.appPersona !== false && aware.front) {
+    const pr = PERSONAS.find(([re]) => re.test(aware.front));
+    if (pr) system += `\n\nTone for right now: ${pr[1]} This is only a tone hint; do not mention what app they are using unless it matters.`;
   }
   if (settings.shortReplies !== false) {
     system = system.replace(/Length:[\s\S]*?otherwise just do it\.\n/, 'Length: keep every reply short, 1 to 3 sentences, no preamble and no recap. Only go longer when the user asks for detail, code, or step-by-step help, and then be complete but tight. ');
@@ -974,7 +1029,7 @@ function registerIpc() {
       if (PALETTES.includes(s.palette)) patch.palette = s.palette;
       if (SKINS.includes(s.style)) patch.style = s.style;
       if (MODELS.includes(s.model)) patch.model = s.model;
-      for (const k of ['shapeWindow', 'wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'autoUpdate', 'chessConfirm', 'actionLog', 'macCalendar', 'shortReplies', 'fallback', 'reactions', 'sounds', 'moodMemory']) {
+      for (const k of ['shapeWindow', 'wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'autoUpdate', 'chessConfirm', 'actionLog', 'macCalendar', 'shortReplies', 'fallback', 'reactions', 'sounds', 'moodMemory', 'appPersona']) {
         if (typeof s[k] === 'boolean') patch[k] = s[k];
       }
       if (s.toolPolicy && typeof s.toolPolicy === 'object') {
@@ -993,6 +1048,7 @@ function registerIpc() {
       if (VOICE_PROVIDERS.includes(s.voiceProvider)) patch.voiceProvider = s.voiceProvider;
       if (VOICE_REPLIES.includes(s.voiceReply)) patch.voiceReply = s.voiceReply;
       if (VOICE_TTS.includes(s.voiceTts)) patch.voiceTts = s.voiceTts;
+      if (['cheerful', 'bright', 'calm', 'deep'].includes(s.voiceStyle)) patch.voiceStyle = s.voiceStyle;
       if (typeof s.geminiModel === 'string') {
         const m = s.geminiModel.trim().replace(/^models\//, '');
         if (/^[A-Za-z0-9._-]{1,60}$/.test(m)) patch.geminiModel = m;
@@ -1040,7 +1096,7 @@ function registerIpc() {
     if (settings.voiceTts === 'system') return { error: 'system' };
     const st = voiceStatus();
     if (!st.ok) return { error: 'system' };
-    try { return await voice.synthesize({ fetchFn: fetch, provider: st.provider, apiKey: getKey(st.provider), accountId: settings.cloudflareAccountId, text: String(text || '') }); } catch (e) { return { error: e.message }; }
+    try { return await voice.synthesize({ fetchFn: fetch, provider: st.provider, apiKey: getKey(st.provider), accountId: settings.cloudflareAccountId, style: settings.voiceStyle, text: String(text || '') }); } catch (e) { return { error: e.message }; }
   });
   ipcMain.handle('voice:dictate', async (_e, text) => { // type the cleaned-up words where the user's cursor is
     const t = voice.tidy(text);
@@ -1308,6 +1364,7 @@ app.whenReady().then(() => {
       try { const v = app.getVersion(); if (settings.lastVersion && settings.lastVersion !== v && win && !win.isDestroyed()) win.webContents.send('say', { text: `Updated to ${v}! ${WHATS_NEW}`, ms: 14000 }); if (settings.lastVersion !== v) update({ lastVersion: v }); } catch (_) {}
     }, 6000);
     startAutoUpdate();
+    try { globalShortcut.register('CommandOrControl+Alt+C', () => clipHelper()); } catch (_) { /* the tray item still works */ }
     try { globalShortcut.register('CommandOrControl+Alt+X', () => stopChat()); } catch (_) { /* the tray item and the Stop button still work */ }
     for (const ev of ['display-metrics-changed', 'display-added', 'display-removed']) {
       screen.on(ev, sendArea);

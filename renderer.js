@@ -946,7 +946,7 @@
         tailSwing: dz.tail,
         alert: Math.max(st.alert, ec.alert || 0),
         palette: settings.palette,
-        style: settings.style,
+        style: skinNow(),
       }));
     }
 
@@ -1323,8 +1323,8 @@
       box.style.top = Math.max(8, st.y - 130) + 'px';
     });
   }
-  const CLIP_RE = /^(explain|summari[sz]e|fix|proofread|rewrite|shorten|simplify|translate(?: to ([a-z ]{2,20}))?)(?: (?:this|that|it|what i copied|my clipboard|the clipboard))?[.!]?$/i;
-  const CLIP_ASK = { explain: 'Explain what I copied.', summarize: 'Summarize what I copied in a few sentences.', fix: 'Fix any mistakes in what I copied (spelling, grammar, or bugs if it is code) and give me the corrected version.', proofread: 'Proofread what I copied and give me the corrected version.', rewrite: 'Rewrite what I copied so it reads better.', shorten: 'Shorten what I copied but keep the meaning.', simplify: 'Explain what I copied in simpler words.' };
+  const CLIP_RE = /^(explain|reply|draft a reply|summari[sz]e|fix|proofread|rewrite|shorten|simplify|translate(?: to ([a-z ]{2,20}))?)(?: (?:this|that|it|what i copied|my clipboard|the clipboard))?[.!]?$/i;
+  const CLIP_ASK = { explain: 'Explain what I copied.', summarize: 'Summarize what I copied in a few sentences.', fix: 'Fix any mistakes in what I copied (spelling, grammar, or bugs if it is code) and give me the corrected version.', proofread: 'Proofread what I copied and give me the corrected version.', rewrite: 'Rewrite what I copied so it reads better.', shorten: 'Shorten what I copied but keep the meaning.', simplify: 'Explain what I copied in simpler words.', reply: 'Draft a short, friendly reply to what I copied (it is probably a message to me). Give just the reply, then one line offering a more formal or more casual version.', 'draft a reply': 'Draft a short, friendly reply to what I copied (it is probably a message to me). Give just the reply, then one line offering a more formal or more casual version.' };
   async function send(text, opts = {}) {
     text = text.trim();
     if (busy || !text) return;
@@ -1702,7 +1702,18 @@
   $('s-getkey-gr').addEventListener('click', () => pip.openKeyPage('groq'));
   $('s-getkey-cf').addEventListener('click', () => pip.openKeyPage('cloudflare'));
 
+  function skinNow() { // "Seasonal" picks the skin from today's date
+    const s = settings.style || 'classic';
+    if (s !== 'season') return s;
+    const d = new Date(), m = d.getMonth() + 1, day = d.getDate();
+    if (m === 12 || (m === 1 && day <= 2)) return 'santa';
+    if ((m === 10 && day >= 15) || (m === 11 && day <= 1)) return 'pumpkin';
+    if ((m === 3 && day >= 20) || (m === 4 && day <= 25)) return 'bunny';
+    if (m === 1 || m === 2) return 'snowman';
+    return 'classic';
+  }
   function openSettings() {
+    $('s-find').value = '';
     $('s-key').value = '';
     $('s-key').placeholder = settings.hasAnthropicKey ? 'Key saved (type to replace)' : 'sk-ant-...';
     $('s-gkey').value = '';
@@ -1718,6 +1729,7 @@
     $('s-voiceprov').value = settings.voiceProvider || 'auto';
     $('s-voicereply').value = settings.voiceReply || 'voice';
     $('s-voicetts').value = settings.voiceTts || 'natural';
+    $('s-voicestyle').value = settings.voiceStyle || 'cheerful';
     $('s-autoupd').checked = settings.autoUpdate !== false;
     $('s-chessconfirm').checked = !!settings.chessConfirm;
     $('s-actionlog').checked = settings.actionLog !== false;
@@ -1735,6 +1747,7 @@
     $('s-sound').checked = settings.sounds !== false;
     $('s-vol').value = Math.round((settings.soundVolume == null ? 0.5 : settings.soundVolume) * 100);
     $('s-memory').checked = settings.moodMemory !== false;
+    $('s-apppersona').checked = settings.appPersona !== false;
     $('s-level').value = settings.chessLevel || 'max';
     $('s-clock').value = settings.chessClock || '';
     $('s-shape').checked = settings.shapeWindow !== false;
@@ -1755,10 +1768,42 @@
     $('s-maccal').checked = !!settings.macCalendar;
     calStatus('');
     $('s-status').textContent = '';
+    showSec(null);
     settingsEl.classList.add('open');
   }
   $('gear').addEventListener('click', () => (chatsEl.classList.remove('open'), settingsEl.classList.contains('open') ? settingsEl.classList.remove('open') : openSettings()));
-  $('s-cancel').addEventListener('click', () => settingsEl.classList.remove('open'));
+  function showSec(k) {
+    $('s-menu').classList.toggle('off', !!k);
+    $('s-find').classList.toggle('hidden', !!k && k !== '_');
+    $('s-results').classList.toggle('on', k === '_');
+    if (k !== '_') $('s-find').value = '';
+    for (const s of settingsEl.querySelectorAll('.sec')) s.classList.toggle('on', s.id === 'sec-' + k);
+    $('s-cancel').textContent = 'Back';
+    settingsEl.scrollTop = 0;
+  }
+  $('s-find').addEventListener('input', () => { // settings search: lists matching options, tap one to jump to it
+    const q = $('s-find').value.trim().toLowerCase(), box = $('s-results');
+    if (!q) { showSec(null); return; }
+    showSec('_'); box.textContent = '';
+    const words = q.split(/\s+/); let n = 0;
+    for (const sec of settingsEl.querySelectorAll('.sec')) {
+      const title = settingsEl.querySelector(`.s-go[data-sec="${sec.id.slice(4)}"] b`).textContent;
+      for (const el of sec.querySelectorAll('label, .hint')) {
+        const own = Array.from(el.childNodes).filter((x) => x.nodeType === 3).map((x) => x.textContent).join(' ').trim() || el.textContent.trim();
+        if (!own || n >= 10 || !words.every((w) => (own + ' ' + title).toLowerCase().includes(w))) continue;
+        n++;
+        const b = document.createElement('button'); b.type = 'button'; b.className = 's-go';
+        const t = document.createElement('b'), d = document.createElement('span');
+        t.textContent = own.length > 80 ? own.slice(0, 78) + '...' : own; d.textContent = title; b.append(t, d);
+        b.addEventListener('click', () => { showSec(sec.id.slice(4)); el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1600); });
+        box.appendChild(b);
+      }
+    }
+    if (!n) { const d = document.createElement('div'); d.className = 'hint'; d.textContent = 'Nothing matches that.'; box.appendChild(d); }
+  });
+  $('s-vol').addEventListener('input', () => { try { PipSfx.setVolume(Number($('s-vol').value) / 100); PipSfx.play('pop'); } catch (_) {} }); // hear the new volume as you drag
+  for (const b of settingsEl.querySelectorAll('.s-go')) b.addEventListener('click', () => showSec(b.dataset.sec));
+  $('s-cancel').addEventListener('click', () => ($('s-menu').classList.contains('off') ? showSec(null) : settingsEl.classList.remove('open')));
   $('s-choose').addEventListener('click', async () => {
     const f = await pip.chooseFolder();
     settings.workFolder = f;
@@ -1792,10 +1837,23 @@
   }, 120);
   window.addEventListener('error', (e) => { try { pip.debugLog('error', (e.message || '') + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno); } catch (_) {} });
   window.addEventListener('unhandledrejection', (e) => { try { pip.debugLog('rejection', String((e.reason && (e.reason.stack || e.reason.message)) || e.reason)); } catch (_) {} });
+  PipVoice.onFallback = (why) => { // once per session: say why Pip sounds like a robot
+    if (settings.voiceTts === 'system') return;
+    showBubble(!why || why === 'system' ? 'I sound robotic because no voice service is set up. Settings > Voice has free options.' : 'My natural voice failed (' + String(why).slice(0, 80) + '), so I am using the computer voice.', 9000);
+  };
+  $('s-testvoice').addEventListener('click', async () => {
+    $('s-status').textContent = 'Testing...';
+    try {
+      await saveNow(); PipVoice.warned = true;
+      const t = 'Hi, I am Pip. How does this sound?', r = await pip.speak(t);
+      if (r && r.audio) { $('s-status').textContent = ''; PipVoice.speak(t); }
+      else $('s-status').textContent = !r || r.error === 'system' ? 'No natural voice: add a Groq, Gemini or Cloudflare key.' : String(r.error).slice(0, 120);
+    } catch (e) { $('s-status').textContent = 'Test failed.'; }
+  });
   $('s-debug').addEventListener('click', async () => {
     try { const r = await pip.debugCopy(); $('s-status').textContent = `Copied ${r.lines} log lines. Paste them in your bug report.`; } catch (_) { $('s-status').textContent = 'Could not copy the log.'; }
   });
-  $('s-save').addEventListener('click', async () => {
+  async function saveNow() {
     const saved = await pip.saveSettings({
       apiKey: $('s-key').value,
       geminiKey: $('s-gkey').value,
@@ -1803,6 +1861,7 @@
       voiceProvider: $('s-voiceprov').value,
       voiceReply: $('s-voicereply').value,
       voiceTts: $('s-voicetts').value,
+      voiceStyle: $('s-voicestyle').value,
       autoUpdate: $('s-autoupd').checked,
       chessConfirm: $('s-chessconfirm').checked,
       actionLog: $('s-actionlog').checked,
@@ -1824,6 +1883,7 @@
       sounds: $('s-sound').checked,
       soundVolume: Number($('s-vol').value) / 100,
       moodMemory: $('s-memory').checked,
+      appPersona: $('s-apppersona').checked,
       chessLevel: $('s-level').value,
       chessClock: $('s-clock').value,
       shapeWindow: $('s-shape').checked,
@@ -1841,9 +1901,15 @@
     });
     Object.assign(settings, saved);
     applySettings();
+    for (const [id, f, ph] of [['s-key', 'hasAnthropicKey', 'sk-ant-...'], ['s-gkey', 'hasGeminiKey', 'AIza...'], ['s-grkey', 'hasGroqKey', 'gsk_...'], ['s-cfkey', 'hasCloudflareKey', 'API token']]) if ($(id).value) { $(id).value = ''; $(id).placeholder = settings[f] ? 'Key saved (type to replace)' : ph; }
     $('s-status').textContent = 'Saved';
-    setTimeout(() => settingsEl.classList.remove('open'), 700);
-  });
+    clearTimeout(saveNow.t2); saveNow.t2 = setTimeout(() => { $('s-status').textContent = ''; }, 1200);
+  }
+  // autosave: no Save button. Changes apply as you make them (typing waits for a short pause)
+  let saveQ = Promise.resolve(), saveT = 0;
+  const autosave = () => { saveQ = saveQ.then(saveNow).catch(() => { $('s-status').textContent = 'Could not save'; }); };
+  settingsEl.addEventListener('change', (e) => { if (e.target.closest('#sec-ai, #sec-voice, #sec-look, #sec-access, #sec-cals, #sec-chess, #sec-general')) { clearTimeout(saveT); autosave(); } });
+  settingsEl.addEventListener('input', (e) => { if (e.target.matches('input[type=text],input[type=range]') && e.target.id !== 's-find' && e.target.id !== 's-calname' && e.target.id !== 's-calurl') { clearTimeout(saveT); saveT = setTimeout(autosave, 700); } });
 
   pip.onMood((m) => {
     const now = performance.now();
@@ -1886,6 +1952,13 @@
   pip.onGame((g) => { st.gameOn = !!g.on; if (g.on) showBubble('Playing. Click me to stop the game.', 4000); });
   pip.onSettings((s) => { Object.assign(settings, s); applySettings(); });
   pip.onOpenChat(() => { if (!st.chatOpen) openChat(); else pip.focus(); });
+  pip.onChatNote(({ text }) => { if (!st.chatOpen) openChat(); addMsg('pet', text); });
+  pip.onClipHelper(async () => { // tray item or Ctrl/Cmd+Alt+C: one tap to do something useful with what you just copied
+    if (!st.chatOpen) openChat();
+    if (busy) return;
+    const v = await pickOne('What should I do with what you copied?', [['summarize', 'Summarize'], ['explain', 'Explain'], ['reply', 'Draft a reply'], ['fix', 'Fix writing'], ['translate', 'Translate']]);
+    if (v) send(v);
+  });
 
   // ---------------------------------------------------------------- battery reactions
   try {

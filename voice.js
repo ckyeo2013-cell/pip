@@ -133,7 +133,12 @@ function wavFromPcm16(pcm, rate) {
   h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([h, pcm]);
 }
-async function synthesize({ fetchFn, provider, apiKey, accountId, text, timeoutMs = 30000 }) {
+const VOICES = { // [Gemini, Groq Orpheus, Cloudflare Aura] per voice character
+  cheerful: ['Leda', 'hannah', 'luna'], bright: ['Zephyr', 'autumn', 'stella'], calm: ['Aoede', 'diana', 'athena'], deep: ['Charon', 'troy', 'orion'],
+};
+let auraBroken = false; // if Cloudflare's Aura voice errors once, stay on MeloTTS for this session
+async function synthesize({ fetchFn, provider, apiKey, accountId, text, style, timeoutMs = 30000 }) {
+  const vc = VOICES[style] || VOICES.cheerful;
   const t = clean(text).slice(0, TTS_TEXT_MAX);
   if (!t || !STT_PROVIDERS.includes(provider)) return { error: 'no voice' };
   let url, init;
@@ -141,13 +146,23 @@ async function synthesize({ fetchFn, provider, apiKey, accountId, text, timeoutM
     url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent';
     init = { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify({
       contents: [{ parts: [{ text: 'Say this in a warm, bright, natural, friendly voice, like a cheerful friend: ' + t }] }],
-      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Leda' } } } } }) };
+      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: vc[0] } } } } }) };
   } else if (provider === 'cloudflare') {
-    url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/@cf/myshell-ai/melotts`;
-    init = { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ prompt: t, lang: 'en' }) };
+    const base = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/`, hd = { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` };
+    if (!auraBroken) { // Deepgram Aura sounds far more human than MeloTTS; it returns the audio itself rather than JSON
+      try {
+        const r = await fetchFn(base + '@cf/deepgram/aura-1', { method: 'POST', headers: hd, body: JSON.stringify({ text: t, speaker: vc[2] }) });
+        const ct = String((r.headers && r.headers.get && r.headers.get('content-type')) || '');
+        if (r.ok && /audio/i.test(ct)) return { audio: Buffer.from(await r.arrayBuffer()).toString('base64'), mime: ct.split(';')[0] };
+        if (r.ok) { const j = await r.json().catch(() => null); const a = j && j.result && j.result.audio; if (a) return { audio: a, mime: 'audio/mpeg' }; }
+        auraBroken = true;
+      } catch (_) { auraBroken = true; }
+    }
+    url = base + '@cf/myshell-ai/melotts';
+    init = { method: 'POST', headers: hd, body: JSON.stringify({ prompt: t, lang: 'en' }) };
   } else {
     url = 'https://api.groq.com/openai/v1/audio/speech';
-    init = { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model: 'canopylabs/orpheus-v1-english', voice: 'hannah', input: t, response_format: 'wav' }) };
+    init = { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model: 'canopylabs/orpheus-v1-english', voice: vc[1], input: t, response_format: 'wav' }) };
   }
   const ac = new AbortController(), timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
@@ -162,4 +177,4 @@ async function synthesize({ fetchFn, provider, apiKey, accountId, text, timeoutM
   } catch (e) { return { error: e.name === 'AbortError' ? 'timed out' : e.message }; } finally { clearTimeout(timer); }
 }
 
-module.exports = { STT_HINT, transcribe, tidy, synthesize, pickProvider, STT_PROVIDERS, LABELS, MAX_AUDIO_B64 };
+module.exports = { VOICES, STT_HINT, transcribe, tidy, synthesize, pickProvider, STT_PROVIDERS, LABELS, MAX_AUDIO_B64 };
