@@ -15,8 +15,10 @@
 const ACTION_ASK = /\b(open|go to|launch|start up|play|search|look up|google|pull up|bring up|take me to|navigate|visit|put on|turn (it )?(up|down|on|off)|mute|unmute|pause|resume|skip|volume|louder|quieter)\b/i;
 const LINK_OR_HOWTO = /(https?:\/\/\S+|\bwww\.\S+|\byou (can|could|may|should) (just )?(open|click|go to|visit|type|press|search|head to|navigate)\b|\b(just|simply) (open|click|go to|visit|type|press|search)\b)/i;
 
+const GAME_ASK = /\b(beat|defeat|win|play|versus|vs\.?|against)\b[\s\S]*\b(chess|checkers|wordle|sudoku|2048|connections|minesweeper|game)\b|\b(chess|checkers)\b[\s\S]*\b(beat|defeat|win|play|against)\b/i;
 function actionNudge(userText, replyText) {
   if (typeof userText !== 'string' || typeof replyText !== 'string') return null;
+  if (GAME_ASK.test(userText)) return 'You described the game but did nothing. Do not stop or give up. Right now call start_game (game "chess", max_steps 150), then ONE look_at_screen, then chess_play with board, my_color and flipped, and keep calling chess_play until the game is over. Say nothing until it ends.';
   if (!ACTION_ASK.test(userText)) return null;
   if (/\b(link|url|address)\b/i.test(userText)) return null; // they really did ask for the link
   if (!LINK_OR_HOWTO.test(replyText)) return null;

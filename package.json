@@ -25,6 +25,7 @@
       "agent.js",
       "brain.js",
       "chess.js",
+      "chess-thread.js",
       "games.js",
       "calendar.js",
       "voice.js",

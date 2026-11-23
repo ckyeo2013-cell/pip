@@ -24,6 +24,25 @@ const path = require('path');
 const dns = require('dns');
 const sys = require('./system');
 const chess = require('./chess');
+// the engine runs on its own thread: thinking for a few seconds must not freeze the app or the Stop button
+let _cw = null, _cid = 0;
+const _cpend = new Map();
+function thinkAsync(st, opts) {
+  return new Promise((resolve, reject) => {
+    let w = _cw;
+    if (!w) {
+      try {
+        const { Worker } = require('worker_threads');
+        w = _cw = new Worker(require('path').join(__dirname, 'chess-thread.js'));
+        w.on('message', (m) => { const p = _cpend.get(m.id); if (!p) return; _cpend.delete(m.id); if (m.error) p.reject(new Error(m.error)); else p.resolve(m.r); if (!_cpend.size && w.unref) w.unref(); });
+        const dead = (e) => { if (_cw === w) _cw = null; for (const p of _cpend.values()) p.reject(e || new Error('engine thread stopped')); _cpend.clear(); };
+        w.on('error', dead); w.on('exit', () => dead());
+      } catch (e) { _cw = null; return reject(e); }
+    }
+    const id = ++_cid; _cpend.set(id, { resolve, reject });
+    try { if (w.ref) w.ref(); w.postMessage({ id, st, opts }); } catch (e) { _cpend.delete(id); reject(e); }
+  });
+}
 const games = require('./games');
 const ui = require('./ui');
 
@@ -866,7 +885,7 @@ function createActions({
           const g = chessGame;
           if (firstCall) { // clock awareness: "3+2" (minutes + increment seconds) or plain minutes; time_left (seconds) resyncs from a look at the real clock
             const cm = input && input.clock !== undefined ? String(input.clock).trim().match(/^(\d+(?:\.\d+)?)\s*(?:\+\s*(\d+))?$/) : null;
-            if (cm && Number(cm[1]) > 0) { g.clockMs = Number(cm[1]) * 60000; g.incMs = Number(cm[2] || 0) * 1000; g.lowSaid = false; g.turnStart = Date.now(); }
+            if (cm && Number(cm[1]) > 0) { g.clockBase = Number(cm[1]) * 60000; g.clockMs = Number(cm[1]) * 60000; g.incMs = Number(cm[2] || 0) * 1000; g.lowSaid = false; g.turnStart = Date.now(); }
             if (input && Number(input.time_left) > 0) { g.clockMs = Math.min(Number(input.time_left), 36000) * 1000; g.turnStart = Date.now(); g.incMs = g.incMs || 0; }
           }
           const grab = () => grabBoard(g.region);
@@ -942,7 +961,12 @@ function createActions({
             while (!seen && Date.now() < until && gameOn) {
               await sleep(500); // every look is a screen capture, so do not hammer the graphics card while the browser is busy
               let cur = await grab();
-              if (cellDiffs(g.snap, cur).filter((v) => v > CHESS_T).length < 2) continue;
+              if (cellDiffs(g.snap, cur).filter((v) => v > CHESS_T).length < 2) { g.oddPolls = 0; continue; }
+              { // the board reset to a new game, or the board is gone: the game has ended (resigned, timed out, agreed draw...)
+                const oc = occupancy(cur); let nb = 0, cnt = 0; for (let i = 0; i < 64; i++) { if (oc[i] !== (i < 16 || i >= 48)) nb++; if (oc[i]) cnt++; }
+                if ((nb <= 2 && g.moves.length >= 6) || cnt <= 4) { if (++g.oddPolls >= 3) { status(''); return 'Game over: the board was reset or closed, so the game has ended (resigned, out of time or a draw). Call end_game and tell the user.'; } }
+                else g.oddPolls = 0;
+              }
               cur = await settle(cur);
               const dd = cellDiffs(g.snap, cur);
               const m = matchMove(dd, g.st, g.flipped, CHESS_T) || matchMove(dd, g.st, g.flipped, 8); // low-contrast board themes change fewer colours
@@ -955,6 +979,7 @@ function createActions({
             if (g.myMoveAt) { const dt = Date.now() - g.myMoveAt; g.replyAvg = g.replyAvg ? 0.7 * g.replyAvg + 0.3 * dt : dt; }
             if ((PV[g.lastOppTook] || 0) >= 5) chat('oppBigCapture');
           }
+          if (!gameOn) return 'The game was stopped.';
           const over = chess.status(g.st);
           if (over) { chat(over === 'checkmate' ? (g.st.white === g.myWhite ? 'lost' : 'won') : 'draw', true); return `${said}Game over: ${over}${over === 'checkmate' ? (g.st.white === g.myWhite ? ' (I was checkmated).' : ' (I won!).') : ' (a draw).'} Call end_game and tell the user.`; }
           status('Chess: thinking about my move');
@@ -971,7 +996,10 @@ function createActions({
             if (rem < 20000 && !g.lowSaid) { g.lowSaid = true; chat('lowTime'); }
           }
           const level = (input && input.level) || getChessLevel() || 'max';
-          const best = chess.bestMoveState(g.st, { ms: quick ? Math.min(800, tm) : tm, queen: true, hist: g.hist, moves: g.fromStart ? g.moves : null, level });
+          const thinkOpts = { ms: quick ? Math.min(800, tm) : tm, queen: true, hist: g.hist, moves: g.fromStart ? g.moves : null, level };
+          let best;
+          try { best = await thinkAsync(g.st, thinkOpts); } catch (_) { best = chess.bestMoveState(g.st, thinkOpts); } // no thread available: think on the main one
+          if (!gameOn) { status(''); return 'The game was stopped.'; }
           // feelings about how the game is going, and resigning or drawing when it is clear
           const ev = best.mateIn != null ? (best.mateIn > 0 ? 99 : -99) : best.evalPawns;
           (g.evals = g.evals || []).push(ev);
@@ -1018,10 +1046,11 @@ function createActions({
           hidePanel();
           blurWindow();
           await sleep(300); // Pip's chat has to be out of the way and the game window has to own the mouse before the first click
+          if (!gameOn) return 'The game was stopped.';
           await runClicks(pts, 350);
           let after = await settle(await grab());
           let d = cellDiffs(g.snap, after);
-          for (let attempt = 1; attempt <= 3 && (d[fromCell] < CHESS_T || d[toCell] < CHESS_T); attempt++) {
+          for (let attempt = 1; attempt <= 3 && gameOn && (d[fromCell] < CHESS_T || d[toCell] < CHESS_T); attempt++) {
             // The move did not go through. Work out which click was lost, instead of clicking the same squares again:
             // a second click on a piece that is still selected would just un-select it.
             if (d[fromCell] >= CHESS_T) await runClicks(toPts, 350 + attempt * 150);   // the piece lit up (selected) but the second click was lost: click only the destination
@@ -1030,6 +1059,7 @@ function createActions({
             d = cellDiffs(g.snap, after);
             if (d[fromCell] >= CHESS_T && d[toCell] < CHESS_T) { await runClicks([pts[0]], 350); await sleep(150); } // still selected: click it once more to un-select, so the next try starts clean
           }
+          if (!gameOn) return 'The game was stopped.';
           if (d[fromCell] < CHESS_T || d[toCell] < CHESS_T) {
             return `${said}I clicked ${best.from} then ${best.to} (and tried once more) but the board did not change, so the move did not register. Use look_at_screen to see why (not my turn, a menu or pop-up open, a promotion choice waiting, or the board area is wrong), fix it, then call chess_play again with board and flipped. Do not click the piece yourself first: chess_play does the clicking.`;
           }
@@ -1060,7 +1090,9 @@ function createActions({
             firstCall = false;
             if (/^The opponent has not moved yet/.test(r) && gameOn) { // slow opponent: keep waiting (up to 30 minutes) instead of handing back to the AI
               waited += waitMs; n--;
-              if (waited < 30 * 60000) continue;
+              const idleCap = (g.clockBase && g.clockBase <= 5 * 60000 ? 4 : 12) * 60000; // a short game cannot have a 10 minute wait: it ended
+              if (waited < idleCap) continue;
+              r = `Game over: the opponent has not moved for ${Math.round(waited / 60000)} minutes, so the game has probably ended. Call end_game and tell the user.`; n++;
             }
             out.push(r);
             if (!/^(?:Opponent played [^.]*\. )?Played /.test(r) || /end_game/.test(r)) break;

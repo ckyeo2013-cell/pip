@@ -1087,6 +1087,7 @@ function registerIpc() {
     if (actions) actions.endGame();
     send('status', { text: '' });
     if (/FEN needed|FEN does not match/.test(final)) return { message: 'This game is already in progress and I have not learned what the pieces on this site look like yet. Start the chess button at the beginning of a game once (I learn the pieces then), or ask me in chat to play chess and I will read the position with the AI.' };
+    console.log('[chess] ended:', String(final).slice(0, 300), chessStopFlag ? '(stop pressed)' : '');
     const msg = /I was checkmated/.test(final) ? 'Well played, you got me.' : /I won|Checkmate, I won/.test(final) ? 'Checkmate. Good game!' : /resign/i.test(final) ? 'I am lost, so I resign. Good game!' : /draw/i.test(final) ? 'This looks like a draw. Maybe offer one on the site.' : chessStopFlag ? 'Okay, I stopped the game.' : (final ? final.slice(0, 160) : 'The game ended.');
     return { message: msg };
   });
