@@ -1424,7 +1424,7 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     const forced = start.slice(); forced[5 * 8 + 2] = ''; forced[2 * 8 + 5] = ''; forced[4 * 8 + 3] = 'w'; forced[3 * 8 + 4] = 'b';
     const fm = L.ckMoves(forced, 'w'); assert.ok(fm.every((m) => m.caps.length > 0), 'a capture is available so only captures are legal');
     const k = new Array(64).fill(''); k[1 * 8 + 2] = 'w'; const km = L.ckMoves(k, 'w'); assert.ok(L.ckApply(k, km.find((m) => m.path[1] === 0 * 8 + 1))[1] === 'W', 'reaching the far row crowns a king');
-    for (const level of ['easy', 'medium', 'hard', 'human']) {
+    for (const level of ['sharp:1', 'sharp:10', 'sloppy:1', 'sloppy:10', 'sharp']) {
       const r = chess.bestMoveState(chess.startState(), { ms: 150, level, queen: true });
       assert.ok(chess.legal(chess.startState()).some((m) => chess.sqName(m.from) === r.from && chess.sqName(m.to) === r.to), level + ' plays a legal move');
     }

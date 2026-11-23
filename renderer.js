@@ -4,6 +4,7 @@
  */
 (() => {
   'use strict';
+  const chessLv = () => (settings.chessLevel === 'sloppy' ? 'sloppy' : 'sharp') + ':' + (Number(settings.chessStrength) || 7).toFixed(2);
   const Model = globalThis.GliderModel;
   const pip = window.pip;
 
@@ -1334,7 +1335,7 @@
     const color = await pickOne('Chess on screen: which side are you playing?', [['white', 'I am white'], ['black', 'I am black']]);
     if (!color) return;
     showBubble('Open the chess game, then follow my steps.', 5000);
-    const res = await pip.chessScreen({ white: color === 'white', level: settings.chessLevel || 'max' });
+    const res = await pip.chessScreen({ white: color === 'white', level: chessLv() });
     if (res && res.message) showBubble(res.message, 8000);
   }
   // a tiny two-choice popup next to Pip
@@ -1648,8 +1649,8 @@
         break;
       case 'games': closeChatForGame(); openGames(); break;
       case 'screenchess': screenChess(); break;
-      case 'rematch': (async () => { closeChatForGame(); const r = await pip.chessScreen({ rematch: true, level: settings.chessLevel || 'max' }); if (r && r.message) showBubble(r.message, 8000); })(); break;
-      case 'chessauto': (async () => { closeChatForGame(); const r = await pip.chessAuto({ level: settings.chessLevel || 'max' }); if (r && r.message) showBubble(r.message, 9000); })(); break;
+      case 'rematch': (async () => { closeChatForGame(); const r = await pip.chessScreen({ rematch: true, level: chessLv() }); if (r && r.message) showBubble(r.message, 8000); })(); break;
+      case 'chessauto': (async () => { closeChatForGame(); const r = await pip.chessAuto({ level: chessLv() }); if (r && r.message) showBubble(r.message, 9000); })(); break;
       case 'chessresign': (async () => { const r = await pip.chessResign(); if (r && r.message) showBubble(r.message, 5000); })(); break;
       case 'chessteach': (async () => {
         closeChatForGame();
@@ -1779,7 +1780,7 @@
     $('s-vol').value = Math.round((settings.soundVolume == null ? 0.5 : settings.soundVolume) * 100);
     $('s-memory').checked = settings.moodMemory !== false;
     $('s-apppersona').checked = settings.appPersona !== false;
-    $('s-level').value = settings.chessLevel || 'max';
+    $('s-level').value = settings.chessLevel === 'sloppy' ? 'sloppy' : 'sharp'; $('s-strength').value = settings.chessStrength || 7;
     $('s-clock').value = settings.chessClock || '';
     $('s-shape').checked = settings.shapeWindow !== false;
     $('s-login').checked = !!settings.openAtLogin;
@@ -1919,6 +1920,7 @@
       moodMemory: $('s-memory').checked,
       appPersona: $('s-apppersona').checked,
       chessLevel: $('s-level').value,
+      chessStrength: Number($('s-strength').value),
       chessClock: $('s-clock').value,
       shapeWindow: $('s-shape').checked,
       openAtLogin: $('s-login').checked,
@@ -2075,7 +2077,7 @@
   $('s-skin').addEventListener('change', () => { settings.skin = $('s-skin').value; startDance('twirl'); });
   $('s-palette').addEventListener('change', () => { settings.palette = $('s-palette').value; });
   $('s-trymove').addEventListener('click', () => { const v = $('s-move').value; if (v === 'karate chop' || v === 'kick' || v === 'bow' || v === 'flex') improvise(v); else startDance(v); });
-  const openGames = (which) => { PipGames.setLevel(settings.chessLevel || 'medium'); PipGames.open(which); };
+  const openGames = (which) => { PipGames.setLevel(chessLv()); PipGames.open(which); };
 
   // ---------------------------------------------------------------- start
   pip.getSettings().then((s) => {

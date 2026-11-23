@@ -77,7 +77,8 @@ const DEFAULTS = {
   reactions: true,    // react to music, copying text, low battery, long idle
   shapeWindow: true,  // Windows/Linux: clip the full-screen overlay to just Pip and his panels, so browsers do not think a window covers them and pause
   chessClock: '',     // '' (untimed) or e.g. '3+2': Pip tracks his own clock and speeds up when low
-  chessLevel: 'max',  // easy | medium | hard | human | max
+  chessLevel: 'sharp',  // sharp | sloppy
+  chessStrength: 7,  // 1..10
   sounds: true,       // small synthesized sound effects
   soundVolume: 0.5,
   appPersona: true,    // Pip's tone follows the app in front (only its name goes to the AI)
@@ -676,7 +677,7 @@ function setupActions() {
     notify: (text, ms) => send('say', { text, ms }),
     status: (text) => send('status', { text }),
     emote: (name) => send('mood', { type: 'emote', name }),
-    getChessLevel: () => settings.chessLevel,
+    getChessLevel: () => chessLv(),
     getChessConfirm: () => !!settings.chessConfirm,
     chessLib: {
       load: () => JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'chess-pieces.json'), 'utf8')),
@@ -1059,7 +1060,8 @@ function registerIpc() {
         patch.toolPolicy = tp;
       }
       if (Array.isArray(s.trustedSites)) patch.trustedSites = [...new Set(s.trustedSites.map((h) => String(h).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '')).filter((h) => /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(h)))].slice(0, 30);
-      if (['easy', 'medium', 'hard', 'human', 'max'].includes(s.chessLevel)) patch.chessLevel = s.chessLevel;
+      if (['sharp', 'sloppy'].includes(s.chessLevel)) patch.chessLevel = s.chessLevel;
+      if (Number.isFinite(Number(s.chessStrength))) patch.chessStrength = Math.max(1, Math.min(10, Number(s.chessStrength)));
       if (typeof s.chessClock === 'string' && /^(|\d{1,3}(\+\d{1,2})?)$/.test(s.chessClock)) patch.chessClock = s.chessClock;
       if (typeof s.soundVolume === 'number' && s.soundVolume >= 0 && s.soundVolume <= 1) patch.soundVolume = s.soundVolume;
       if (PROVIDERS.includes(s.provider)) patch.provider = s.provider;
@@ -1199,6 +1201,7 @@ function registerIpc() {
   let lastChess = null; // { board, white } of the last game, for the Rematch button
   ipcMain.on('chess:stop', () => { chessStopFlag = true; if (actions) actions.endGame(); send('status', { text: '' }); });
   // ---- hands-free chess: one game by Pip's own engine; Pip's colour is passed in
+  const chessLv = () => (settings.chessLevel === 'sloppy' ? 'sloppy' : 'sharp') + ':' + (settings.chessStrength || 7).toFixed(2);
   async function playOne(board, pipColor, level, hello) {
     let final = '';
     await (await actions.prepare('start_game', { game: 'chess', max_steps: 150 })).run();
@@ -1248,7 +1251,7 @@ function registerIpc() {
     const bt = getBtns();
     if (!bt.newGame) return { message: 'Teach me the New Game button first (chess teach), so I can start matches.' };
     chessStopFlag = false;
-    const level = (opts && opts.level) || settings.chessLevel || 'max', maxGames = Math.max(1, Math.min(50, Number(opts && opts.games) || 10));
+    const level = (opts && opts.level) || chessLv(), maxGames = Math.max(1, Math.min(50, Number(opts && opts.games) || 10));
     let played = 0, last = '';
     while (played < maxGames && !chessStopFlag) {
       let st = await actions.readBoard(lastChess.board).catch(() => null);
@@ -1278,7 +1281,7 @@ function registerIpc() {
     chessStopFlag = false;
     if (opts && opts.rematch && !lastChess) return { message: 'No earlier game to replay yet. Start one with the chess button first.' };
     if (opts && opts.rematch) opts = { ...opts, white: lastChess.white };
-    const white = !!(opts && opts.white), level = (opts && opts.level) || settings.chessLevel || 'max';
+    const white = !!(opts && opts.white), level = (opts && opts.level) || chessLv();
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const corner = async (label, secs) => {
       send('say', { text: `Put your mouse on the ${label} corner of the board. I will read it in ${secs} seconds.`, ms: secs * 1000 });

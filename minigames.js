@@ -4,8 +4,10 @@
 (function (root) {
   'use strict';
   const rnd = (n) => Math.floor(Math.random() * n);
-  const LEVEL_DEPTH = { easy: 2, medium: 4, hard: 7, human: 6, max: 8 };
-  const SLIP = { easy: 0.3, medium: 0.1, hard: 0, human: 0.05, max: 0 };
+  // level is "sharp:N" or "sloppy:N" (N = strength 1..10)
+  const strN = (l) => Math.max(1, Math.min(10, parseFloat(String(l).split(':')[1]) || 7));
+  const LEVEL_DEPTH = new Proxy({}, { get: (_, l) => (String(l).startsWith('sloppy') ? 2 + Math.round((strN(l) - 1) / 3) : 3 + Math.round((strN(l) - 1) * 5 / 9)) });
+  const SLIP = new Proxy({}, { get: (_, l) => (String(l).startsWith('sloppy') ? 0.3 - 0.02 * strN(l) : 0.06 - 0.006 * strN(l)) });
 
   // ================================================================ tic-tac-toe (board: 9 cells of '', 'X', 'O'; Pip is O)
   const TTT_LINES = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
@@ -197,12 +199,12 @@
 
   // ================================================================ the window
   let host = { sfx() {}, say() {}, emote() {}, status() {}, end() {}, started() {} };
-  let panel = null, body = null, titleSel = null, levelSel = null, statusEl = null, game = 'chess', level = 'medium', token = 0, playerSide = 'first';
+  let panel = null, body = null, titleSel = null, levelSel = null, strSel = null, statusEl = null, game = 'chess', level = 'sharp:7', token = 0, playerSide = 'first';
   let worker = null, reqId = 0;
   const pending = {};
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
   const PCH = { p: 'P', n: 'N', b: 'B', r: 'R', q: 'Q', k: 'K' };
-  const THINK = { easy: 150, medium: 400, hard: 1000, human: 1200, max: 1800 };
+  const THINK = new Proxy({}, { get: (_, l) => (String(l).startsWith('sloppy') ? 600 : 1500) });
   const say = (t) => host.say(t);
   let lastTalk = -9, plies = 0;
   const talk = (lines, force) => { if (!force && plies - lastTalk < 4) return; lastTalk = plies; const [t, feel] = lines[rnd(lines.length)]; host.say(t); if (feel) host.emote(feel); };
@@ -229,16 +231,18 @@
     titleSel = el('select');
     for (const [v, t] of [['chess', 'Chess'], ['checkers', 'Checkers'], ['connect4', 'Connect four'], ['ttt', 'Tic-tac-toe']]) { const o = el('option', '', t); o.value = v; titleSel.appendChild(o); }
     levelSel = el('select');
-    for (const [v, t] of [['easy', 'Easy'], ['medium', 'Medium'], ['hard', 'Hard'], ['human', 'Human-like'], ['max', 'Maximum']]) { const o = el('option', '', t); o.value = v; levelSel.appendChild(o); }
-    levelSel.value = level;
+    for (const [v, t] of [['sharp', 'Sharp'], ['sloppy', 'Sloppy']]) { const o = el('option', '', t); o.value = v; levelSel.appendChild(o); }
+    strSel = el('input'); strSel.type = 'range'; strSel.min = 1; strSel.max = 10; strSel.step = 0.05; strSel.title = 'Weaker \u2192 Stronger'; strSel.style.width = '90px';
+    levelSel.value = level.split(':')[0]; strSel.value = strN(level);
     const again = el('button', '', 'New game'), side = el('button', '', 'Swap sides'), x = el('button', 'x', 'Close');
-    hd.append(titleSel, levelSel, again, side, x);
+    hd.append(titleSel, levelSel, strSel, again, side, x);
     statusEl = el('div', 'gm-status', '');
     body = el('div', 'gm-body');
     panel.append(hd, statusEl, body);
     document.body.appendChild(panel);
     titleSel.addEventListener('change', () => { game = titleSel.value; start(); });
-    levelSel.addEventListener('change', () => { level = levelSel.value; start(); });
+    const lvChange = () => { level = levelSel.value + ':' + Number(strSel.value).toFixed(2); start(); };
+    levelSel.addEventListener('change', lvChange); strSel.addEventListener('change', lvChange);
     again.addEventListener('click', () => start());
     side.addEventListener('click', () => { playerSide = playerSide === 'first' ? 'second' : 'first'; start(); });
     x.addEventListener('click', close);
@@ -480,13 +484,13 @@
     if (!panel) build();
     panel.style.display = 'block';
     if (which && ['chess', 'checkers', 'connect4', 'ttt'].includes(which)) game = which;
-    titleSel.value = game; levelSel.value = level;
+    titleSel.value = game; levelSel.value = level.split(':')[0]; strSel.value = strN(level);
     start();
   }
   function close() { token++; if (panel) panel.style.display = 'none'; }
   root.PipGames = {
     init(h) { host = Object.assign(host, h || {}); },
-    open, close, setLevel(l) { if (LEVEL_DEPTH[l]) { level = l; if (levelSel) levelSel.value = l; } },
+    open, close, setLevel(l) { if (/^(sharp|sloppy):[\d.]+$/.test(l)) { level = l; if (levelSel) { levelSel.value = l.split(':')[0]; strSel.value = strN(l); } } },
     isOpen: () => !!panel && panel.style.display !== 'none',
     rect: () => (panel ? panel.getBoundingClientRect() : null),
     logic,

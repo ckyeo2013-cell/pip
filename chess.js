@@ -680,43 +680,93 @@ function runSearch(st, { ms, maxDepth, hist }) {
   }
   return { move: bestMove, score: bestScore, depth: depthDone, nodes };
 }
-// Weaker levels: search every legal move to a fixed shallow depth, then pick with a softmax (so the best move is likely but not certain)
-// and an occasional real slip, but never a move that throws away a lot (and always a mate in one if there is one).
-const SKILL = {
-  easy: { depth: 2, temp: 170, slip: 0.18, slipRange: 350 },
-  medium: { depth: 4, temp: 65, slip: 0.06, slipRange: 220 },
-  hard: { depth: 7, temp: 18, slip: 0, slipRange: 0 },
-  human: { depth: 6, temp: 40, slip: 0.04, slipRange: 200 },
+// Two modes, each with a gliding strength scale (1 weakest .. 10 strongest, decimals ok) (level string "sharp" or "sharp:7"; no number = 7).
+// sharp: plays great, finds sacrifices, now and then misses something (a bishop, a miscalculation) but never a game-ender.
+// sloppy: the same human style, just worse and slips more. depth = real strength, sdepth = horizon while blundering, blunder = chance of a plausible
+// mistake, maxLoss = biggest mistake (centipawns), flair = chance to play a found sacrifice, deepD = depth used to verify it, temp = move-choice softness.
+const MODES = {
+  sharp: { depth: [3, 8], sdepth: [2, 3], temp: [40, 12], blunder: [0.07, 0.015], maxLoss: [380, 300], flair: [0.35, 0.6], deepD: [7, 10] },
+  sloppy: { depth: [2, 5], sdepth: [1, 2], temp: [120, 50], blunder: [0.4, 0.14], maxLoss: [900, 550], flair: [0.02, 0.06], deepD: [4, 6] },
 };
-function runSkill(st, level, ms, hist) {
-  const L = SKILL[level];
-  const full = runSearch(st, { ms: Math.max(80, Math.min(ms, 400)), maxDepth: 2, hist }); // sets up the position and the history
+function skillFor(level) {
+  const [m, n] = String(level).split(':'), M = MODES[m];
+  if (!M) return null;
+  const t = (Math.max(1, Math.min(10, Number(n) || 7)) - 1) / 9, L = { style: true };
+  for (const k in M) { const v = M[k][0] + (M[k][1] - M[k][0]) * t; L[k] = (k === 'depth' || k === 'sdepth' || k === 'deepD') ? Math.round(v) : v; }
+  return L;
+}
+const PNAME = ['', 'pawn', 'knight', 'bishop', 'rook', 'queen', 'king'];
+// After a move, find the reply that punishes it and describe it in words, so every blunder has a reason ("missed that the bishop takes the rook on a8")
+function whyBad(m) {
+  make(m);
+  const n = gen(1, false), save = MB[1].slice(0, n);
+  let wv = INF, text = 'missed the reply';
+  for (let i = 0; i < n; i++) {
+    const r = save[i], from = r & 63, to = (r >> 6) & 63, fl = r >> 16, att = bd[from] & 7, vic = (fl & 2) ? 1 : bd[to] & 7;
+    make(r);
+    if (attackedBy(ksq[side ^ 1], side)) { unmake(); continue; }
+    const v = negamax(1, -INF, INF, 2, true);
+    unmake();
+    if (v < wv) { wv = v; text = (fl & 1) ? 'missed that the ' + PNAME[att] + ' takes the ' + PNAME[vic] + ' on ' + sqName(to) : 'missed ' + PNAME[att] + ' to ' + sqName(to); }
+  }
+  unmake();
+  return text;
+}
+// Style players: score every move at a shallow and at a real depth, then
+//  - BLUNDER: with a chance (higher in busy positions and when behind) choose a move that looks fine at his shallow horizon but is really worse, never a random one
+//  - BRILLIANT: a sacrifice that looks bad shallowly but holds up at a deeper depth, played with probability `flair` when the game is still balanced
+function runStyle(st, level, ms, hist) {
+  const L = skillFor(level);
+  const full = runSearch(st, { ms: Math.max(80, Math.min(ms, 400)), maxDepth: 2, hist });
   if (full.none || full.forced) return full;
   const roots = legalRoot();
-  nodes = 0; stopped = false; deadline = Date.now() + Math.max(400, ms * 3);
-  const scored = [];
-  for (const m of roots) {
-    make(m);
-    const v = -negamax(L.depth - 1, -INF, INF, 1, true);
-    unmake();
-    if (stopped) break;
-    scored.push({ m, v });
+  nodes = 0; stopped = false; deadline = Date.now() + Math.max(700, ms * 3);
+  const sc = roots.map((m) => ({ m, s: 0, v: 0 }));
+  TTFlag.fill(0); // old deep entries would make the shallow pass see far too much
+  for (const x of sc) { make(x.m); x.s = -negamax(L.sdepth - 1, -INF, INF, 1, true); unmake(); if (stopped) return full; }
+  for (const x of sc) { make(x.m); x.v = -negamax(L.depth - 1, -INF, INF, 1, true); unmake(); if (stopped) return full; }
+  sc.sort((a, b) => b.v - a.v);
+  const best = sc[0], sBest = Math.max(...sc.map((x) => x.s));
+  const out = (x, extra) => ({ move: x.m, score: best.v, depth: L.depth, nodes, ...extra });
+  const mating = best.v > MATE - 100;
+  // brilliant: a piece put en prise that the deeper search says is fine
+  if ((mating || Math.abs(best.v) < 500) && Math.random() < L.flair) {
+    deadline = Date.now() + Math.max(900, ms * 2);
+    const cands = sc.filter((x) => x.s < sBest - 150 && x.v >= best.v - 40).filter((x) => {
+      const to = (x.m >> 6) & 63, att = SEEV[bd[x.m & 63] & 7], vic = (x.m >> 16) & 2 ? 100 : SEEV[bd[to] & 7];
+      if (att - vic < 200) return false;
+      make(x.m); const hang = attackedBy(to, side); unmake();
+      return hang;
+    }).slice(0, 2);
+    const say = (x) => ({ kind: 'brilliant', note: 'sacrificed the ' + PNAME[bd[x.m & 63] & 7] + ' on ' + sqName((x.m >> 6) & 63) + ': it only works if you look deep' });
+    if (cands.length && cands[0].m === best.m) return out(best, say(best)); // the best move is itself the sacrifice
+    if (cands.length) {
+      make(best.m); const dBest = mating ? best.v : -negamax(L.deepD - 1, -INF, INF, 1, true); unmake();
+      for (const x of cands) {
+        if (stopped) break;
+        make(x.m); const d = -negamax(L.deepD - 1, -INF, INF, 1, true); unmake();
+        if (stopped) break;
+        if (d >= dBest - 40) return out(x, say(x));
+      }
+    }
+    stopped = false;
   }
-  if (scored.length < roots.length) return full; // ran out of time: just use the shallow result
-  scored.sort((a, b) => b.v - a.v);
-  const best = scored[0];
-  if (best.v > MATE - 100) return { move: best.m, score: best.v, depth: L.depth, nodes };
-  let pick = best;
-  if (L.slip && Math.random() < L.slip) {
-    const pool = scored.slice(1, 6).filter((x) => x.v > best.v - L.slipRange);
-    if (pool.length) pick = pool[Math.floor(Math.random() * pool.length)];
-  } else {
-    const w = scored.filter((x) => x.v > best.v - 4 * L.temp).map((x) => ({ x, w: Math.exp((x.v - best.v) / L.temp) }));
-    let r = Math.random() * w.reduce((a, b) => a + b.w, 0);
-    for (const e of w) { r -= e.w; if (r <= 0) { pick = e.x; break; } }
+  if (mating) return out(best); // a forced mate that is not a sacrifice: just play it
+  // blunder: busy position / behind on material makes it likelier
+  let mat = 0;
+  for (const p of st.board) if (p) mat += (isWhite(p) === st.white ? 1 : -1) * VAL[p.toLowerCase()];
+  const tilt = mat < -300 ? 1.6 : mat < -100 ? 1.25 : 1, busy = roots.length > 35 ? 1.3 : roots.length < 20 ? 0.8 : 1;
+  if (Math.random() < Math.min(0.6, L.blunder * tilt * busy)) {
+    const bad = sc.filter((x) => x.v < best.v - 120 && x.v >= best.v - L.maxLoss && x.v > -MATE + 200 && x.s >= sBest - 60)
+      .sort((a, b) => (b.s + Math.random() * 30) - (a.s + Math.random() * 30));
+    if (bad.length) { deadline = Date.now() + 500; stopped = false; return out(bad[0], { kind: 'blunder', note: whyBad(bad[0].m) }); }
   }
-  return { move: pick.m, score: best.v, depth: L.depth, nodes };
+  const w = sc.filter((x) => x.v > best.v - 4 * L.temp).map((x) => ({ x, w: Math.exp((x.v - best.v) / L.temp) }));
+  let r = Math.random() * w.reduce((a, b) => a + b.w, 0), pk = best;
+  for (const e of w) { r -= e.w; if (r <= 0) { pk = e.x; break; } }
+  return out(pk);
 }
+function runSkill(st, level, ms, hist) { return runStyle(st, level, ms, hist); }
 function perftFast(fen, depth) {
   setPosition(parseFen(fen)); G = 0; HL[0] = hLo; HH[0] = hHi; qOnly = false;
   const go = (d, ply) => {
@@ -793,18 +843,18 @@ function bestMoveInner(st, { ms, maxDepth, hist, moves, level }) {
     const bm = bookMove(moves, st);
     if (bm) return info(bm, { depth: 0, evalPawns: null, mateIn: null, book: true });
   }
-  const r = SKILL[level] ? runSkill(st, level, ms, hist) : runSearch(st, { ms: Math.max(100, Math.min(20000, ms)), maxDepth: Math.min(MAXD - 10, maxDepth), hist });
+  const r = skillFor(level) ? runSkill(st, level, ms, hist) : runSearch(st, { ms: Math.max(100, Math.min(20000, ms)), maxDepth: Math.min(MAXD - 10, maxDepth), hist });
   if (r.none) return { over: true, status: r.check ? 'checkmate' : 'stalemate', side: st.white ? 'white' : 'black' };
   const m = moveToObj(r.move);
   // hand back the same move object the move generator would (so callers compare apples with apples)
   const lm = legal(st).find((x) => x.from === m.from && x.to === m.to && (x.promo || null) === (m.promo || null));
   if (!lm) throw new Error('internal: the engine produced a move the rules do not allow');
   const mate = Math.abs(r.score) > MATE - 100;
-  return info(lm, { depth: r.depth, nodes: r.nodes, evalPawns: mate ? null : Math.round(r.score) / 100, mateIn: mate ? Math.ceil((MATE - Math.abs(r.score)) / 2) * (r.score > 0 ? 1 : -1) : null });
+  return info(lm, { depth: r.depth, nodes: r.nodes, evalPawns: mate ? null : Math.round(r.score) / 100, mateIn: mate ? Math.ceil((MATE - Math.abs(r.score)) / 2) * (r.score > 0 ? 1 : -1) : null, note: r.note || null, blunder: r.kind === 'blunder', brilliant: r.kind === 'brilliant' });
 }
 
 function perft(fen, depth) { return perftFast(fen, depth); }
 const key = (st) => st.board.map((p) => p || '.').join('') + (st.white ? 'w' : 'b') + (st.K ? 'K' : '') + (st.Q ? 'Q' : '') + (st.k ? 'k' : '') + (st.q ? 'q' : '') + st.ep;
 
-const api = { bestMove, bestMoveState, perft, parseFen, legal, apply, status, startState, sqName, sqIndex, START_FEN, key, inCheck, LEVELS: ['easy', 'medium', 'hard', 'human', 'max'] };
+const api = { bestMove, bestMoveState, perft, parseFen, legal, apply, status, startState, sqName, sqIndex, START_FEN, key, inCheck, LEVELS: ['sharp', 'sloppy'] };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else globalThis.PipChess = api;

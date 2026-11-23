@@ -269,14 +269,13 @@
       <label class="check"><input id="s-chessconfirm" type="checkbox"> Ask me before every chess move (off: Pip plays by himself once the game starts)</label>
       <label for="s-clock">Chess clock (so Pip speeds up when low on time)</label>
       <select id="s-clock"><option value="">Untimed</option><option value="1">1 min (bullet)</option><option value="1+1">1+1</option><option value="3">3 min (blitz)</option><option value="3+2">3+2</option><option value="5">5 min</option><option value="10">10 min (rapid)</option><option value="15+10">15+10</option></select>
-      <label for="s-level">Chess strength</label>
+      <label for="s-level">Chess style</label>
       <select id="s-level">
-        <option value="easy">Easy (beginner)</option>
-        <option value="medium">Medium (casual player)</option>
-        <option value="hard">Hard (strong club player)</option>
-        <option value="human">Human-like (strong, makes believable slips)</option>
-        <option value="max">Maximum</option>
+        <option value="sharp">Sharp (plays great, finds sacrifices, rare slips)</option>
+        <option value="sloppy">Sloppy (same style, but worse and slips more)</option>
       </select>
+      <label for="s-strength">Chess strength</label>
+      <div style="display:flex;gap:8px;align-items:center"><span class="hint">Weaker</span><input id="s-strength" type="range" min="1" max="10" step="0.05" value="7" style="flex:1"><span class="hint">Stronger</span></div>
       </div>
       <div class="sec" id="sec-general">
       <label class="check"><input id="s-autoupd" type="checkbox"> Update Pip automatically when a new version is released on GitHub</label>
