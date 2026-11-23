@@ -45,7 +45,10 @@ const DEFAULTS = {
   workFolder: '',
   petName: 'Pip',
   palette: 'classic',
-  style: 'classic',
+  style: 'classic', // cosmetic (outfit/hat); 'classic' = none
+  species: 'glider', // glider, cat, fox, bunny, raccoon, drawn (your own frames)
+  drawn: {},          // your drawn frames: { idle, glide, happy, sleepy, thinking } PNG data URLs
+  skin: 'classic',  // fur look: classic, yarn, plush, shaggy, toy, felt
   quiet: false,       // no chatter: no quips, wandering or nudges (also switches on by itself during Zoom meetings)
   model: 'claude-haiku-5-5',
   provider: 'anthropic',            // 'anthropic' | 'gemini' | 'groq' | 'cloudflare'
@@ -110,7 +113,10 @@ function loadSettings() {
   if (!VOICE_PROVIDERS.includes(settings.voiceProvider)) settings.voiceProvider = 'auto';
   if (!VOICE_REPLIES.includes(settings.voiceReply)) settings.voiceReply = 'voice';
   if (!VOICE_TTS.includes(settings.voiceTts)) settings.voiceTts = 'natural';
-  if (!SKINS.includes(settings.style)) settings.style = 'classic';
+  if (settings.style === 'yarn') { settings.skin = 'yarn'; settings.style = 'classic'; } // yarn used to be a "skin" in the old single list
+  if (!SPECIES.includes(settings.species)) settings.species = 'glider';
+  if (!SKINS.includes(settings.skin)) settings.skin = 'classic';
+  if (!COSMETICS.includes(settings.style)) settings.style = 'classic';
   // Groq moved this model to enterprise-only, so older saved settings are switched to the current free-friendly default.
   if (settings.groqModel === 'llama-3.3-70b-versatile') settings.groqModel = DEFAULTS.groqModel;
 }
@@ -125,7 +131,10 @@ function persist() {
 const PROVIDERS = ['anthropic', 'gemini', 'groq', 'cloudflare'];
 const VOICE_PROVIDERS = ['auto', ...voice.STT_PROVIDERS];
 const VOICE_REPLIES = ['voice', 'always', 'never'];
-const SKINS = ['classic','yarn','ninja','wizard','pirate','astronaut','royal','cowboy','chef','season','santa','pumpkin','snowman','viking','robot','bunny','angel','devil','party','cool'];
+const SPECIES = ['glider','cat','fox','bunny','raccoon','drawn'];
+const DRAWN_STATES = ['idle','glide','happy','sleepy','thinking'];
+const SKINS = ['classic','yarn','plush','shaggy','toy','felt'];
+const COSMETICS = ['classic','tophat','headphones','flowers','bowtie','beanie','bee','ninja','wizard','pirate','astronaut','royal','cowboy','chef','season','santa','pumpkin','snowman','viking','robot','bunny','angel','devil','party','cool'];
 const VOICE_TTS = ['natural', 'system'];
 const keyFields = (p) => (p === 'gemini' ? ['geminiKeyEnc', 'geminiKeyPlain'] : p === 'groq' ? ['groqKeyEnc', 'groqKeyPlain'] : p === 'cloudflare' ? ['cloudflareKeyEnc', 'cloudflareKeyPlain'] : ['apiKeyEnc', 'apiKeyPlain']);
 function getKey(provider = settings.provider) {
@@ -356,7 +365,9 @@ function buildMenu() {
       click: () => { if (win) { win.showInactive(); win.webContents.send('open-chat'); } },
     },
     { label: win && win.isVisible() ? `Hide ${name}` : `Show ${name}`, click: toggleVisible },
-    { label: 'Skin', submenu: [['season', 'Seasonal (by date)'], ['classic', 'Classic Pip'], ['yarn', 'Knitted yarn'], ['ninja', 'Ninja'], ['wizard', 'Wizard'], ['pirate', 'Pirate'], ['astronaut', 'Astronaut'], ['royal', 'Royal'], ['cowboy', 'Cowboy'], ['chef', 'Chef'], ['viking', 'Viking'], ['robot', 'Robot'], ['bunny', 'Bunny'], ['angel', 'Angel'], ['devil', 'Devil'], ['party', 'Party'], ['cool', 'Cool'], ['santa', 'Santa'], ['pumpkin', 'Pumpkin'], ['snowman', 'Snowman']].map(([v, l]) => ({ label: l, type: 'radio', checked: (settings.style || 'classic') === v, click: () => update({ style: v }) })) },
+    { label: 'Animal', submenu: [['glider', 'Sugar glider'], ['cat', 'Cat'], ['fox', 'Fox'], ['bunny', 'Bunny'], ['raccoon', 'Raccoon'], ['drawn', 'Drawn by me']].map(([v, l]) => ({ label: l, type: 'radio', checked: (settings.species || 'glider') === v, click: () => update({ species: v }) })) },
+    { label: 'Skin', submenu: [['classic', 'Classic fur'], ['yarn', 'Knitted yarn'], ['plush', 'Plush velvet'], ['shaggy', 'Shaggy'], ['toy', 'Glossy toy'], ['felt', 'Flat felt']].map(([v, l]) => ({ label: l, type: 'radio', checked: (settings.skin || 'classic') === v, click: () => update({ skin: v }) })) },
+    { label: 'Cosmetic', submenu: [['season', 'Seasonal (by date)'], ['classic', 'None'], ['tophat', 'Top hat'], ['headphones', 'Headphones'], ['flowers', 'Flower crown'], ['bowtie', 'Bow tie'], ['beanie', 'Beanie'], ['bee', 'Bee antennae'], ['ninja', 'Ninja'], ['wizard', 'Wizard'], ['pirate', 'Pirate'], ['astronaut', 'Astronaut'], ['royal', 'Royal'], ['cowboy', 'Cowboy'], ['chef', 'Chef'], ['viking', 'Viking'], ['robot', 'Robot'], ['bunny', 'Bunny'], ['angel', 'Angel'], ['devil', 'Devil'], ['party', 'Party'], ['cool', 'Cool'], ['santa', 'Santa'], ['pumpkin', 'Pumpkin'], ['snowman', 'Snowman']].map(([v, l]) => ({ label: l, type: 'radio', checked: (settings.style || 'classic') === v, click: () => update({ style: v }) })) },
     { label: 'Fur colour', submenu: [['classic', 'Classic grey-blue'], ['honey', 'Honey'], ['cocoa', 'Cocoa'], ['snow', 'Snow'], ['midnight', 'Midnight'], ['sakura', 'Sakura'], ['mint', 'Mint'], ['lavender', 'Lavender']].map(([v, l]) => ({ label: l, type: 'radio', checked: (settings.palette || 'classic') === v, click: () => update({ palette: v }) })) },
     { label: 'Sound effects', type: 'checkbox', checked: settings.sounds !== false, click: (item) => update({ sounds: item.checked }) },
     { label: 'Ask Pip about my clipboard  (Ctrl/Cmd+Alt+C)', click: () => clipHelper() },
@@ -1027,7 +1038,14 @@ function registerIpc() {
     if (s && typeof s === 'object') {
       if (typeof s.petName === 'string') patch.petName = s.petName.trim().slice(0, 20) || 'Pip';
       if (PALETTES.includes(s.palette)) patch.palette = s.palette;
-      if (SKINS.includes(s.style)) patch.style = s.style;
+      if (SPECIES.includes(s.species)) patch.species = s.species;
+      if (s.drawn && typeof s.drawn === 'object') { // small pixel PNGs only
+        const d = {};
+        for (const k of DRAWN_STATES) if (typeof s.drawn[k] === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(s.drawn[k]) && s.drawn[k].length < 40000) d[k] = s.drawn[k];
+        patch.drawn = d;
+      }
+      if (SKINS.includes(s.skin)) patch.skin = s.skin;
+      if (COSMETICS.includes(s.style)) patch.style = s.style;
       if (MODELS.includes(s.model)) patch.model = s.model;
       for (const k of ['shapeWindow', 'wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'autoUpdate', 'chessConfirm', 'actionLog', 'macCalendar', 'shortReplies', 'fallback', 'reactions', 'sounds', 'moodMemory', 'appPersona']) {
         if (typeof s[k] === 'boolean') patch[k] = s[k];

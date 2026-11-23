@@ -94,6 +94,20 @@
     }, COMMON),
   };
 
+  // Animals: the body is the same rig; species change ears, tail, muzzle, markings and (when palette is Classic) colours.
+  // ear = [x, y, base angle, width, height]; tl/tw = tail length/width; ms = muzzle shortening; pc = eye-patch darkness 0..1
+  const SPECIES = {
+    glider: { ear: [0.36, 0.36, 0.5, 0.22, 0.4], tl: 1, tw: 1, back: 1, stripes: 1, mem: 1, dt: 1, ms: 0, pc: 1 },
+    cat: { ear: [0.3, 0.42, 0.22, 0.17, 0.3], tl: 1.05, tw: 0.5, back: 0, stripes: 1, mem: 0, dt: 0, ms: 0.12, pc: 0.3, whisk: 1,
+      pal: { fur: [0.86, 0.58, 0.32], dark: [0.4, 0.22, 0.1], belly: [0.98, 0.93, 0.85], cheek: [0.98, 0.91, 0.83], earOut: [0.8, 0.5, 0.28], earIn: [0.95, 0.7, 0.7], nose: [0.92, 0.55, 0.6], feet: [0.96, 0.86, 0.8] } },
+    fox: { ear: [0.3, 0.45, 0.2, 0.17, 0.44], tl: 0.95, tw: 1.35, back: 0, stripes: 0, mem: 0, dt: 0, ms: -0.06, pc: 0.3, tip: [1, 1, 0.98],
+      pal: { fur: [0.9, 0.48, 0.16], dark: [0.22, 0.13, 0.1], belly: [0.99, 0.95, 0.9], cheek: [0.99, 0.95, 0.9], earOut: [0.25, 0.15, 0.12], earIn: [0.96, 0.8, 0.7], nose: [0.1, 0.08, 0.08], feet: [0.26, 0.18, 0.15] } },
+    bunny: { ear: [0.2, 0.5, 0.1, 0.12, 0.58], tl: 0.2, tw: 0.95, back: 0, stripes: 0, mem: 0, dt: 0, ms: 0.1, pc: 0.25, whisk: 1,
+      pal: { fur: [0.93, 0.9, 0.86], dark: [0.42, 0.32, 0.32], belly: [1, 0.98, 0.96], cheek: [0.99, 0.93, 0.92], earOut: [0.93, 0.82, 0.82], earIn: [1, 0.72, 0.8], nose: [0.95, 0.55, 0.65], feet: [0.97, 0.85, 0.85] } },
+    raccoon: { ear: [0.34, 0.38, 0.45, 0.15, 0.15], tl: 0.9, tw: 1.15, back: 0, stripes: 1, mem: 0, dt: 0, ms: 0.03, pc: 1, ring: 7,
+      pal: { fur: [0.56, 0.55, 0.53], dark: [0.12, 0.11, 0.12], belly: [0.82, 0.8, 0.76], cheek: [0.88, 0.86, 0.83], earOut: [0.3, 0.28, 0.28], earIn: [0.78, 0.68, 0.68], nose: [0.08, 0.08, 0.09], feet: [0.2, 0.18, 0.18] } },
+  };
+
   // Where the arm and leg end for one side: tucked against the body at rest,
   // reaching out like a kite when gliding (g = 0..1).
   function limbPose(s, g, wave) {
@@ -125,9 +139,10 @@
    */
   function buildParts(p) {
     const parts = [];
-    const yarnSkin = p.style === 'yarn';
+    const skin = p.skin || (p.style === 'yarn' ? 'yarn' : 'classic'), yarnSkin = skin === 'yarn';
     const NU = yarnSkin ? 24 : MEM_NU, NV = yarnSkin ? 12 : MEM_NV; // finer wing tiles so the knit reads smooth
-    const C = PALETTES[p.palette] || PALETTES.classic;
+    const SP = Object.assign({}, SPECIES.glider, SPECIES[p.species] || {});
+    const C = p.palette && p.palette !== 'classic' && PALETTES[p.palette] ? PALETTES[p.palette] : Object.assign({}, PALETTES.classic, SP.pal);
     const t = p.t || 0;
     const glide = clamp(p.glide || 0, 0, 1);
     const crouch = clamp(p.crouch || 0, 0, 1);
@@ -148,13 +163,18 @@
       t: add(F.t, apply(F.R, off)),
     });
     const P = (F, c, r, rot, color, spec, fur) => {
+      let fu = fur === undefined ? 1 : fur;
+      if (fu > 0 && !(spec >= 1)) { // skins change only the furry body parts (cosmetics pass fur 0; glossy eyes stay as they are)
+        if (skin === 'plush') fu *= 0.35; else if (skin === 'shaggy') fu *= 1.6;
+        else if (skin === 'toy') { fu = 0; spec = Math.max(spec || 0, 0.6); } else if (skin === 'felt') { fu = 0; spec = 0; }
+      }
       parts.push({
         c: add(apply(F.R, c), F.t),
         r,
         M: rot ? mul(F.R, rot) : F.R,
         color,
         spec: spec || 0,
-        fur: yarnSkin ? 0 : (fur === undefined ? 1 : fur),
+        fur: yarnSkin ? 0 : fu,
         yarn: yarnSkin && !(spec >= 1) ? 1 : 0, // yarn skin; glossy bead eyes stay smooth
       });
     };
@@ -170,7 +190,7 @@
     P(B, [0, -0.36, -0.02], [0.47, 0.3, 0.42], null, C.fur);   // hips
     P(B, [0, 0.42, 0.04], [0.36, 0.3, 0.34], null, C.fur);     // shoulders and neck
     P(B, [0, -0.08, 0.2], [0.29, 0.5, 0.24], null, C.belly);
-    P(B, [0, 0.1, -0.4], [0.06, 0.44, 0.14], null, C.dark); // back stripe
+    if (SP.back) P(B, [0, 0.1, -0.4], [0.06, 0.44, 0.14], null, C.dark); // back stripe
 
     // ---- limbs and the gliding membrane (one side at a time) -----------
     for (const s of [-1, 1]) {
@@ -188,7 +208,7 @@
       P(B, L.wr, [0.055, 0.05, 0.065], null, C.feet, 0, 0.4); // small hand
       P(B, [L.an[0], L.an[1] - 0.02, L.an[2] + 0.07], [0.1, 0.05, 0.19], rotY(s * 0.15), C.feet, 0, 0.4); // foot
 
-      for (let i = 0; i < NU; i++) {
+      if (SP.mem) for (let i = 0; i < NU; i++) {
         for (let j = 0; j < NV; j++) {
           const u = (i + 0.5) / NU, v = (j + 0.5) / NV;
           const c = memSurface(L, s, gS, t, u, v);
@@ -211,13 +231,15 @@
     const tailSpd = 1.5 + thinking * 3 + happy * 2;
     const TN = yarnSkin ? 44 : 28;
     for (let i = 0; i < TN; i++) {
-      const u = i / (TN - 1);
+      const u0 = i / (TN - 1), u = u0 * SP.tl;
       const sway = Math.sin(t * tailSpd - u * 2.6) * tailAmp * u;
       const rest = [0.08 + 0.55 * Math.pow(u, 1.5) + sway, -0.4 + 0.75 * Math.pow(u, 1.4), -0.35 - 0.85 * u];
       const gld = [sway * 0.5, -0.3 - 0.1 * u, -0.4 - 1.4 * u];
       const pos = [lerp(rest[0], gld[0], glide) + tailSwing * Math.pow(u, 1.4) * 0.9, lerp(rest[1], gld[1], glide), lerp(rest[2], gld[2], glide)];
-      const rad = 0.17 + 0.08 * Math.sin(Math.min(1, u * 1.15) * Math.PI * 0.85) - 0.05 * u * u;
-      const col = u > 0.72 ? mix3(C.fur, C.dark, clamp((u - 0.72) / 0.2, 0, 1)) : C.fur;
+      const rad = (0.17 + 0.08 * Math.sin(Math.min(1, u0 * 1.15) * Math.PI * 0.85) - 0.05 * u0 * u0) * SP.tw;
+      let col = SP.dt && u0 > 0.72 ? mix3(C.fur, C.dark, clamp((u0 - 0.72) / 0.2, 0, 1)) : C.fur;
+      if (SP.ring && Math.floor(u0 * SP.ring) % 2 === 1) col = C.dark;
+      if (SP.tip) col = mix3(col, SP.tip, clamp((u0 - 0.72) / 0.1, 0, 1));
       P(B, pos, [rad, rad, rad * 1.4], null, col);
     }
 
@@ -230,15 +252,15 @@
     const H = child(B, [0, 0.66, 0.1], headRot);
 
     P(H, [0, 0, 0], [0.55, 0.5, 0.52], null, C.fur);
-    P(H, [0, -0.1, 0.4], [0.17, 0.15, 0.3], rotX(-0.12), C.cheek); // pointed muzzle
-    P(H, [0, 0.2, 0.3], [0.04, 0.3, 0.32], rotX(-0.3), C.dark); // nose-to-crown stripe
-    P(H, [0, 0.36, -0.1], [0.05, 0.2, 0.3], rotX(0.5), C.dark);
+    P(H, [0, -0.1, 0.4], [0.17, 0.15, 0.3 - SP.ms], rotX(-0.12), C.cheek); // pointed muzzle
+    if (SP.stripes) { P(H, [0, 0.2, 0.3], [0.04, 0.3, 0.32], rotX(-0.3), C.dark); // nose-to-crown stripe
+    P(H, [0, 0.36, -0.1], [0.05, 0.2, 0.3], rotX(0.5), C.dark); }
 
     const eyeOpen = clamp(Math.min(blink, 1 - 0.8 * happy) * (1 - 0.55 * sleepy) * (1 - 0.35 * Math.max(0, brow)), 0, 1);
     const WS = 1 + 0.25 * wide;
     for (const s of [-1, 1]) {
       P(H, [s * 0.3, -0.15, 0.3], [0.1 + 0.03 * blush, 0.09 + 0.02 * blush, 0.12], null, mix3(C.cheek, [0.96, 0.4, 0.46], blush));
-      P(H, [s * 0.3, 0.07, 0.3], [0.2 * WS, lerp(0.05, 0.23, eyeOpen) * WS, 0.13], null, C.dark); // dark eye patch
+      P(H, [s * 0.3, 0.07, 0.3], [0.2 * WS, lerp(0.05, 0.23, eyeOpen) * WS, 0.13], null, SP.pc === 1 ? C.dark : mix3(C.fur, C.dark, SP.pc)); // dark eye patch
       P(H, [s * 0.31, 0.07, 0.35], [0.155 * WS, lerp(0.02, 0.19, eyeOpen) * WS, 0.12], null, C.eye, 1.0, 0);
       if (eyeOpen > 0.5) {
         P(H, [s * 0.27, 0.15, 0.45], [0.05, 0.055, 0.025], null, C.white, 1.0, 0);
@@ -250,11 +272,13 @@
       // ears: big, thin, pinkish-grey
       const wig = Math.sin(t * (thinking > 0.1 ? 9 : 1.1) + s) * (thinking > 0.1 ? 0.1 : 0.05)
         + happy * Math.sin(t * 14 + s) * 0.08;
-      const E = child(H, [s * 0.36, 0.36, -0.02], rotZ(-s * (0.5 - 0.18 * alert + 0.28 * sleepy + 0.45 * earBack) + s * wig));
-      P(E, [0, 0.14, 0], [0.22, 0.4, 0.04], null, C.earOut, 0, 0.5);
-      P(E, [0, 0.12, 0.03], [0.15, 0.32, 0.03], null, C.earIn, 0, 0.3);
+      const [ex, ey, ea, ew, eh] = SP.ear;
+      const E = child(H, [s * ex, ey, -0.02], rotZ(-s * (ea - 0.18 * alert + 0.28 * sleepy + 0.45 * earBack) + s * wig));
+      P(E, [0, eh * 0.35, 0], [ew, eh, 0.04], null, C.earOut, 0, 0.5);
+      P(E, [0, eh * 0.3, 0.03], [ew * 0.68, eh * 0.8, 0.03], null, C.earIn, 0, 0.3);
     }
-    P(H, [0, -0.1, 0.69], [0.05, 0.04, 0.04], null, C.nose, 0.6, 0.3);
+    if (SP.whisk) for (const s of [-1, 1]) for (const k of [-1, 0, 1]) P(H, [s * 0.3, -0.17 + k * 0.04, 0.55 - SP.ms], [0.17, 0.008, 0.008], rotZ(s * (-0.1 + k * 0.18)), C.white, 0, 0);
+    P(H, [0, -0.1, 0.69 - SP.ms], [0.05, 0.04, 0.04], null, C.nose, 0.6, 0.3);
     if (mouthO > 0.05) P(H, [0, -0.24, 0.6], [0.04 + 0.05 * mouthO, 0.02 + 0.07 * mouthO, 0.03], null, C.dark, 0, 0); // open mouth
 
 
@@ -265,6 +289,39 @@
       const ringZ = (F, z, rx, ry, n, sz, col, cy) => { for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; O(F, [Math.sin(a) * rx, (cy || 0) + Math.cos(a) * ry, z], [sz, sz, sz * 0.9], null, col, 0.7); } };
       const cone = (F, y0, h, r0, r1, n, col, bend) => { for (let i = 0; i < n; i++) { const u = i / (n - 1), r = lerp(r0, r1, u); O(F, [(bend || 0) * u * u, y0 + h * u, 0], [r, h / n * 0.85, r], null, col); } };
       switch (p.style) {
+        case 'tophat': {
+          const bk = [0.08, 0.08, 0.1];
+          O(H, [0, 0.45, 0], [0.55, 0.04, 0.52], null, bk); O(H, [0, 0.72, 0], [0.3, 0.26, 0.29], null, bk); ringY(H, 0.56, 0.3, 0.29, 10, 0.04, [0.8, 0.1, 0.15], 0.04);
+          break;
+        }
+        case 'headphones': {
+          const gr = [0.2, 0.2, 0.25], rd = [0.9, 0.2, 0.3];
+          for (let i = 0; i <= 8; i++) { const a = (i / 8) * Math.PI; O(H, [Math.cos(a) * 0.55, Math.sin(a) * 0.5 + 0.2, 0], [0.04, 0.04, 0.04], null, gr, 0.5); }
+          for (const s of [-1, 1]) O(H, [s * 0.56, 0.05, 0], [0.1, 0.18, 0.17], null, rd, 0.5);
+          break;
+        }
+        case 'flowers': {
+          const cols = [[0.97, 0.5, 0.65], [0.98, 0.9, 0.3], [0.95, 0.95, 0.98], [0.7, 0.55, 0.95]];
+          ringY(H, 0.4, 0.44, 0.42, 14, 0.05, [0.3, 0.6, 0.25], 0.04);
+          for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; O(H, [Math.sin(a) * 0.45, 0.45, Math.cos(a) * 0.43], [0.09, 0.09, 0.07], null, cols[i % 4]); }
+          break;
+        }
+        case 'bowtie': {
+          const rd = [0.85, 0.12, 0.2];
+          for (const s of [-1, 1]) O(H, [s * 0.14, -0.5, 0.3], [0.13, 0.09, 0.05], rotZ(s * 0.25), rd); O(H, [0, -0.5, 0.33], [0.05, 0.05, 0.05], null, [0.6, 0.05, 0.12]);
+          break;
+        }
+        case 'beanie': {
+          const bl = [0.25, 0.5, 0.85], w = [0.97, 0.97, 0.98];
+          O(H, [0, 0.5, 0], [0.5, 0.2, 0.47], null, bl); ringY(H, 0.36, 0.48, 0.46, 14, 0.07, w, 0.08); O(H, [0, 0.74, 0], [0.1, 0.1, 0.1], null, w);
+          break;
+        }
+        case 'bee': {
+          const bk = [0.1, 0.1, 0.12], y = [0.98, 0.82, 0.15];
+          for (const s of [-1, 1]) { const sw = Math.sin(t * 3 + s) * 0.08; O(H, [s * 0.18, 0.62, 0.05], [0.02, 0.2, 0.02], rotZ(-s * (0.35 + sw)), bk); O(H, [s * 0.3, 0.82, 0.05], [0.07, 0.07, 0.07], null, y, 0.6); }
+          ringY(H, -0.45, 0.4, 0.38, 12, 0.06, y, 0.06);
+          break;
+        }
         case 'wizard': {
           const c = [0.27, 0.17, 0.55], gold = [0.95, 0.8, 0.25];
           O(H, [0, 0.43, 0], [0.82, 0.05, 0.8], rotZ(0.06), c); cone(H, 0.45, 0.95, 0.5, 0.05, 7, c, -0.25);

@@ -168,6 +168,29 @@
   }
   function draw(parts) { petStage.draw(parts); }
 
+  // "Drawn by me": the player's own pixel frames replace the 3D model; frames cross-fade as the pose changes
+  const DS = ['idle', 'glide', 'happy', 'sleepy', 'thinking'];
+  const dcv = document.createElement('canvas'); dcv.id = 'drawn'; dcv.width = dcv.height = 220; canvas.after(dcv);
+  let dImgs = {}, dRef = null, dOn = false;
+  function drawnReady() {
+    if (settings.drawn !== dRef) { dRef = settings.drawn; dImgs = {}; for (const k of DS) if (dRef && typeof dRef[k] === 'string') { const im = new Image(); im.src = dRef[k]; dImgs[k] = im; } }
+    return !!(dImgs.idle && dImgs.idle.naturalWidth);
+  }
+  function setDrawnMode(on) { if (on === dOn) return; dOn = on; canvas.style.visibility = on ? 'hidden' : 'visible'; dcv.style.display = on ? 'block' : 'none'; }
+  function drawSprite(now, dz) {
+    setDrawnMode(true);
+    const c = dcv.getContext('2d'), g = clamp(dz.glide, 0, 1), cr = clamp(dz.crouch, 0, 1);
+    const w = { glide: g, happy: st.happy, sleepy: st.sleepy || 0, thinking: st.thinking };
+    c.clearRect(0, 0, 220, 220); c.imageSmoothingEnabled = false; c.save();
+    c.translate(110, 120 + Math.sin(now / 450) * 2 * (1 - g)); c.scale((clamp(st.bodyYaw * 2.5, -1, 1) || 1) * (1 + 0.08 * cr), 1 - 0.12 * cr);
+    for (const k of DS) {
+      const im = dImgs[k]; if (!im || !im.naturalWidth) continue;
+      const a = k === 'idle' ? 1 : clamp(w[k], 0, 1); if (a < 0.01) continue;
+      c.globalAlpha = a; c.drawImage(im, -110, -110, 220, 220);
+    }
+    c.restore();
+  }
+
   // The branch Pip perches on: built from the same ellipsoids, drawn in its own canvas
   // that sits exactly under Pip's canvas (same size and scale), so his feet meet the wood.
   const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
@@ -879,12 +902,13 @@
     const cx = st.x + SIZE / 2, cy = st.y + st.hopY + SIZE * 0.4;
     const tYaw = clamp((mouse.x - cx) / 400, -1, 1) * 0.75;
     const tPitch = clamp((cy - mouse.y) / 400, -1, 1) * 0.4;
-    st.lookYaw += (tYaw - st.lookYaw) * 0.12;
-    st.lookPitch += (tPitch - st.lookPitch) * 0.12;
+    const K = (r) => 1 - Math.exp(-dt * r); // frame-rate independent easing
+    st.lookYaw += (tYaw - st.lookYaw) * K(7.6);
+    st.lookPitch += (tPitch - st.lookPitch) * K(7.6);
 
     const flying = (st.flight && now - st.flight.t0 > st.flight.crouch && fp < 0.9) || (st.rag && st.rag.glideAmt > 0.5);
     const tBody = (st.hop && st.hop.far) || flying ? st.face * 1.15 : st.perch ? st.face * 0.3 : st.face * 0.45;
-    st.bodyYaw += (tBody - st.bodyYaw) * 0.14;
+    st.bodyYaw += (tBody - st.bodyYaw) * K(9);
 
     let blink = 1;
     if (st.blinkT < 0 && now > st.nextBlink) st.blinkT = now;
@@ -894,11 +918,11 @@
       else blink = Math.abs(k * 2 - 1);
     }
 
-    st.happy += ((now < happyUntil ? 1 : 0) - st.happy) * 0.2;
+    st.happy += ((now < happyUntil ? 1 : 0) - st.happy) * K(7);
     const hr = new Date().getHours();
-    st.sleepy = (st.sleepy || 0) + (((hr >= 23 || hr < 6) && !st.chatOpen && !st.dragging && now > alertUntil ? 0.85 : 0) - (st.sleepy || 0)) * 0.02;
-    st.alert = (st.alert || 0) + (((now < alertUntil || st.chatOpen) ? 1 : 0) - (st.alert || 0)) * 0.15;
-    st.thinking += ((thinkingFlag ? 1 : 0) - st.thinking) * 0.14;
+    st.sleepy = (st.sleepy || 0) + (((hr >= 23 || hr < 6) && !st.chatOpen && !st.dragging && now > alertUntil ? 0.85 : 0) - (st.sleepy || 0)) * K(1.2);
+    st.alert = (st.alert || 0) + (((now < alertUntil || st.chatOpen) ? 1 : 0) - (st.alert || 0)) * K(9);
+    st.thinking += ((thinkingFlag ? 1 : 0) - st.thinking) * K(6);
 
     const dz = danceOffsets(now);
     dz.hop += awayStep(now);
@@ -922,7 +946,9 @@
       dz.crouch = S('crouch', Math.max(dz.crouch, eo.crouch, st.crouch), 14); eo.crouch = 0; st.sCrouch = dz.crouch;
     }
     const sadBrow = sadAmt, sadMouth = sadAmt;
-    if (gl) {
+    if (gl && settings.species === 'drawn' && drawnReady()) drawSprite(now, dz);
+    else if (gl) {
+      setDrawnMode(false);
       draw(Model.buildParts({
         t: now / 1000,
         bodyYaw: st.bodyYaw + dz.yaw,
@@ -947,6 +973,8 @@
         alert: Math.max(st.alert, ec.alert || 0),
         palette: settings.palette,
         style: skinNow(),
+        skin: settings.skin || 'classic',
+        species: settings.species || 'glider',
       }));
     }
 
@@ -1737,6 +1765,9 @@
     showProvider();
     $('s-name').value = settings.petName;
     $('s-palette').value = settings.palette;
+    $('s-species').value = settings.species || 'glider';
+    dLoad();
+    $('s-skin').value = settings.skin || 'classic';
     $('s-style').value = settings.style || 'classic';
     $('s-model').value = settings.model || 'claude-haiku-5-5';
     $('s-wander').checked = !!settings.wander;
@@ -1873,6 +1904,9 @@
       cloudflareModel: $('s-cfmodel').value,
       petName: $('s-name').value,
       palette: $('s-palette').value,
+      species: $('s-species').value,
+      drawn: settings.drawn || {},
+      skin: $('s-skin').value,
       style: $('s-style').value,
       model: $('s-model').value,
       wander: $('s-wander').checked,
@@ -2015,7 +2049,30 @@
       else { sfx('draw'); setEmotion('neutral'); showBubble('A draw. Not bad!', 4500); }
     },
   });
-  $('s-style').addEventListener('change', () => { settings.style = $('s-style').value; startDance('twirl'); }); // preview a skin straight away
+  $('s-style').addEventListener('change', () => { settings.style = $('s-style').value; startDance('twirl'); }); // preview a cosmetic straight away
+  $('s-species').addEventListener('change', () => { settings.species = $('s-species').value; startDance('twirl'); });
+  { // pixel editor for "Draw your own Pip"
+    const N = 32, frames = {}, cv = $('s-dcv'), fr = (k) => frames[k] || (frames[k] = Object.assign(document.createElement('canvas'), { width: N, height: N }));
+    const cur = () => $('s-dstate').value;
+    const show = () => { const v = cv.getContext('2d'); v.clearRect(0, 0, N, N); if (cur() !== 'idle') { v.globalAlpha = 0.25; v.drawImage(fr('idle'), 0, 0); v.globalAlpha = 1; } v.drawImage(fr(cur()), 0, 0); };
+    const commit = () => { const d = {}; for (const k of DS) { const c = fr(k); if (c.getContext('2d').getImageData(0, 0, N, N).data.some((v, i) => i % 4 === 3 && v)) d[k] = c.toDataURL('image/png'); } settings.drawn = d; show(); };
+    window.dLoad = () => { for (const k of DS) { const c = fr(k), x = c.getContext('2d'), u = (settings.drawn || {})[k]; x.clearRect(0, 0, N, N); if (u) { const im = new Image(); im.onload = () => { x.drawImage(im, 0, 0); show(); }; im.src = u; } } show(); };
+    for (const c of ['#2b2b33', '#9a9ca6', '#e9e4d8', '#ffffff', '#c98a8f', '#e8b4b8', '#d9863f', '#e8c34a', '#6fae6a', '#6ab7c9', '#5b7bd6', '#8a6cc4']) {
+      const b = document.createElement('button'); b.type = 'button'; b.style.background = c; b.addEventListener('click', () => { $('s-dcol').value = c; $('s-derase').checked = false; }); $('s-dsw').appendChild(b);
+    }
+    const plot = (x, y) => { const c = fr(cur()).getContext('2d'); for (const px of $('s-dmirror').checked ? [x, N - 1 - x] : [x]) { if ($('s-derase').checked) c.clearRect(px, y, 1, 1); else { c.fillStyle = $('s-dcol').value; c.fillRect(px, y, 1, 1); } } };
+    let last = null;
+    const pos = (e) => { const r = cv.getBoundingClientRect(); return [clamp(Math.floor((e.clientX - r.left) / r.width * N), 0, N - 1), clamp(Math.floor((e.clientY - r.top) / r.height * N), 0, N - 1)]; };
+    const stroke = (e) => { const [x, y] = pos(e), [lx, ly] = last || [x, y], n = Math.max(Math.abs(x - lx), Math.abs(y - ly), 1); for (let i = 1; i <= n; i++) plot(Math.round(lx + (x - lx) * i / n), Math.round(ly + (y - ly) * i / n)); last = [x, y]; show(); };
+    cv.addEventListener('pointerdown', (e) => { cv.setPointerCapture(e.pointerId); last = null; stroke(e); });
+    cv.addEventListener('pointermove', (e) => { if (last) stroke(e); });
+    cv.addEventListener('pointerup', () => { if (last) { last = null; commit(); } });
+    $('s-dstate').addEventListener('change', show);
+    $('s-dclear').addEventListener('click', () => { fr(cur()).getContext('2d').clearRect(0, 0, N, N); commit(); });
+    $('s-dcopy').addEventListener('click', () => { const c = fr(cur()).getContext('2d'); c.clearRect(0, 0, N, N); c.drawImage(fr('idle'), 0, 0); commit(); });
+    $('s-drawopen').addEventListener('click', () => { $('s-draw').hidden = !$('s-draw').hidden; });
+  }
+  $('s-skin').addEventListener('change', () => { settings.skin = $('s-skin').value; startDance('twirl'); });
   $('s-palette').addEventListener('change', () => { settings.palette = $('s-palette').value; });
   $('s-trymove').addEventListener('click', () => { const v = $('s-move').value; if (v === 'karate chop' || v === 'kick' || v === 'bow' || v === 'flex') improvise(v); else startDance(v); });
   const openGames = (which) => { PipGames.setLevel(settings.chessLevel || 'medium'); PipGames.open(which); };

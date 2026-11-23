@@ -164,11 +164,45 @@
       <div style="display:flex;gap:6px"><select id="s-move" style="flex:1"><option value="disco">Disco</option><option value="floss">Floss</option><option value="moonwalk">Moonwalk</option><option value="backflip">Backflip</option><option value="robot">Robot</option><option value="dab">Dab</option><option value="karate chop">Karate chop</option><option value="kick">Kick</option><option value="bow">Bow</option><option value="flex">Flex</option></select><button id="s-trymove" type="button">Play</button></div>
       <label for="s-name">Name</label>
       <input id="s-name" type="text" maxlength="20">
-      <label for="s-style">Skin</label>
-      <select id="s-style">
-        <option value="classic">Classic Pip</option>
-        <option value="season">Seasonal (changes with the date)</option>
+      <label for="s-species">Animal</label>
+      <select id="s-species">
+        <option value="glider">Sugar glider</option>
+        <option value="cat">Cat</option>
+        <option value="fox">Fox</option>
+        <option value="bunny">Bunny</option>
+        <option value="raccoon">Raccoon</option>
+        <option value="drawn">Drawn by me</option>
+      </select>
+      <button id="s-drawopen" type="button">Draw your own Pip...</button>
+      <div id="s-draw" hidden>
+        <select id="s-dstate"><option value="idle">Idle</option><option value="glide">Glide</option><option value="happy">Happy</option><option value="sleepy">Sleepy</option><option value="thinking">Thinking</option></select>
+        <canvas id="s-dcv" width="32" height="32"></canvas>
+        <div id="s-dsw"></div>
+        <input id="s-dcol" type="color" value="#9a9ca6">
+        <label class="check"><input id="s-derase" type="checkbox"> Eraser</label>
+        <label class="check"><input id="s-dmirror" type="checkbox" checked> Mirror left and right</label>
+        <div><button id="s-dclear" type="button">Clear this frame</button> <button id="s-dcopy" type="button">Copy from idle</button></div>
+        <small>Draw Pip facing right, then pick "Drawn by me" above. Frames fade into each other as he moves. Save settings to keep it.</small>
+      </div>
+      <label for="s-skin">Skin</label>
+      <select id="s-skin">
+        <option value="classic">Classic fur</option>
         <option value="yarn">Knitted yarn</option>
+        <option value="plush">Plush velvet</option>
+        <option value="shaggy">Shaggy</option>
+        <option value="toy">Glossy toy</option>
+        <option value="felt">Flat felt</option>
+      </select>
+      <label for="s-style">Cosmetic</label>
+      <select id="s-style">
+        <option value="classic">None</option>
+        <option value="season">Seasonal (changes with the date)</option>
+        <option value="tophat">Top hat</option>
+        <option value="headphones">Headphones</option>
+        <option value="flowers">Flower crown</option>
+        <option value="bowtie">Bow tie</option>
+        <option value="beanie">Beanie</option>
+        <option value="bee">Bee antennae</option>
         <option value="ninja">Ninja (headband)</option>
         <option value="wizard">Wizard (hat)</option>
         <option value="pirate">Pirate (bandana and eyepatch)</option>
