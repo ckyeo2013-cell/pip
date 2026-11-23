@@ -974,6 +974,10 @@ function createActions({
             while (!seen && Date.now() < until && gameOn) {
               await sleep(500); // every look is a screen capture, so do not hammer the graphics card while the browser is busy
               let cur = await grab();
+              { // premoves: the reply can land while my own snapshot was still mid-animation, so the changed-squares test may never fire; trust the occupied squares instead
+                let pm = occMatch(cur);
+                if (pm) { cur = await settle(cur); pm = occMatch(cur); if (pm) { take(pm, cur); break; } }
+              }
               if (cellDiffs(g.snap, cur).filter((v) => v > CHESS_T).length < 2) { g.oddPolls = 0; continue; }
               { // the board reset to a new game, or the board is gone: the game has ended (resigned, timed out, agreed draw...)
                 const oc = occupancy(cur); let nb = 0, cnt = 0; for (let i = 0; i < 64; i++) { if (oc[i] !== (i < 16 || i >= 48)) nb++; if (oc[i]) cnt++; }
@@ -2282,7 +2286,18 @@ function createActions({
     return uiOn ? defs : defs.filter((d) => d.name !== 'find_ui' && d.name !== 'press_ui');
   }
 
-  return { prepare, toolDefs, endGame() { gameOn = false; gameBudget = 0; chessGame = null; if (setOverlay) setOverlay(true); }, gameActive: () => gameOn, gameLimit: () => (gameOn ? gameBudget + 3 : 0) };
+  // Hands-free chess helpers used by Pip's own chess buttons (no AI): click a spot given as screen fractions, and read the board.
+  const clickFrac = async (fx, fy) => {
+    const info = (getScreenInfo && getScreenInfo()) || {}, b = info.bounds || info.workArea, sf = platform === 'darwin' ? 1 : (info.scaleFactor || 1);
+    const c = sys.clicksCommand([{ x: (b.x + fx * b.width) * sf, y: (b.y + fy * b.height) * sf }], platform, 250);
+    await new Promise((res, rej) => execFile(c.cmd, c.args, { timeout: 20000, windowsHide: true }, (e) => (e ? rej(new Error('Could not click: ' + e.message)) : res())));
+  };
+  const readBoard = async (region) => { // { atStart, whiteBottom } for the board at region (fractions of the screen)
+    const r = parseRegion(region), snap = await grabBoard(r), occ = occupancy(snap);
+    let bad = 0; for (let i = 0; i < 64; i++) if (occ[i] !== (i < 16 || i >= 48)) bad++;
+    return { atStart: bad <= 4, whiteBottom: startOrientation(snap) };
+  };
+  return { prepare, toolDefs, clickFrac, readBoard, endGame() { gameOn = false; gameBudget = 0; chessGame = null; if (setOverlay) setOverlay(true); }, gameActive: () => gameOn, gameLimit: () => (gameOn ? gameBudget + 3 : 0) };
 }
 
 module.exports = { createActions };

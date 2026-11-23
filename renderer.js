@@ -1429,6 +1429,14 @@
       case 'games': closeChatForGame(); openGames(); break;
       case 'screenchess': screenChess(); break;
       case 'rematch': (async () => { closeChatForGame(); const r = await pip.chessScreen({ rematch: true, level: settings.chessLevel || 'max' }); if (r && r.message) showBubble(r.message, 8000); })(); break;
+      case 'chessauto': (async () => { closeChatForGame(); const r = await pip.chessAuto({ level: settings.chessLevel || 'max' }); if (r && r.message) showBubble(r.message, 9000); })(); break;
+      case 'chessresign': (async () => { const r = await pip.chessResign(); if (r && r.message) showBubble(r.message, 5000); })(); break;
+      case 'chessteach': (async () => {
+        closeChatForGame();
+        const w = await pickOne('Which button should I learn?', [['newGame', 'New game'], ['resign', 'Resign'], ['confirm', 'Resign confirm (Yes)']]);
+        if (!w) return;
+        const r = await pip.chessTeach(w); if (r && r.message) showBubble(r.message, 5000);
+      })(); break;
       case 'stopgame': pip.chessStop(); showBubble('Okay, I stopped.', 3000); break;
       case 'clipsum': send('summarize'); break;
       case 'clipfix': send('fix'); break;

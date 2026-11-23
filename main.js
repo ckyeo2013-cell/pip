@@ -1057,6 +1057,75 @@ function registerIpc() {
   let chessStopFlag = false;
   let lastChess = null; // { board, white } of the last game, for the Rematch button
   ipcMain.on('chess:stop', () => { chessStopFlag = true; if (actions) actions.endGame(); send('status', { text: '' }); });
+  // ---- hands-free chess: one game by Pip's own engine; Pip's colour is passed in
+  async function playOne(board, pipColor, level, hello) {
+    let final = '';
+    await (await actions.prepare('start_game', { game: 'chess', max_steps: 150 })).run();
+    if (hello) send('say', { text: hello, ms: 3500 });
+    let first = true, errs = 0;
+    for (let i = 0; i < 400 && actions.gameActive() && !chessStopFlag; i++) {
+      const r = await (await actions.prepare('chess_play', first ? { board, my_color: pipColor, level, moves: 60, clock: settings.chessClock || undefined } : { level, moves: 60 })).run();
+      first = false;
+      if (/Game over|I resign|offer a draw|Checkmate|Stalemate|was stopped|hopelessly lost/i.test(r)) { final = r; break; }
+      if (/not moved yet/i.test(r)) { errs = 0; continue; }
+      if (!/Played/.test(r) && /did not register|could not|turned off|blocked|missing|not available/i.test(r)) { if (++errs >= 6) { final = r; break; } await sleep(1200); } else errs = 0;
+    }
+    if (/hopelessly lost|I resign/i.test(final)) await pressButtons(['resign', 'confirm']);
+    return final;
+  }
+  // buttons the user taught Pip by hovering (fractions of the screen): newGame, resign, confirm
+  const btnFile = () => path.join(app.getPath('userData'), 'chess-buttons.json');
+  const getBtns = () => { try { return JSON.parse(fs.readFileSync(btnFile(), 'utf8')); } catch (_) { return {}; } };
+  async function pressButtons(names) {
+    const bt = getBtns();
+    for (const n of names) { if (bt[n]) { await actions.clickFrac(bt[n].x, bt[n].y); await sleep(900); } }
+  }
+  ipcMain.handle('chess:teach', async (_e, which) => {
+    if (!['newGame', 'resign', 'confirm'].includes(which)) return { message: 'Unknown button.' };
+    const label = { newGame: 'NEW GAME / play button', resign: 'RESIGN button', confirm: 'resign CONFIRM (Yes) button' }[which];
+    for (let i = 6; i > 0; i--) { send('say', { text: `Hover the mouse on the ${label}. Learning it in ${i}...`, ms: 1100 }); await sleep(1000); }
+    const p = screen.getCursorScreenPoint(), d = screen.getPrimaryDisplay().bounds;
+    const bt = getBtns(); bt[which] = { x: (p.x - d.x) / d.width, y: (p.y - d.y) / d.height };
+    fs.writeFileSync(btnFile(), JSON.stringify(bt));
+    return { message: `Got it, I learned the ${label}.` };
+  });
+  ipcMain.handle('chess:resign', async () => {
+    const bt = getBtns();
+    if (!bt.resign) return { message: 'Teach me the Resign button first (chess teach).' };
+    await pressButtons(['resign', 'confirm']);
+    return { message: 'I resigned.' };
+  });
+  // play game after game by itself: start a new match, play it, resign when lost, repeat until Stop
+  ipcMain.handle('chess:auto', async (_e, opts) => {
+    if (!actions) return { message: 'Pip cannot click here.' };
+    if (!settings.fullAccess) return { message: 'Turn on "Let Pip do things for me" in the Pip settings first.' };
+    if (!lastChess) return { message: 'Play one game with the chess button first, so I know where the board is. Then I can play on my own.' };
+    const bt = getBtns();
+    if (!bt.newGame) return { message: 'Teach me the New Game button first (chess teach), so I can start matches.' };
+    chessStopFlag = false;
+    const level = (opts && opts.level) || settings.chessLevel || 'max', maxGames = Math.max(1, Math.min(50, Number(opts && opts.games) || 10));
+    let played = 0, last = '';
+    while (played < maxGames && !chessStopFlag) {
+      let st = await actions.readBoard(lastChess.board).catch(() => null);
+      if (!st || !st.atStart) { // not at the start of a game: press New Game and wait for a fresh board (online matchmaking can take a while)
+        send('say', { text: 'Starting a new match.', ms: 2500 });
+        await pressButtons(['newGame']);
+        for (let i = 0; i < 60 && !chessStopFlag; i++) { await sleep(1000); st = await actions.readBoard(lastChess.board).catch(() => null); if (st && st.atStart) break; }
+      }
+      if (chessStopFlag || !st || !st.atStart) { last = 'I could not find a fresh game, so I stopped.'; break; }
+      const pipWhite = st.whiteBottom !== false; // Pip plays the side at the bottom of the board
+      lastChess.white = !pipWhite;
+      let final = '';
+      try { final = await playOne(lastChess.board, pipWhite ? 'white' : 'black', level, pipWhite ? 'I am white. Here I go.' : 'I am black.'); } catch (e) { final = String((e && e.message) || e); }
+      if (actions) actions.endGame();
+      played++; last = String(final);
+      if (!/Game over|I resign|hopelessly|Checkmate|Stalemate|offer a draw/i.test(final)) break; // something went wrong: stop instead of looping
+      await sleep(3500);
+    }
+    if (actions) actions.endGame();
+    send('status', { text: '' });
+    return { message: chessStopFlag ? `Stopped after ${played} game${played === 1 ? '' : 's'}.` : `Played ${played} game${played === 1 ? '' : 's'}. ${/stopped|could not/i.test(last) ? last.slice(0, 120) : ''}`.trim() };
+  });
   ipcMain.handle('chess:screen', async (_e, opts) => {
     if (!actions) return { message: 'Pip cannot click here.' };
     if (!settings.fullAccess) return { message: 'Turn on "Let Pip do things for me" in the Pip settings first, so I am allowed to click the board.' };
@@ -1085,18 +1154,7 @@ function registerIpc() {
     }
     lastChess = { board, white };
     let final = '';
-    try {
-      await (await actions.prepare('start_game', { game: 'chess', max_steps: 150 })).run();
-      send('say', { text: white ? 'Okay, you are white. Make your first move, I am watching the board.' : 'Okay, I am white. Here I go.', ms: 3500 });
-      let first = true, errs = 0;
-      for (let i = 0; i < 400 && actions.gameActive() && !chessStopFlag; i++) {
-        const r = await (await actions.prepare('chess_play', first ? { board, my_color: white ? 'black' : 'white', level, moves: 60, clock: settings.chessClock || undefined } : { level, moves: 60 })).run();
-        first = false;
-        if (/Game over|I resign|offer a draw|Checkmate|Stalemate|was stopped/i.test(r)) { final = r; break; }
-        if (/not moved yet/i.test(r)) { errs = 0; continue; } // slow opponent: keep waiting
-        if (!/Played/.test(r) && /did not register|could not|turned off|blocked|missing|not available/i.test(r)) { if (++errs >= 6) { final = r; break; } await sleep(1200); } else errs = 0;
-      }
-    } catch (e) { final = String((e && e.message) || e); }
+    try { final = await playOne(board, white ? 'black' : 'white', level, white ? 'Okay, you are white. Make your first move, I am watching the board.' : 'Okay, I am white. Here I go.'); } catch (e) { final = String((e && e.message) || e); }
     if (actions) actions.endGame();
     send('status', { text: '' });
     if (/FEN needed|FEN does not match/.test(final)) return { message: 'This game is already in progress and I have not learned what the pieces on this site look like yet. Start the chess button at the beginning of a game once (I learn the pieces then), or ask me in chat to play chess and I will read the position with the AI.' };
