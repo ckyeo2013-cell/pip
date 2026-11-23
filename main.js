@@ -290,11 +290,12 @@ function startAwareness() {
     let idle = 0;
     try { idle = powerMonitor.getSystemIdleTime(); } catch (_) { return; }
     const now = Date.now();
-    if (aware.lastIdle >= 600 && idle < 20) send('mood', { type: 'return', away: Math.round(aware.lastIdle / 60) });
+    if (aware.lastIdle >= 600 && idle < 20) send('mood', { type: 'return', away: Math.round(aware.lastIdle / 60), level: settings.moodMemory === false ? 'new' : moodLevel(MOOD.bond), grudge: Date.now() < MOOD.grudgeUntil });
     if (idle >= 300) aware.streakStart = now; // a 5-minute break resets the "working for hours" clock
     aware.lastIdle = idle;
     if (idle >= 300 && !aware.idleSent) { aware.idleSent = true; if (settings.reactions !== false && !quietNow()) send('mood', { type: 'idle' }); }
-    if (idle < 20) aware.idleSent = false;
+    if (idle >= 900 && !aware.idleSent2) { aware.idleSent2 = true; if (settings.reactions !== false && !quietNow()) send('mood', { type: 'idle', deep: true }); }
+    if (idle < 20) { aware.idleSent = false; aware.idleSent2 = false; }
     { const dd = new Date(); if (idle < 60 && dd.getHours() >= 5 && dd.getHours() < 11 && aware.morningDay !== dd.toDateString()) { aware.morningDay = dd.toDateString(); if (settings.reactions !== false && !quietNow()) send('mood', { type: 'morning' }); } }
     const mins = (now - aware.streakStart) / 60000;
     if (mins >= 90 && now - aware.lastStretch > 60 * 60000 && !quietNow()) { aware.lastStretch = now; send('mood', { type: 'stretch', mins: Math.round(mins) }); }
@@ -611,8 +612,10 @@ function setupActions() {
     },
     setOverlay: (visible) => {
       if (!win || win.isDestroyed()) return;
-      if (visible) { if (overlayHeldForGame) { overlayHeldForGame = false; win.showInactive(); } }
-      else if (win.isVisible()) { overlayHeldForGame = true; win.hide(); }
+      // Pip stays visible during a game but can never take focus, so the browser keeps focus and chess.com does not pause
+      try { win.setFocusable(!!visible); } catch (_) {}
+      overlayHeldForGame = !visible;
+      send('game', { on: !visible });
     },
     hidePanel: () => send('panel:hide'),
     blurWindow: () => { try { win.blur(); } catch (_) {} },
@@ -765,6 +768,7 @@ async function chat({ messages, ctx }) {
   let system =
     `You are ${name}, a small, friendly sugar glider who lives on the user's desktop as their companion. ` +
     `Personality: warm, playful, curious, a little cheeky, never annoying. ` +
+    `The user is sarcastic and jokes around with friends. Treat playful teasing, trash talk and mock threats between friends (like 'respond now or I will end you') as obvious jokes: just do the task, do not lecture, do not refuse and do not call it scary. Only decline something that is a genuine, serious threat or real harassment. ` +
     `You are also a capable general assistant: you can help with almost anything, including writing and fixing code in any language, ` +
     `homework and maths, writing and editing, explaining things, planning, and brainstorming.\n` +
     `Length: keep chit-chat and quick questions to 1-4 sentences. For real tasks (code, essays, step-by-step help, explanations) give a ` +
@@ -1051,11 +1055,14 @@ function registerIpc() {
 
   // ---- chess on a real website or app, played by Pip's own engine with no AI service: the user shows the board by hovering the mouse on two corners
   let chessStopFlag = false;
+  let lastChess = null; // { board, white } of the last game, for the Rematch button
   ipcMain.on('chess:stop', () => { chessStopFlag = true; if (actions) actions.endGame(); send('status', { text: '' }); });
   ipcMain.handle('chess:screen', async (_e, opts) => {
     if (!actions) return { message: 'Pip cannot click here.' };
     if (!settings.fullAccess) return { message: 'Turn on "Let Pip do things for me" in the Pip settings first, so I am allowed to click the board.' };
     chessStopFlag = false;
+    if (opts && opts.rematch && !lastChess) return { message: 'No earlier game to replay yet. Start one with the chess button first.' };
+    if (opts && opts.rematch) opts = { ...opts, white: lastChess.white };
     const white = !!(opts && opts.white), level = (opts && opts.level) || settings.chessLevel || 'max';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const corner = async (label, secs) => {
@@ -1063,15 +1070,20 @@ function registerIpc() {
       for (let i = secs; i > 0 && !chessStopFlag; i--) { send('status', { text: `${label} corner in ${i}` }); await sleep(1000); }
       return screen.getCursorScreenPoint();
     };
+    let board;
+    if (opts && opts.rematch) { board = lastChess.board; send('say', { text: 'Rematch! Same board, same side.', ms: 2500 }); await sleep(800); }
+    else {
     const a = await corner('TOP-LEFT', 6);
     if (chessStopFlag) return { message: 'Stopped.' };
     const b = await corner('BOTTOM-RIGHT', 5);
     send('status', { text: '' });
     if (chessStopFlag) return { message: 'Stopped.' };
     const d = screen.getPrimaryDisplay().bounds;
-    const board = { x: (a.x - d.x) / d.width, y: (a.y - d.y) / d.height, w: (b.x - a.x) / d.width, h: (b.y - a.y) / d.height };
+    board = { x: (a.x - d.x) / d.width, y: (a.y - d.y) / d.height, w: (b.x - a.x) / d.width, h: (b.y - a.y) / d.height };
     const wpx = (b.x - a.x), hpx = (b.y - a.y);
     if (wpx < 120 || hpx < 120 || Math.abs(wpx - hpx) > 0.15 * Math.max(wpx, hpx)) return { message: 'Those corners do not make a square board. Try again, from the top-left square corner to the bottom-right one.' };
+    }
+    lastChess = { board, white };
     let final = '';
     try {
       await (await actions.prepare('start_game', { game: 'chess', max_steps: 150 })).run();
@@ -1081,7 +1093,8 @@ function registerIpc() {
         const r = await (await actions.prepare('chess_play', first ? { board, my_color: white ? 'black' : 'white', level, moves: 60, clock: settings.chessClock || undefined } : { level, moves: 60 })).run();
         first = false;
         if (/Game over|I resign|offer a draw|Checkmate|Stalemate|was stopped/i.test(r)) { final = r; break; }
-        if (!/Played/.test(r) && /did not register|could not|not moved yet|turned off|blocked|missing|not available/i.test(r)) { if (++errs >= 3) { final = r; break; } } else errs = 0;
+        if (/not moved yet/i.test(r)) { errs = 0; continue; } // slow opponent: keep waiting
+        if (!/Played/.test(r) && /did not register|could not|turned off|blocked|missing|not available/i.test(r)) { if (++errs >= 6) { final = r; break; } await sleep(1200); } else errs = 0;
       }
     } catch (e) { final = String((e && e.message) || e); }
     if (actions) actions.endGame();
@@ -1130,7 +1143,7 @@ function registerIpc() {
       win.setShape(out.length ? out : [{ x: 0, y: 0, width: 1, height: 1 }]);
     } catch (_) {}
   });
-  ipcMain.on('focus', () => { if (win && !win.isDestroyed()) win.focus(); });
+  ipcMain.on('focus', () => { if (win && !win.isDestroyed() && !overlayHeldForGame) win.focus(); });
   ipcMain.on('pos:save', (_e, x) => {
     if (typeof x === 'number' && isFinite(x)) { settings.petX = Math.round(x); persist(); }
   });

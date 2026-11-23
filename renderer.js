@@ -899,6 +899,8 @@
       } else if (Math.abs(st.y - floorY()) > 4) startHop(st.x, 25, floorY());
       pip.savePos(st.x);
       st.nextHop = performance.now() + rand(8000, 16000);
+    } else if (st.gameOn) {
+      pip.chessStop(); st.gameOn = false; showBubble('Okay, I stopped the game.', 3500);
     } else {
       cheer();
       if (!st.hop) startHop(st.x, 38);
@@ -1426,6 +1428,7 @@
         break;
       case 'games': closeChatForGame(); openGames(); break;
       case 'screenchess': screenChess(); break;
+      case 'rematch': (async () => { closeChatForGame(); const r = await pip.chessScreen({ rematch: true, level: settings.chessLevel || 'max' }); if (r && r.message) showBubble(r.message, 8000); })(); break;
       case 'stopgame': pip.chessStop(); showBubble('Okay, I stopped.', 3000); break;
       case 'clipsum': send('summarize'); break;
       case 'clipfix': send('fix'); break;
@@ -1640,7 +1643,15 @@
     if (quiet()) return;
     if (settings.reactions === false && ['idle', 'music', 'copied', 'morning'].includes(m.type)) return;
     if (m.type === 'emote') { if (m.name === 'excited' || m.name === 'proud') startDance('flourish'); setEmotion(m.name, 6000); return; }
-    if (m.type === 'idle') { setEmotion('bored', 9000); showBubble('Hello? Anyone there?', 5000); return; }
+    if (m.type === 'idle') {
+      const h = new Date().getHours();
+      if (m.deep || h >= 23 || h < 5) { setEmotion('sleepy', 20000); showBubble(h >= 23 || h < 5 ? 'Zzz... it is bedtime for gliders.' : 'Zzz... I am taking a nap.', 8000); return; }
+      const r = Math.random();
+      if (r < 0.34) { setEmotion('yawn', 7000); showBubble('*stretches* Hello? Anyone there?', 5000); }
+      else if (r < 0.67) { startDance(); showBubble('Nobody is looking. Dance party!', 5000); }
+      else { setEmotion('bored', 9000); if (!st.hop) startHop(clamp(rand(minPetX(), maxPetX()), minPetX(), maxPetX()), 60); showBubble('Hello? Anyone there?', 5000); }
+      return;
+    }
     if (m.type === 'music') { if (m.on) { setEmotion('excited', 6000); startDance(); showBubble('Ooh, music!', 4000); } return; }
     if (m.type === 'copied') { alertUntil = now + 2500; if (Math.random() < 0.25) showBubble('Ooh, what did you copy?', 3000); return; }
     if (m.type === 'morning') { setEmotion('happy', 7000); showBubble('Good morning! Ready for today?', 6000); return; }
@@ -1648,7 +1659,15 @@
       alertUntil = now + 4000;
       cheer(2200);
       if (!st.hop && !st.chatOpen) startHop(st.x, 38);
-      showBubble(m.away >= 60 ? 'Welcome back! It has been a while' : 'Welcome back!', 6000);
+      {
+        const L = m.level || 'new', long = m.away >= 60;
+        const lines = m.grudge || L === 'hurt' ? ['Oh. You are back.', '...hi.']
+          : L === 'wary' ? ['Oh, hello again.', 'Back already?']
+          : L === 'close' || L === 'best friend' ? (long ? ['FINALLY. I missed you!', 'Where have you been?! I was so bored.'] : ['You are back! I knew you could not stay away.', 'Miss me?'])
+          : L === 'friendly' ? ['Welcome back!', 'Hey, you are back!']
+          : [long ? 'Welcome back! It has been a while' : 'Welcome back!'];
+        showBubble(lines[Math.floor(Math.random() * lines.length)], 6000);
+      }
     } else if (m.type === 'stretch') {
       alertUntil = now + 3000;
       showBubble(`You've been at it for ${m.mins >= 120 ? Math.round(m.mins / 60) + ' hours' : m.mins + ' minutes'}. Quick stretch?`, 10000);
@@ -1656,6 +1675,7 @@
       showBubble("It's getting late... maybe time to wind down?", 9000);
     }
   });
+  pip.onGame((g) => { st.gameOn = !!g.on; if (g.on) showBubble('Playing. Click me to stop the game.', 4000); });
   pip.onSettings((s) => { Object.assign(settings, s); applySettings(); });
   pip.onOpenChat(() => { if (!st.chatOpen) openChat(); else pip.focus(); });
 
@@ -1730,3 +1750,6 @@
 
   requestAnimationFrame(frame);
 })();
+
+// let the mouse wheel scroll the quick-action chips sideways
+(() => { const c = document.querySelector('.chips'); if (c) c.addEventListener('wheel', (e) => { if (e.deltaY) { c.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false }); })();

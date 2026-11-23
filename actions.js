@@ -935,15 +935,15 @@ function createActions({
           const chat = (kind, force) => {
             const T = {
               oppBigCapture: [['Ouch, that one hurt.', 'sad'], ['Hey, that was my piece!', 'mad']],
-              oppBlunder: [['Ooh, I think you left something hanging.', 'surprised'], ['Hmm, was that on purpose?', 'surprised']],
+              oppBlunder: [['Ooh, I think you left something hanging.', 'surprised'], ['Hmm, was that on purpose?', 'surprised'], ['Free piece? Do not mind if I do.', 'happy'], ['Did you mean to do that, or did your hand slip?', 'surprised']],
               surprise: [['Hm, I did not see that coming.', 'surprised']],
-              winning: [['I like my position.', 'proud'], ['Things are looking good for me.', 'happy']],
+              winning: [['I like my position.', 'proud'], ['Things are looking good for me.', 'happy'], ['You might want to resign now. Just saying.', 'proud'], ['Is this the best you have got?', 'proud']],
               losing: [['This is getting tough for me.', 'nervous'], ['Uh oh. I am in trouble.', 'nervous']],
               mateSoon: [['I think I see a mate.', 'excited']],
-              check: [['Check.', 'excited']],
-              bigCapture: [['Gotcha.', 'proud'], ['Thank you for that one.', 'happy']],
-              won: [['Checkmate. Good game!', 'excited']],
-              lost: [['Well played. You got me.', 'sad']],
+              check: [['Check.', 'excited'], ['Check! Run, little king.', 'excited']],
+              bigCapture: [['Gotcha.', 'proud'], ['Thank you for that one.', 'happy'], ['Sorry, I will take that queen.', 'proud'], ['Nom nom nom.', 'happy']],
+              won: [['Checkmate. Good game!', 'excited'], ['Checkmate. Tiny glider, big brain.', 'proud']],
+              lost: [['Well played. You got me.', 'sad'], ['Fine. Rematch. Right now.', 'mad']],
               resign: [['I am lost. Good game, I resign.', 'sad']],
               lowTime: [['Ooh, my clock is getting low. Moving fast!', 'nervous'], ['Time is running out, no more overthinking!', 'nervous']],
               draw: [['This looks like a draw to me.', 'neutral']],
@@ -958,6 +958,19 @@ function createActions({
             status('Chess: waiting for the opponent');
             const until = Date.now() + waitMs;
             let seen = null;
+            // Match the opponent's move by which squares are occupied, so a fast reply (already on the board before
+            // we looked, or two moves seen at once) is still understood.
+            const occMatch = (cur) => {
+              const occ = occupancy(cur), hits = [];
+              for (const m of chess.legal(g.st)) {
+                const s2 = chess.apply(g.st, m); let ok = true;
+                for (let sq = 0; sq < 64 && ok; sq++) if (!!s2.board[sq] !== !!occ[cellOf(sq, g.flipped)]) ok = false;
+                if (ok) hits.push(m);
+              }
+              return hits.length ? (hits.find((x) => !x.promo || x.promo === 'q') || hits[0]) : null;
+            };
+            const take = (m, cur) => { g.lastOppTook = (g.st.board[m.to] || (m.ep ? 'p' : '') || '').toLowerCase(); seen = m; g.st = chess.apply(g.st, m); g.snap = cur; g.moves.push(uci(m)); g.hist.push(g.st); };
+            { const c0 = await grab(); const pm = occMatch(c0); if (pm) take(pm, c0); } // the opponent may already have replied
             while (!seen && Date.now() < until && gameOn) {
               await sleep(500); // every look is a screen capture, so do not hammer the graphics card while the browser is busy
               let cur = await grab();
@@ -969,8 +982,8 @@ function createActions({
               }
               cur = await settle(cur);
               const dd = cellDiffs(g.snap, cur);
-              const m = matchMove(dd, g.st, g.flipped, CHESS_T) || matchMove(dd, g.st, g.flipped, 8); // low-contrast board themes change fewer colours
-              if (m) { g.lastOppTook = (g.st.board[m.to] || (m.ep ? 'p' : '') || '').toLowerCase(); seen = m; g.st = chess.apply(g.st, m); g.snap = cur; g.moves.push(uci(m)); g.hist.push(g.st); }
+              const m = matchMove(dd, g.st, g.flipped, CHESS_T) || matchMove(dd, g.st, g.flipped, 8) || occMatch(cur); // low-contrast board themes change fewer colours
+              if (m) take(m, cur);
             }
             if (!seen) return gameOn ? 'The opponent has not moved yet, or I could not tell which move they made. If the board shows a new position, use look_at_screen, write the FEN, and call chess_play again with fen to resync; otherwise call chess_play again to keep waiting.' : 'The game was stopped.';
             said = `Opponent played ${chess.sqName(seen.from)} to ${chess.sqName(seen.to)}. `;
@@ -1048,13 +1061,15 @@ function createActions({
           await sleep(300); // Pip's chat has to be out of the way and the game window has to own the mouse before the first click
           if (!gameOn) return 'The game was stopped.';
           await runClicks(pts, 350);
+          await sleep(350); // online sites take a moment to confirm the move
           let after = await settle(await grab());
           let d = cellDiffs(g.snap, after);
-          for (let attempt = 1; attempt <= 3 && gameOn && (d[fromCell] < CHESS_T || d[toCell] < CHESS_T); attempt++) {
+          for (let attempt = 1; attempt <= 4 && gameOn && (d[fromCell] < CHESS_T || d[toCell] < CHESS_T); attempt++) {
             // The move did not go through. Work out which click was lost, instead of clicking the same squares again:
             // a second click on a piece that is still selected would just un-select it.
             if (d[fromCell] >= CHESS_T) await runClicks(toPts, 350 + attempt * 150);   // the piece lit up (selected) but the second click was lost: click only the destination
             else await runClicks(pts, 500 + attempt * 300);                            // the first click was lost (the window was not ready yet): do both again, slower
+            await sleep(700);
             after = await settle(await grab());
             d = cellDiffs(g.snap, after);
             if (d[fromCell] >= CHESS_T && d[toCell] < CHESS_T) { await runClicks([pts[0]], 350); await sleep(150); } // still selected: click it once more to un-select, so the next try starts clean

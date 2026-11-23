@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('pip', {
   onVoiceHotkey: (cb) => on('voice-hotkey', cb),
   onOpenChat: (cb) => on('open-chat', cb),
   onArea: (cb) => on('area', cb),
+  onGame: (cb) => on('game', cb),
   onMood: (cb) => on('mood', cb),
   onStatus: (cb) => on('status', cb),
   chessScreen: (opts) => ipcRenderer.invoke('chess:screen', opts),

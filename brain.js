@@ -172,6 +172,18 @@ function think(rawText, ctx = {}) {
     return { reply: `Today is ${now.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.` };
   }
 
+  // ---- extra offline chatter
+  if (/^(?:how are you|how are you doing|how's it going|hows it going|you ok|you good)\??$/.test(t)) return { reply: pick(['Great, I have snacks and a desktop. Life is good.', 'Fluffy and fine. You?', 'Pretty good! Glided around all day.']) };
+  if (/^(?:who are you|what are you|what is your name|what'?s your name)\??$/.test(t)) return { reply: 'I am Pip, a sugar glider who lives on your screen.' };
+  if (/^(?:i'?m|im|i am) bored$|^bored$/.test(t)) return { reply: pick(['Want a game? Try the chess button, or ask me for a joke.', 'Same. Let us play something, or I can tell you a fun fact.', 'Flip a coin and do whatever it says.']) };
+  if (/^(?:good night|goodnight|gn|night night)(?: pip)?$/.test(t)) return { reply: pick(['Night night! Sleep well.', 'Sweet dreams. I will guard the desktop.']) };
+  if (/^(?:good morning|gm)(?: pip)?$/.test(t)) return { reply: pick(['Morning! Ready when you are.', 'Good morning! Coffee first?']) };
+  if (/^(?:i love you|love you|ily)(?: pip)?$/.test(t)) return { reply: pick(['Aww. I like you too.', 'Stop it, you are making me blush.']) };
+  if (/^(?:you suck|you are bad|ur bad|stupid pip|dumb pip|shut up)$/.test(t)) return { reply: pick(['Ouch. I have feelings, you know.', 'Rude! I will remember that.']) };
+  if (/^(?:tell me a riddle|riddle)$/.test(t)) return { reply: pick(['What has keys but cannot open locks? A piano.', 'What gets wetter the more it dries? A towel.', 'What has hands but cannot clap? A clock.']) };
+  if (/^(?:sing|sing a song|sing me a song)$/.test(t)) return { reply: 'La la la, I am a glider, glide glide glide.' };
+  if (/^(?:8 ?ball|magic 8 ?ball)$/.test(t)) return { reply: pick(['Definitely yes.', 'Ask again later.', 'Very doubtful.', 'Signs point to yes.', 'No chance.']) };
+
   // ---- dice, coins, random numbers
   if (/^(?:flip|toss) a coin$|^coin ?flip$|^heads or tails\??$/.test(t)) return { reply: Math.random() < 0.5 ? 'Heads!' : 'Tails!' };
   if ((m = /^roll (?:a |an |the )?(?:(\d+)[ -]?sided )?(?:d(\d+)|dice|die)$/.exec(t))) {
