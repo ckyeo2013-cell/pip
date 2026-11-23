@@ -66,6 +66,7 @@ const DEFAULTS = {
   shortReplies: true, // short answers by default (faster on free tiers)
   fallback: true,     // switch to another AI provider you have a key for when one fails
   reactions: true,    // react to music, copying text, low battery, long idle
+  shapeWindow: true,  // Windows/Linux: clip the full-screen overlay to just Pip and his panels, so browsers do not think a window covers them and pause
   chessClock: '',     // '' (untimed) or e.g. '3+2': Pip tracks his own clock and speeds up when low
   chessLevel: 'max',  // easy | medium | hard | human | max
   sounds: true,       // small synthesized sound effects
@@ -910,7 +911,7 @@ function registerIpc() {
       if (PALETTES.includes(s.palette)) patch.palette = s.palette;
       if (s.style === 'classic' || s.style === 'yarn') patch.style = s.style;
       if (MODELS.includes(s.model)) patch.model = s.model;
-      for (const k of ['wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'macCalendar', 'shortReplies', 'fallback', 'reactions', 'sounds', 'moodMemory']) {
+      for (const k of ['shapeWindow', 'wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'macCalendar', 'shortReplies', 'fallback', 'reactions', 'sounds', 'moodMemory']) {
         if (typeof s[k] === 'boolean') patch[k] = s[k];
       }
       if (s.toolPolicy && typeof s.toolPolicy === 'object') {
@@ -1110,6 +1111,18 @@ function registerIpc() {
   });
   ipcMain.on('interactive', (_e, v) => {
     if (win && !win.isDestroyed()) win.setIgnoreMouseEvents(!v, { forward: true });
+  });
+  ipcMain.on('shape', (_e, rects) => {
+    if (!win || win.isDestroyed() || process.platform === 'darwin' || typeof win.setShape !== 'function') return;
+    try {
+      if (settings.shapeWindow === false || !Array.isArray(rects)) { win.setShape([]); return; }
+      const b = win.getBounds();
+      const out = rects.slice(0, 40).map((r) => {
+        const x = Math.max(0, Math.floor(r.x)), y = Math.max(0, Math.floor(r.y));
+        return { x, y, width: Math.max(0, Math.min(b.width, Math.ceil(r.x + r.width)) - x), height: Math.max(0, Math.min(b.height, Math.ceil(r.y + r.height)) - y) };
+      }).filter((r) => r.width > 0 && r.height > 0);
+      win.setShape(out.length ? out : [{ x: 0, y: 0, width: 1, height: 1 }]);
+    } catch (_) {}
   });
   ipcMain.on('focus', () => { if (win && !win.isDestroyed()) win.focus(); });
   ipcMain.on('pos:save', (_e, x) => {

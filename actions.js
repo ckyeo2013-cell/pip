@@ -45,6 +45,18 @@ function cellDiffs(a, b) {
   }
   return out;
 }
+// At the start of a game, which colour is at the bottom of the board? Both halves have the same square colours, so the
+// difference in brightness between the bottom two ranks and the top two ranks is the pieces: the brighter side is white.
+function startOrientation(snap) {
+  const W = snap.width, CELL = W / 8;
+  const lum = (r0) => {
+    let sum = 0, n = 0;
+    for (let y = Math.floor(r0 * CELL); y < (r0 + 2) * CELL; y += 2) for (let x = 0; x < W; x += 2) { const i = (y * W + x) * 4; sum += 0.114 * snap.bitmap[i] + 0.587 * snap.bitmap[i + 1] + 0.299 * snap.bitmap[i + 2]; n++; }
+    return sum / n;
+  };
+  const diff = lum(6) - lum(0); // bottom minus top
+  return Math.abs(diff) < 5 ? null : diff > 0; // true: white is at the bottom; null: cannot tell
+}
 // board square (engine index: rank 8 first) -> cell in the picture (top-left first); flipped = black at the bottom
 const cellOf = (sq, flipped) => { const r = sq >> 3, c = sq & 7; return (flipped ? 7 - r : r) * 8 + (flipped ? 7 - c : c); };
 // the legal move whose two squares both changed the most
@@ -759,6 +771,11 @@ function createActions({
           }
           const grab = () => grabBoard(g.region);
           if (!g.snap) g.snap = await grab();
+          if (!g.oriChecked && g.fromStart && g.moves.length === 0) { // trust the pixels over what the model or the settings say about which way the board faces
+            g.oriChecked = true;
+            const bw = startOrientation(g.snap);
+            if (bw !== null && g.flipped !== !bw) { g.flipped = !bw; status(`Chess: the board has ${bw ? 'white' : 'black'} at the bottom`); }
+          }
           const settle = async (first) => { // wait until pieces stop sliding
             let cur = first;
             for (let i = 0; i < 4; i++) { await sleep(100); const nxt = await grab(); const still = Math.max(...cellDiffs(cur, nxt)) < 6; cur = nxt; if (still) break; }

@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('pip', {
   onMood: (cb) => on('mood', cb),
   onStatus: (cb) => on('status', cb),
   chessScreen: (opts) => ipcRenderer.invoke('chess:screen', opts),
+  setShape: (rects) => ipcRenderer.send('shape', rects),
   debugLog: (kind, text) => ipcRenderer.send('debug:log', kind, text),
   debugCopy: () => ipcRenderer.invoke('debug:copy'),
   chessStop: () => ipcRenderer.send('chess:stop'),

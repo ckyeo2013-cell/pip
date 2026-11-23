@@ -1530,6 +1530,7 @@
     $('s-memory').checked = settings.moodMemory !== false;
     $('s-level').value = settings.chessLevel || 'max';
     $('s-clock').value = settings.chessClock || '';
+    $('s-shape').checked = settings.shapeWindow !== false;
     $('s-login').checked = !!settings.openAtLogin;
     $('s-actions').checked = settings.actions !== false;
     $('s-full').checked = settings.fullAccess !== false;
@@ -1561,6 +1562,27 @@
     settings.workFolder = '';
     $('s-folder').textContent = 'None chosen';
   });
+  // Keep the overlay window shaped to just Pip and his panels (Windows/Linux), so a browser never sees a full-screen window on top of it
+  let lastShape = '';
+  setInterval(() => {
+    try {
+      let rects = null;
+      if (settings.shapeWindow !== false) {
+        rects = [];
+        const P = 150; // padding: he moves between updates and his effects reach a little past his box
+        const els = Array.from(document.body.children);
+        const b = document.getElementById('bubble'); if (b) els.push(b);
+        for (const el of els) {
+          if (!el.getBoundingClientRect || /^(SCRIPT|STYLE)$/.test(el.tagName)) continue;
+          const cs = getComputedStyle(el); if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+          const r = el.getBoundingClientRect(); if (r.width < 2 || r.height < 2) continue;
+          rects.push({ x: Math.round(r.left - P), y: Math.round(r.top - P), width: Math.round(r.width + 2 * P), height: Math.round(r.height + 2 * P) });
+        }
+      }
+      const key = JSON.stringify(rects);
+      if (key !== lastShape) { lastShape = key; pip.setShape(rects); }
+    } catch (_) {}
+  }, 120);
   window.addEventListener('error', (e) => { try { pip.debugLog('error', (e.message || '') + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno); } catch (_) {} });
   window.addEventListener('unhandledrejection', (e) => { try { pip.debugLog('rejection', String((e.reason && (e.reason.stack || e.reason.message)) || e.reason)); } catch (_) {} });
   $('s-debug').addEventListener('click', async () => {
@@ -1593,6 +1615,7 @@
       moodMemory: $('s-memory').checked,
       chessLevel: $('s-level').value,
       chessClock: $('s-clock').value,
+      shapeWindow: $('s-shape').checked,
       openAtLogin: $('s-login').checked,
       actions: $('s-actions').checked,
       fullAccess: $('s-full').checked,
