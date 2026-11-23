@@ -353,7 +353,7 @@ function scrollCommands(direction, amount, platform) {
 }
 
 // Browser controls: ordinary keyboard shortcuts for the browser in front (nothing can be typed this way).
-const BROWSER_ACTIONS = ['bring_to_front', 'new_tab', 'close_tab', 'reopen_tab', 'next_tab', 'previous_tab', 'go_to_tab', 'back', 'forward', 'refresh', 'address_bar', 'find'];
+const BROWSER_ACTIONS = ['bring_to_front', 'new_tab', 'close_tab', 'reopen_tab', 'next_tab', 'previous_tab', 'go_to_tab', 'back', 'forward', 'refresh', 'address_bar', 'find', 'find_tab'];
 function browserKeys(action, platform, value) {
   if (!BROWSER_ACTIONS.includes(action)) throw new Error(`Unknown browser action "${action}". Use one of: ${BROWSER_ACTIONS.join(', ')}.`);
   if (action === 'bring_to_front') return { combo: null, label: 'Brought the browser to the front.', cmd: null }; // no keys, just focus
@@ -376,6 +376,7 @@ function browserKeys(action, platform, value) {
     refresh: [mac ? 'cmd+r' : 'f5', 'Refreshed the page.'],
     address_bar: [`${m}+l`, 'Put the cursor in the address bar.'],
     find: [`${m}+f`, 'Opened find-on-page.'],
+    find_tab: [`${m}+shift+a`, 'Opened tab search (Chrome and Edge). Now type part of the tab name, like youtube, and press Enter to jump to that tab.'],
   };
   const [combo, label] = table[action];
   return { combo, label, cmd: buildKeyCommand(parseCombo(combo), platform) };

@@ -16,6 +16,7 @@ Pip appears at the bottom-right of your screen. A tray/menu-bar icon appears too
 
 ## Use
 
+- **Fling Pip** (let go while moving the mouse fast) and he really tumbles: he spins, bounces off the walls and ceiling and rolls on the floor. After a moment of panic he spreads his membrane, rights himself and glides down to a skidding landing. Repeated hard knocks keep him tumbling and leave him dizzy.
 - **Click Pip** to chat. **Drag Pip** anywhere (he spreads his gliding membrane while you carry him). Drop him up in the air and a branch grows under him so he stays there for a good while; drop him near the floor and he settles down.
 - **Right-click Pip** (or use the tray icon) for the menu: chat, hide, stay still, launch at login, **Quit**.
 - Chat shortcuts: Help me decide, Flip a coin, Fun fact, **What I copied** (summarizes or explains whatever text is on your clipboard), Cheer me up.
@@ -29,7 +30,7 @@ Pip isn't just for chit-chat: ask it to write or fix code in any language, expla
 
 ## Tell Pip to move
 
-Pip can control its own body from the chat, with no approval card because it touches nothing else on your computer. Try: "hop three times", "dance", "come here" (he flies to your cursor and perches there), "go to the left", "go to the middle", "stay there", "go back to wandering". Moving his own body works even if you switch off "do things on my computer" in settings. For help with things on screen see **Pip sees buttons without a screenshot** below.
+Pip can control its own body from the chat, with no approval card because it touches nothing else on your computer. Try: "hop three times", "dance" (a fresh routine every time, to the beat), "do the disco", "wave hello", "come here" (he flies to your cursor and perches there), "go to the left", "go to the middle", "stay there", "go back to wandering". Moving his own body works even if you switch off "do things on my computer" in settings. For help with things on screen see **Pip sees buttons without a screenshot** below.
 
 ## Pip acts, he doesn't just talk
 

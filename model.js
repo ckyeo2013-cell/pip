@@ -175,7 +175,9 @@
     // ---- limbs and the gliding membrane (one side at a time) -----------
     for (const s of [-1, 1]) {
       const wave = s === 1 ? happy * Math.sin(t * 12) * 0.25 : 0;
-      const L = limbPose(s, glide, wave);
+      // each arm (and its half of the membrane) can open on its own: dances use armL / armR on top of the shared glide
+      const gS = clamp(glide + (s === 1 ? (p.armR || 0) : (p.armL || 0)), 0, 1);
+      const L = limbPose(s, gS, wave);
       const limb = (a, b, r, color) => {
         const d = sub(b, a);
         P(B, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2], [r, len3(d) / 2, r], basisFromY(d), color);
@@ -189,13 +191,13 @@
       for (let i = 0; i < NU; i++) {
         for (let j = 0; j < NV; j++) {
           const u = (i + 0.5) / NU, v = (j + 0.5) / NV;
-          const c = memSurface(L, s, glide, t, u, v);
-          const tu = sub(memSurface(L, s, glide, t, u + 0.01, v), memSurface(L, s, glide, t, u - 0.01, v)).map((x) => x / 0.02);
-          const tv = sub(memSurface(L, s, glide, t, u, v + 0.01), memSurface(L, s, glide, t, u, v - 0.01)).map((x) => x / 0.02);
+          const c = memSurface(L, s, gS, t, u, v);
+          const tu = sub(memSurface(L, s, gS, t, u + 0.01, v), memSurface(L, s, gS, t, u - 0.01, v)).map((x) => x / 0.02);
+          const tv = sub(memSurface(L, s, gS, t, u, v + 0.01), memSurface(L, s, gS, t, u, v - 0.01)).map((x) => x / 0.02);
           const xa = norm(tu);
           const n = norm(cross(tu, tv));
           const za = cross(xa, n);
-          const col = v < 0.5 ? mix3(C.fur, C.membrane, v * 2 * (0.3 + 0.7 * glide)) : mix3(mix3(C.fur, C.membrane, 0.3 + 0.7 * glide), C.edge, Math.pow((v - 0.5) * 2, 1.6) * (0.15 + 0.85 * glide));
+          const col = v < 0.5 ? mix3(C.fur, C.membrane, v * 2 * (0.3 + 0.7 * gS)) : mix3(mix3(C.fur, C.membrane, 0.3 + 0.7 * gS), C.edge, Math.pow((v - 0.5) * 2, 1.6) * (0.15 + 0.85 * gS));
           P(B, c, [(len3(tu) / NU) * (yarnSkin ? 1.2 : 0.95), 0.03, (len3(tv) / NV) * (yarnSkin ? 1.2 : 0.95)],
             [xa[0], xa[1], xa[2], n[0], n[1], n[2], za[0], za[1], za[2]], col, 0, 1);
           parts[parts.length - 1].shell = false; // thin sheet: no fur layers
@@ -204,6 +206,7 @@
     }
 
     // ---- tail ---------------------------------------------------------
+    const tailSwing = clamp(p.tailSwing || 0, -1.4, 1.4); // dances and tumbles whip the tail sideways
     const tailAmp = (0.14 + 0.25 * thinking + happy * 0.1) * (1 - 0.6 * sleepy);
     const tailSpd = 1.5 + thinking * 3 + happy * 2;
     const TN = yarnSkin ? 44 : 28;
@@ -212,7 +215,7 @@
       const sway = Math.sin(t * tailSpd - u * 2.6) * tailAmp * u;
       const rest = [0.08 + 0.55 * Math.pow(u, 1.5) + sway, -0.4 + 0.75 * Math.pow(u, 1.4), -0.35 - 0.85 * u];
       const gld = [sway * 0.5, -0.3 - 0.1 * u, -0.4 - 1.4 * u];
-      const pos = [lerp(rest[0], gld[0], glide), lerp(rest[1], gld[1], glide), lerp(rest[2], gld[2], glide)];
+      const pos = [lerp(rest[0], gld[0], glide) + tailSwing * Math.pow(u, 1.4) * 0.9, lerp(rest[1], gld[1], glide), lerp(rest[2], gld[2], glide)];
       const rad = 0.17 + 0.08 * Math.sin(Math.min(1, u * 1.15) * Math.PI * 0.85) - 0.05 * u * u;
       const col = u > 0.72 ? mix3(C.fur, C.dark, clamp((u - 0.72) / 0.2, 0, 1)) : C.fur;
       P(B, pos, [rad, rad, rad * 1.4], null, col);

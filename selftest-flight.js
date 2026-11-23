@@ -41,7 +41,10 @@ const doc = { getElementById: (id) => els[id] || (els[id] = stub(id)), querySele
   createElement: () => { branchCanvas = stub('branchcanvas'); branchCanvas.getContext = () => fakeGL('branch'); return branchCanvas; }, body: stub('body'), addEventListener() {}, hasFocus: () => true };
 const win = { innerWidth: 1600, innerHeight: 900, devicePixelRatio: 1, pip: pipApi, addEventListener() {}, requestAnimationFrame: (f) => { rafQueue.push(f); return 1; } };
 const g = { window: win, document: doc, performance: { now: () => NOW }, requestAnimationFrame: win.requestAnimationFrame, setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {}, console };
-const gt = Object.assign({ GliderModel: require('./model.js') }, g);
+const Model = require('./model.js');
+const posesSeen = []; // every pose the renderer asked the model for, so the tests can look at arms, glide, flip...
+const recModel = Object.assign({}, Model, { buildParts: (p) => { posesSeen.push(p); return Model.buildParts(p); } });
+const gt = Object.assign({ GliderModel: recModel }, g);
 const keys = Object.keys(g);
 new Function(...keys, 'globalThis', src)(...keys.map((k) => g[k]), gt);
 // NOTE: the Function args above mirror keys; globalThis passed last.
@@ -160,8 +163,54 @@ S.step(3000); p = pos();
   assert.ok(Number.isFinite(q.x) && Number.isFinite(q.y) && Number.isFinite(q.rot), 'ragdoll position is a number');
   assert.ok(Math.abs(q.rot) > 0.05 || q.y < floorPos.y - 5, 'flung: tumbling or airborne, got ' + JSON.stringify(q));
   ok('a fast fling sends him tumbling');
-  S.step(9000); const f = pos();
+  S.step(15000); const f = pos(); // the tumble itself, then the dizzy wobble (6 s) wear off
   assert.ok(Math.abs(f.y - floorPos.y) < 3 && Math.abs(f.rot) < 0.1, 'settles upright on the floor, got ' + JSON.stringify(f));
   ok('after the tumble he settles upright on the floor');
+}
+// ---- a flung Pip snaps out of the tumble, opens his membrane and glides down to a landing (then folds it away again)
+S.step(15000);
+{
+  p = pos();
+  const x0 = p.x + 110, y0 = p.y + 100;
+  posesSeen.length = 0;
+  S.canvasEvents.pointerdown(ev(x0, y0));
+  S.canvasEvents.pointermove(ev(x0 + 12, y0 + 2));
+  let cx = x0 + 12, cy = y0 + 2;
+  for (let i = 0; i < 4; i++) { S.step(20); cx += 20; cy -= 50; S.canvasEvents.pointermove(ev(cx, cy)); } // a medium toss up and a bit to the right: plenty of time and height to recover
+  S.canvasEvents.pointerup(ev(cx, cy));
+  let sawGlide = false, sawSpin = false, glideY = [];
+  for (let t = 0; t < 6000; t += 30) {
+    S.step(30);
+    const q = pos(), last = posesSeen[posesSeen.length - 1];
+    if (Math.abs(q.rot) > 3) sawSpin = true;
+    if (last.glide > 0.85 && Math.abs(q.rot) < 0.7) { sawGlide = true; glideY.push(q.y); }
+  }
+  assert.ok(sawSpin, 'he tumbles first'); ok('a fling starts as a real tumble (several radians of spin)');
+  assert.ok(sawGlide && glideY.length > 8, 'he opens his membrane and holds a glide pose, frames=' + glideY.length); ok('then he rights himself and glides with his membrane open');
+  const f = pos(), lastPose = posesSeen[posesSeen.length - 1];
+  assert.ok(Math.abs(f.y - floorPos.y) < 3 && lastPose.glide < 0.2, 'landed with the membrane folded, y=' + f.y + ' glide=' + lastPose.glide); ok('he lands and folds the membrane away');
+  assert.ok(posesSeen.every((q) => Number.isFinite(q.bodyYaw) && Number.isFinite(q.crouch) && Number.isFinite(q.glide))); ok('every pose stayed finite through the whole fling');
+}
+// ---- dances: every move runs on the beat, uses single arms where it should, and finishes in a neutral pose
+S.step(10000);
+for (const style of ['routine', 'disco', 'wave', 'floss', 'six_seven', 'backflip', 'twirl', 'pogo', 'shimmy', 'moonwalk', 'ta_da']) {
+  posesSeen.length = 0;
+  pet({ action: 'dance', style });
+  S.step(25000);
+  const poses = posesSeen.slice();
+  assert.ok(poses.every((q) => ['armL', 'armR', 'tailSwing', 'crouch', 'flip', 'bodyYaw'].every((k) => Number.isFinite(q[k] === undefined ? 0 : q[k]))), style + ': finite poses');
+  const fin = poses[poses.length - 1];
+  assert.ok(!fin.armL && !fin.armR && !fin.tailSwing && !fin.flip, style + ': ends in a neutral pose');
+  const moved = poses.some((q) => q.armL || q.armR || q.tailSwing || q.crouch > 0.1 || Math.abs(q.flip || 0) > 0.1 || q.glide > 0.1);
+  assert.ok(moved, style + ': actually moves');
+  if (['disco', 'wave', 'floss', 'six_seven'].includes(style)) assert.ok(poses.some((q) => Math.abs((q.armL || 0) - (q.armR || 0)) > 0.4), style + ': arms move independently');
+}
+ok('every dance moves, uses its arms and tail, and ends in a neutral pose');
+{ // jumps leave the ground and come back: the sprite goes up and returns exactly to the floor
+  pet({ action: 'dance', style: 'backflip' });
+  let minY = 1e9, flipped = false;
+  for (let t = 0; t < 6000; t += 30) { S.step(30); minY = Math.min(minY, pos().y); if (Math.abs(posesSeen[posesSeen.length - 1].flip) > 3) flipped = true; }
+  assert.ok(floorPos.y - minY > 80 && flipped, 'backflip jumps and turns, rise=' + (floorPos.y - minY));
+  assert.ok(Math.abs(pos().y - floorPos.y) < 1.5); ok('a backflip leaves the floor, turns over and lands back where it started');
 }
 console.log('\nALL SIMULATION CHECKS PASSED');

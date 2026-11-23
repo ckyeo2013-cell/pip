@@ -399,85 +399,202 @@
   function cheer(ms = 1300) { happyUntil = performance.now() + ms; }
 
   // ---------------------------------------------------------------- dance moves
-  // A dance is a short sequence of moves layered on top of whatever Pip is doing (hopping, perched...).
-  const DANCE_SEG = 1300; // ms per move
-  const DANCE_ROUTINE = ['sway', 'bounce', 'spin', 'wiggle', 'flourish', 'bounce', 'spin'];
-  const DANCE_EXTRA = ['floss', 'shuffle', 'six_seven', 'headbang', 'dab', 'robot', 'moonwalk', 'backflip'];
-  const DANCE_ALL = DANCE_ROUTINE.concat(DANCE_EXTRA, ['cartwheel', 'groom', 'stretch']);
-  const SHORT_MOVES = { backflip: 2, cartwheel: 2, groom: 2, stretch: 1 };
-  function startDance(style) {
-    const move = DANCE_ALL.includes(style) ? style : null;
+  // A dance is a timeline of moves layered on top of whatever Pip is doing (hopping, perched...).
+  // Everything runs on a beat (about 115 bpm): each move lasts whole beats and starts and ends in a neutral pose,
+  // so moves chain without popping. Jumps squash and stretch on the beat, arms move one at a time,
+  // the tail whips and the head nods in time.
+  const BEAT = 520; // ms
+  const TAU = Math.PI * 2;
+  const sstep = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
+  const jump = (f, h) => -4 * f * (1 - f) * h;   // one beat-long hop, a parabola
+  const squash = (f) => Math.max(f < 0.2 ? (1 - f / 0.2) * 0.75 : 0, f > 0.82 ? ((f - 0.82) / 0.18) * 0.55 : 0); // crouch on landing and before take-off
+  // fn(z, c): c = { q: 0..1 through the move, b: beats so far, f: 0..1 through this beat, n: beat number, s(k): sine with k cycles per move, arc: 0..1..0 }
+  const MOVES = {
+    sway:      { beats: 4, fn(z, c) { z.yaw = c.s(2) * 0.5; z.tilt = c.s(2) * 0.2; z.x = c.s(2) * 12; z.crouch = 0.22 * Math.abs(c.s(2)); z.tail = c.s(2) * 0.9; z.nod = c.s(4) * 0.08; } },
+    bounce:    { beats: 2, fn(z, c) { z.hop = jump(c.f, 34); z.crouch = squash(c.f); z.armL = z.armR = Math.sin(Math.PI * c.f) * 0.45; z.tail = -Math.sin(TAU * c.f) * 0.5; z.tilt = c.s(1) * 0.05; z.nod = -0.12 * squash(c.f); } },
+    pogo:      { beats: 4, fn(z, c) { z.hop = jump(c.f, 72); z.crouch = squash(c.f) * 1.1; z.armL = z.armR = Math.sin(Math.PI * c.f) * 0.9; z.yaw = c.s(1) * 0.2; z.tilt = c.s(2) * 0.04; z.tail = Math.sin(TAU * c.f) * 0.6; } },
+    spin:      { beats: 2, full: true, fn(z, c) { z.yaw = sstep(c.q) * TAU; z.hop = -c.arc * 28; z.glide = c.arc * 0.9; z.tail = c.arc; z.crouch = c.q < 0.18 ? (1 - c.q / 0.18) * 0.5 : c.q > 0.85 ? ((c.q - 0.85) / 0.15) * 0.45 : 0; } },
+    twirl:     { beats: 2, full: true, fn(z, c) { const a = Math.sin(Math.PI * clamp((c.q - 0.1) / 0.8, 0, 1)); z.yaw = -sstep(c.q) * TAU * 2; z.hop = -a * 60; z.glide = a * 0.95; z.tail = a; z.crouch = c.q < 0.15 ? (1 - c.q / 0.15) * 0.7 : c.q > 0.88 ? ((c.q - 0.88) / 0.12) * 0.6 : 0; } },
+    wiggle:    { beats: 2, fn(z, c) { z.tilt = c.s(6) * 0.14; z.yaw = c.s(3) * 0.25; z.crouch = 0.3 * c.arc; z.tail = c.s(3) * 0.8; z.nod = c.s(6) * 0.05; } },
+    shimmy:    { beats: 2, fn(z, c) { z.tilt = c.s(6) * 0.1; z.yaw = c.s(3) * 0.3; z.crouch = 0.35 * c.arc; z.armR = 0.35 + 0.3 * c.s(6); z.armL = 0.35 - 0.3 * c.s(6); z.tail = c.s(3) * 0.7; } },
+    flourish:  { beats: 2, fn(z, c) { z.glide = c.arc; z.tilt = c.s(1) * 0.1; z.yaw = c.s(1) * 0.3; z.hop = -c.arc * 10; z.tail = c.arc * 0.6; z.nod = 0.15 * c.arc; } },
+    disco:     { beats: 4, fn(z, c) { // point at the sky on one beat, the other arm on the next
+      const h = Math.sin(Math.PI * c.f), R = c.n % 2 === 0 ? h : 0, L = c.n % 2 === 1 ? h : 0, side = R - L;
+      z.armR = R * 0.95; z.armL = L * 0.95; z.tilt = -side * 0.16; z.yaw = side * 0.4; z.hop = -h * 10; z.crouch = 0.25 * (1 - h); z.tail = side * 0.9; z.x = side * 10; z.nod = 0.1 * h; } },
+    floss:     { beats: 4, fn(z, c) { const a = c.s(4); z.glide = 0.5; z.armR = 0.4 * a; z.armL = -0.4 * a; z.yaw = -a * 0.7; z.tilt = -a * 0.2; z.crouch = 0.3; z.x = a * 10; z.tail = -a * 0.8; } },
+    shuffle:   { beats: 4, fn(z, c) { z.x = c.s(2) * 38; z.yaw = c.s(2) * 0.55; z.hop = -Math.abs(c.s(4)) * 12; z.crouch = 0.2; z.armR = 0.25 + 0.25 * c.s(4); z.armL = 0.25 - 0.25 * c.s(4); z.tail = c.s(2) * 0.9; } },
+    moonwalk:  { beats: 4, fn(z, c) { z.x = -st.face * 80 * Math.sin(Math.PI * c.q); z.yaw = 0.7 * st.face * Math.min(1, Math.sin(Math.PI * c.q) * 3); z.hop = -Math.abs(c.s(8)) * 5; z.tilt = c.s(8) * 0.05; z.armR = 0.2 + 0.15 * c.s(4); z.armL = 0.2 - 0.15 * c.s(4); z.crouch = 0.2; } },
+    headbang:  { beats: 4, fn(z, c) { const e = Math.pow(1 - c.f, 2.5); z.nod = -0.55 * e; z.crouch = 0.45 * e; z.tilt = 0.1 * e * (c.n % 2 ? 1 : -1); z.yaw = c.s(2) * 0.18; z.tail = c.s(4); z.armL = z.armR = 0.25; } },
+    dab:       { beats: 2, fn(z, c) { const p = sstep(c.q / 0.15) * (1 - sstep((c.q - 0.75) / 0.25)); z.armR = p; z.armL = p * 0.55; z.tilt = 0.3 * p; z.yaw = 0.8 * p; z.nod = -0.3 * p; z.crouch = 0.2 * p; } },
+    six_seven: { beats: 4, fn(z, c) { z.armR = 0.5 + 0.5 * c.s(4); z.armL = 0.5 - 0.5 * c.s(4); z.hop = -Math.abs(c.s(4)) * 8; z.crouch = 0.15; z.tilt = c.s(4) * 0.1; z.nod = c.s(8) * 0.06; z.yaw = c.s(2) * 0.2; } },
+    robot:     { beats: 4, fn(z, c) { const on = Math.floor(c.b) % 2 === 0; z.yaw = Math.round(c.s(2) * 2) / 2 * 0.7; z.tilt = Math.round(c.s(2) * 2) / 2 * 0.15; z.armR = on ? 0.9 : 0.1; z.armL = on ? 0.1 : 0.9; z.nod = (Math.floor(c.b * 2) % 2 ? 1 : -1) * 0.12; } },
+    wave:      { beats: 4, fn(z, c) { const env = clamp(Math.min(c.q, 1 - c.q) / 0.12, 0, 1); z.armR = env * (0.7 + 0.25 * c.s(5)); z.yaw = 0.35 * env; z.tilt = 0.08 * env * c.s(1); z.nod = 0.1 * c.s(2); z.tail = c.s(3) * 0.5; } },
+    backflip:  { beats: 4, full: true, fn(z, c) { // crouch, spring, one full turn in the air, land in a squat
+      const u = clamp((c.q - 0.22) / 0.56, 0, 1), a = Math.sin(Math.PI * u);
+      z.crouch = sstep(c.q / 0.2) * 0.85 * (1 - sstep((c.q - 0.2) / 0.07)) + sstep((c.q - 0.78) / 0.03) * (1 - sstep((c.q - 0.8) / 0.2)) * 0.8;
+      z.hop = -a * 140; z.flip = -sstep(u) * TAU; z.glide = a * 0.5; z.tail = a; } },
+    cartwheel: { beats: 4, full: true, fn(z, c) {
+      const u = clamp((c.q - 0.2) / 0.6, 0, 1), a = Math.sin(Math.PI * u);
+      z.crouch = sstep(c.q / 0.18) * 0.6 * (1 - sstep((c.q - 0.18) / 0.07)) + sstep((c.q - 0.78) / 0.03) * (1 - sstep((c.q - 0.8) / 0.2)) * 0.6;
+      z.hop = -a * 60; z.tilt = sstep(u) * TAU * st.face; z.glide = a; z.tail = a * 0.7; } },
+    ta_da:     { beats: 3, fn(z, c) { // the finale: jump, arms wide, hold, then a little bow
+      const jumpF = clamp(c.b, 0, 1), open = sstep(c.q / 0.3) * (1 - sstep((c.q - 0.72) / 0.2)), bow = sstep((c.q - 0.72) / 0.12) * (1 - sstep((c.q - 0.9) / 0.1));
+      z.hop = jump(jumpF, 50) * (c.b < 1 ? 1 : 0); z.crouch = (c.b < 1 ? squash(jumpF) : 0) + bow * 0.45; z.glide = open; z.nod = 0.2 * open - 0.45 * bow; z.tail = open * 0.8; z.tilt = 0.05 * Math.sin(c.b * 5) * open; } },
+    groom:     { beats: 5, fn(z, c) { z.tilt = c.s(5) * 0.1; z.yaw = c.s(2.5) * 0.35; z.hop = -Math.abs(c.s(5)) * 3; z.glide = 0.25 + 0.15 * c.s(5); } },
+    stretch:   { beats: 2.5, fn(z, c) { z.glide = c.arc; z.tilt = -0.12 * c.arc; z.nod = 0.3 * c.arc; z.crouch = 0.25 * (1 - c.arc); } },
+  };
+  const DANCE_ALL = Object.keys(MOVES);
+  const DANCE_POOL = ['disco', 'floss', 'shuffle', 'pogo', 'six_seven', 'headbang', 'moonwalk', 'robot', 'shimmy', 'spin', 'twirl', 'bounce', 'dab', 'wiggle', 'flourish'];
+  const DANCE_BIG = ['backflip', 'cartwheel'];
+  function buildDance(style) {
     let seq;
-    if (move) seq = new Array(SHORT_MOVES[move] || 4).fill(move);
-    else {
-      const ex = DANCE_EXTRA.slice().sort(() => Math.random() - 0.5).slice(0, 3);
-      seq = DANCE_ROUTINE.slice(0, 4).concat(ex, ['flourish']);
+    if (style && style !== 'routine' && Object.prototype.hasOwnProperty.call(MOVES, style)) {
+      // one move on repeat, about five seconds of it (two flips is plenty)
+      const reps = style === 'groom' || style === 'stretch' ? 1 : DANCE_BIG.includes(style) ? 2 : Math.max(1, Math.round(10 / MOVES[style].beats));
+      seq = new Array(reps).fill(style);
+    } else {
+      // a fresh routine every time: gentle opener, a few moves, maybe a flip, then the finale
+      const mid = DANCE_POOL.slice().sort(() => Math.random() - 0.5).slice(0, 4);
+      if (Math.random() < 0.6) mid.splice(2, 0, DANCE_BIG[Math.floor(Math.random() * DANCE_BIG.length)]);
+      seq = [Math.random() < 0.5 ? 'sway' : 'wave'].concat(mid, ['ta_da']);
     }
-    if (seq.includes('six_seven')) showBubble('6... 7!', 2600);
+    let t = 0;
+    const segs = seq.map((move) => { const dur = MOVES[move].beats * BEAT, sg = { move, t0: t, dur }; t += dur; return sg; });
+    return { segs, total: t };
+  }
+  function startDance(style) {
+    const built = buildDance(style);
     sfx('dance');
-    st.dance = { t0: performance.now(), seq, total: seq.length * DANCE_SEG };
+    st.dance = { t0: performance.now(), segs: built.segs, total: built.total, lastSeg: -1 };
   }
   function danceOffsets(now) {
-    const z = { yaw: 0, tilt: 0, hop: 0, glide: 0, x: 0, flip: 0 };
+    const z = { yaw: 0, tilt: 0, hop: 0, glide: 0, x: 0, flip: 0, crouch: 0, nod: 0, armL: 0, armR: 0, tail: 0 };
     const d = st.dance;
     if (!d) return z;
     const e = now - d.t0;
-    if (e >= d.total || st.dragging || st.away) { st.dance = null; return z; }
-    const i = Math.min(d.seq.length - 1, Math.floor(e / DANCE_SEG)), q = (e - i * DANCE_SEG) / DANCE_SEG;
-    const w = clamp(Math.min(e, d.total - e) / 350, 0, 1); // ease in and out
-    const TAU = Math.PI * 2, s = (n) => Math.sin(q * TAU * n), arc = Math.sin(q * Math.PI), ez = q * q * (3 - 2 * q);
-    let full = false; // moves that must complete a full turn are not scaled by the ease
-    switch (d.seq[i]) {
-      case 'sway': z.yaw = s(2) * 0.5; z.tilt = s(2) * 0.22; break;
-      case 'bounce': z.hop = -Math.abs(Math.sin(q * Math.PI * 4)) * 34; z.tilt = s(2) * 0.06; break;
-      case 'spin': z.yaw = ez * TAU; break;
-      case 'wiggle': z.tilt = s(6) * 0.14; z.yaw = s(3) * 0.25; break;
-      case 'flourish': z.glide = arc; z.tilt = s(1) * 0.1; z.yaw = s(1) * 0.3; break;
-      case 'backflip': full = true; z.hop = -arc * 130; z.flip = -ez * TAU; z.glide = arc * 0.5; break;
-      case 'cartwheel': full = true; z.hop = -arc * 60; z.tilt = ez * TAU * st.face; z.glide = arc; break;
-      case 'six_seven': z.glide = 0.55 + 0.45 * s(4); z.tilt = s(4) * 0.16; z.hop = -Math.abs(s(4)) * 14; z.yaw = s(2) * 0.2; break;
-      case 'floss': z.yaw = s(4) * 0.7; z.tilt = -s(4) * 0.22; z.glide = 0.7; break;
-      case 'moonwalk': z.x = -st.face * q * 90 * (i % 2 ? -1 : 1); z.yaw = 0.7 * st.face; z.hop = -Math.abs(s(6)) * 6; z.tilt = s(6) * 0.05; break;
-      case 'shuffle': z.x = s(2) * 40; z.yaw = s(2) * 0.6; z.hop = -Math.abs(s(4)) * 16; break;
-      case 'headbang': z.tilt = s(4) * 0.22; z.hop = s(4) * 8; z.glide = 0.15; break;
-      case 'dab': z.glide = Math.sqrt(arc); z.tilt = 0.32 * arc; z.yaw = 0.8 * arc; break;
-      case 'groom': z.tilt = s(5) * 0.1; z.yaw = s(2.5) * 0.35; z.hop = -Math.abs(s(5)) * 3; z.glide = 0.25 + 0.15 * s(5); break;
-      case 'stretch': z.glide = arc; z.tilt = -0.12 * arc; z.yaw = 0; break;
-      case 'robot': z.yaw = Math.round(s(1) * 2) / 2 * 0.7; z.tilt = Math.round(s(2) * 2) / 2 * 0.15; z.glide = Math.round(arc * 2) / 2; break;
+    if (e >= d.total || st.dragging || st.away || st.rag) { st.dance = null; return z; }
+    let i = 0;
+    while (i < d.segs.length - 1 && e >= d.segs[i + 1].t0) i++;
+    const sg = d.segs[i], mv = MOVES[sg.move], q = clamp((e - sg.t0) / sg.dur, 0, 1);
+    if (d.lastSeg !== i) { // a new move starts
+      d.lastSeg = i;
+      if (sg.move === 'six_seven') showBubble('6... 7!', 2400);
+      else if (sg.move === 'ta_da') { sfx('proud'); cheer(2200); }
+      else if (sg.move === 'backflip' || sg.move === 'cartwheel') sfx('hop');
     }
+    const b = q * mv.beats, f = b - Math.floor(b), n = Math.floor(b);
+    mv.fn(z, { q, b, f, n, arc: Math.sin(Math.PI * q), s: (k) => Math.sin(q * TAU * k) });
+    const w = mv.full ? 1 : clamp(Math.min(e, d.total - e) / 350, 0, 1); // ease the whole dance in and out
+    if (w < 1) for (const k of Object.keys(z)) z[k] *= w;
     happyUntil = Math.max(happyUntil, now + 250); // ears wiggle and he waves while dancing
-    for (const k of Object.keys(z)) if (!(full && (k === 'flip' || k === 'tilt'))) z[k] *= w;
     return z;
   }
 
-  // ---------------------------------------------------------------- ragdoll: fling him fast and he tumbles, bounces, then gets dizzy
+  // ---------------------------------------------------------------- ragdoll: fling him and he really tumbles
+  // A small rigid-body sim: gravity, air drag, bounces that trade spin for sliding (and back), rolling and skidding.
+  // After a moment of panic a sugar glider does what a sugar glider does: he spreads his membrane, rights himself,
+  // swoops down in a glide and lands with a skid. Hard, repeated knocks keep him tumbling (and dizzy).
+  const RAG_G = 2400;         // gravity, px/s^2
+  const RAG_R = SIZE * 0.26;  // radius that spin and rolling are measured with, px
+  const wrapPi = (a) => { a %= TAU; if (a > Math.PI) a -= TAU; if (a < -Math.PI) a += TAU; return a; };
   function startRag(vx, vy) {
     leavePerch(); st.flight = null; st.hop = null; st.hopY = 0; st.queue = []; st.dance = null; st.pendingCmd = null; st.napUntil = 0;
-    st.rag = { vx, vy, rot: 0, vrot: clamp(vx / 220, -14, 14) + (Math.random() - 0.5) * 4, hits: 0, peak: Math.hypot(vx, vy), rest: 0 };
+    const peak = Math.hypot(vx, vy);
+    st.rag = {
+      vx, vy, rot: 0, vrot: clamp(vx / 200, -14, 14) + (Math.random() - 0.5) * 4,
+      hits: 0, peak, rest: 0, t: 0, mode: 'tumble', // tumble -> glide -> skid
+      glideAt: 0.28 + 0.5 * Math.min(1, peak / 4000), // harder throws panic for longer
+      glideAmt: 0, glided: false, landed: false, spin: 0,
+    };
     setEmotion('scared', 3000);
+  }
+  // Bounce off one surface ('floor' | 'ceil' | 'left' | 'right'). The surface pushes back along its normal and also
+  // grips: the sliding at the contact point is turned into spin and the other way round. Returns the impact speed.
+  function ragBounce(r, kind) {
+    const floor = kind === 'floor', horiz = floor || kind === 'ceil';
+    const n = floor ? -1 : kind === 'ceil' ? 1 : kind === 'left' ? 1 : -1; // which way the surface pushes
+    const into = -(horiz ? r.vy : r.vx) * n;
+    if (into <= 0) return 0;
+    const gl = r.mode === 'glide';
+    const e = gl ? 0.3 : into > 900 ? 0.52 : into > 450 ? 0.42 : 0.3;
+    const a = clamp(0.22 + into / 3600, 0.22, 0.65) * (gl ? 0.4 : 1);
+    const sig = floor || kind === 'left' ? -1 : 1;
+    const slip = (horiz ? r.vx : r.vy) + sig * r.vrot * RAG_R; // how fast the touching point slides along the surface
+    if (horiz) r.vx -= a * slip / 3; else r.vy -= a * slip / 3;
+    r.vrot -= sig * 2 * a * slip / (3 * RAG_R);
+    if (horiz) r.vy = n * into * e; else r.vx = n * into * e;
+    return into;
+  }
+  function ragSub(r, h, now) {
+    const fl = floorY(), lo = minPetX(), hi = maxPetX();
+    r.t += h;
+    if (r.mode === 'tumble' && r.t > r.glideAt + 0.35 * r.hits && fl - st.y > 110) { // snap out of it: membrane open (every hard knock delays it)
+      r.mode = 'glide'; r.glided = true; r.rot = wrapPi(r.rot);
+      setEmotion('happy', 2400);
+      if (!quiet() && Math.random() < 0.5) showBubble(['Wheee!', 'I can fly!', 'Gliding!'][Math.floor(Math.random() * 3)], 1800);
+    }
+    if (r.mode === 'glide') {
+      const lift = r.vy > 0 ? clamp(Math.abs(r.vx) * 2.4, 0, RAG_G * 0.93) : 0; // the membrane carries him once he is falling
+      r.vy += (RAG_G - lift) * h;
+      if (r.vy > 330) r.vy += (330 - r.vy) * Math.min(1, 16 * h); // and caps how fast he drops, even when he has almost no forward speed
+      r.vx -= r.vx * (0.45 + Math.abs(r.vx) * 0.0004) * h;
+      const face = r.vx >= 0 ? 1 : -1;
+      if (Math.abs(r.vx) > 60) st.face = face;
+      const tgt = clamp(face * Math.atan2(r.vy, Math.abs(r.vx) + 1) * 0.5, -0.55, 0.55) + Math.sin(now / 260) * 0.04;
+      r.vrot += (55 * (tgt - r.rot) - 12.5 * r.vrot) * h; // righting reflex: a damped spring toward the glide pose
+    } else if (r.mode === 'skid') {
+      r.vx -= r.vx * 4.2 * h;
+      r.vrot += (70 * (0 - r.rot) - 15 * r.vrot) * h;
+      r.vy = 0;
+    } else {
+      r.vy += RAG_G * h;
+      const dr = 0.1 + Math.hypot(r.vx, r.vy) * 0.00006; // air drag grows with speed
+      r.vx -= r.vx * dr * h; r.vy -= r.vy * dr * h;
+      if (st.y < fl - 2) r.vrot -= r.vrot * 0.25 * h;
+    }
+    r.vrot = clamp(r.vrot, -26, 26);
+    st.x += r.vx * h; st.y += r.vy * h; r.rot += r.vrot * h;
+    r.spin += Math.abs(r.vrot) * h;
+    const hit = (into) => { if (into > 320) { r.hits++; st.landT = now; sfx('bounce'); } };
+    if (st.x < lo) { st.x = lo; hit(ragBounce(r, 'left')); }
+    if (st.x > hi) { st.x = hi; hit(ragBounce(r, 'right')); }
+    if (st.y < 0) { st.y = 0; hit(ragBounce(r, 'ceil')); }
+    if (st.y >= fl) {
+      st.y = fl;
+      if (r.mode === 'glide' && r.vy < 800) { // a proper landing: fold the membrane and skid
+        r.mode = 'skid'; r.landed = true; r.vy = 0; st.landT = now; sfx('land'); cheer(1400);
+      } else if (r.mode === 'skid') {
+        r.vy = 0;
+      } else if (r.vy > 250) {
+        hit(ragBounce(r, 'floor'));
+        if (r.mode === 'glide') r.mode = 'tumble'; // slammed into the floor too fast to land
+      } else {
+        // lying or rolling on the floor: spin and sliding settle into rolling, then rolling friction takes over
+        r.vy = 0;
+        const a = 1 - Math.exp(-14 * h), slip = r.vx - r.vrot * RAG_R;
+        r.vx -= a * slip / 3; r.vrot += a * 2 * slip / (3 * RAG_R);
+        const rr = Math.exp(-1.4 * h); r.vx *= rr; r.vrot *= rr;
+        if (Math.abs(r.vx) < 150) { const k = Math.exp(-5 * h); r.vx *= k; r.vrot *= k; }
+      }
+    }
+  }
+  function endRag(r, now) {
+    st.rag = null;
+    st.ragRot = wrapPi(r.rot); // eases back to upright by itself
+    st.nextHop = now + 7000; st.y = floorY(); clampX(); pip.savePos(st.x);
+    if (r.landed) { setEmotion('happy', 2600); cheer(1800); } // stuck the landing
+    else if (r.peak > 1800 || r.hits >= 3) setEmotion('dizzy', 6000);
+    else setEmotion('surprised', 1800);
   }
   function ragStep(now, dt) {
     const r = st.rag;
-    if (r.hits !== (r.lastHits || 0)) { r.lastHits = r.hits; sfx('bounce'); }
-    r.vy += 2400 * dt;
-    st.x += r.vx * dt; st.y += r.vy * dt; r.rot += r.vrot * dt;
-    const lo = minPetX(), hi = maxPetX(), fl = floorY();
-    if (st.x < lo) { st.x = lo; r.vx = Math.abs(r.vx) * 0.65; r.vrot *= -0.8; r.hits++; }
-    if (st.x > hi) { st.x = hi; r.vx = -Math.abs(r.vx) * 0.65; r.vrot *= -0.8; r.hits++; }
-    if (st.y < 0) { st.y = 0; r.vy = Math.abs(r.vy) * 0.5; r.hits++; }
-    if (st.y >= fl) {
-      st.y = fl;
-      if (Math.abs(r.vy) > 250) { r.vy = -r.vy * 0.45; r.hits++; r.vrot *= 0.7; }
-      else { r.vy = 0; r.vx *= 0.88; r.vrot *= 0.85; }
-    }
-    if (st.y >= fl - 1 && Math.hypot(r.vx, r.vy) < 40 && Math.abs(r.vrot) < 0.6) r.rest += dt; else r.rest = 0;
-    if (r.rest > 0.5) {
-      st.rag = null;
-      const TAU = Math.PI * 2;
-      let w = r.rot % TAU; if (w > Math.PI) w -= TAU; if (w < -Math.PI) w += TAU;
-      st.ragRot = w; st.nextHop = now + 7000; st.y = fl; clampX(); pip.savePos(st.x);
-      if (r.peak > 1500 || r.hits >= 3) setEmotion('dizzy', 6000); else setEmotion('surprised', 1800);
-    }
+    const n = Math.max(1, Math.ceil(dt / 0.008)), h = dt / n; // small steps so a hard throw cannot skip through a wall
+    for (let i = 0; i < n; i++) ragSub(r, h, now);
+    r.glideAmt += ((r.mode === 'glide' ? 1 : 0) - r.glideAmt) * (1 - Math.exp(-7 * dt));
+    const fl = floorY();
+    const still = st.y >= fl - 1 && Math.hypot(r.vx, r.vy) < 40 && (r.mode === 'skid' ? Math.abs(r.rot) < 0.15 : Math.abs(r.vrot) < 0.6);
+    r.rest = still ? r.rest + dt : 0;
+    if (r.rest > (r.mode === 'skid' ? 0.2 : 0.5) || r.t > 14) endRag(r, now);
   }
 
   // ---------------------------------------------------------------- idle behaviours
@@ -731,7 +848,7 @@
     st.lookYaw += (tYaw - st.lookYaw) * 0.12;
     st.lookPitch += (tPitch - st.lookPitch) * 0.12;
 
-    const flying = st.flight && now - st.flight.t0 > st.flight.crouch && fp < 0.9;
+    const flying = (st.flight && now - st.flight.t0 > st.flight.crouch && fp < 0.9) || (st.rag && st.rag.glideAmt > 0.5);
     const tBody = (st.hop && st.hop.far) || flying ? st.face * 1.15 : st.perch ? st.face * 0.3 : st.face * 0.45;
     st.bodyYaw += (tBody - st.bodyYaw) * 0.14;
 
@@ -757,17 +874,22 @@
     dz.hop += eo.hop; dz.tilt += eo.tilt; dz.x += eo.x || 0; dz.yaw += eo.yaw || 0;
     if (st.dragging) st.dragTiltCur += (clamp(st.dragVx / 1600, -0.8, 0.8) - st.dragTiltCur) * 0.25; else st.dragTiltCur *= 0.85;
     dz.tilt += st.dragTiltCur;
-    if (st.rag) { dz.tilt += st.rag.rot; dz.glide += 0.5 + 0.5 * Math.sin(now / 55); }
-    else if (st.ragRot) { st.ragRot *= 0.9; if (Math.abs(st.ragRot) < 0.01) st.ragRot = 0; dz.tilt += st.ragRot; }
+    if (st.rag) {
+      const r = st.rag, sp = Math.hypot(r.vx, r.vy);
+      dz.tilt += r.rot;
+      // panicking: arms flail with the speed; gliding: membrane wide open; landing: folded away again
+      dz.glide += r.glideAmt * 0.95 + (1 - r.glideAmt) * (r.mode === 'skid' ? 0 : (0.5 + 0.5 * Math.sin(now / 55)) * clamp(sp / 1200, 0.3, 1));
+      dz.tail += clamp(r.vrot * 0.08, -1.2, 1.2) * (1 - r.glideAmt);
+    } else if (st.ragRot) { st.ragRot *= 0.92; if (Math.abs(st.ragRot) < 0.01) st.ragRot = 0; dz.tilt += st.ragRot; }
     const sadBrow = sadAmt, sadMouth = sadAmt;
     if (gl) {
       draw(Model.buildParts({
         t: now / 1000,
         bodyYaw: st.bodyYaw + dz.yaw,
         lookYaw: st.lookYaw,
-        lookPitch: st.lookPitch,
+        lookPitch: st.lookPitch + dz.nod,
         glide: clamp(st.glide + dz.glide, 0, 1),
-        crouch: Math.max(st.crouch, eo.crouch),
+        crouch: clamp(Math.max(st.crouch, eo.crouch, dz.crouch), 0, 1),
         blink,
         happy: Math.max(st.happy, ec.happy || 0),
         thinking: Math.max(st.thinking, ec.thinking || 0),
@@ -779,6 +901,9 @@
         blush: ec.blush || 0,
         earBack: Math.max(ec.earBack || 0, sadAmt * 0.6),
         flip: dz.flip,
+        armL: dz.armL,
+        armR: dz.armR,
+        tailSwing: dz.tail,
         alert: Math.max(st.alert, ec.alert || 0),
         palette: settings.palette,
         style: settings.style,
@@ -787,10 +912,11 @@
 
     petEl.style.transform = `translate(${(st.x + st.ax + dz.x).toFixed(1)}px, ${(st.y + st.hopY + dz.hop).toFixed(1)}px) rotate(${(st.tilt + dz.tilt).toFixed(3)}rad)`;
     updateBranch(now);
-    const above = floorY() - (st.y + st.hopY); // how high above the floor Pip is
-    const sc = clamp(1 + st.hopY / 260 - above / 900, 0.4, 1);
+    const hy = st.hopY + dz.hop; // dance jumps count too: the shadow shrinks while he is in the air
+    const above = floorY() - (st.y + hy); // how high above the floor Pip is
+    const sc = clamp(1 + hy / 260 - above / 900, 0.4, 1);
     shEl.style.transform = `translate(${(st.x + st.ax + dz.x + SIZE / 2 - 42).toFixed(1)}px, ${(floorY() + SIZE * FEET - 6).toFixed(1)}px) scale(${sc.toFixed(2)})`;
-    shEl.style.opacity = String(st.perch ? 0 : clamp(1 + st.hopY / 140 - above / 500, 0.15, 1));
+    shEl.style.opacity = String(st.perch ? 0 : clamp(1 + hy / 140 - above / 500, 0.15, 1));
 
     if (settings.quips && !quiet() && !st.chatOpen && !st.dragging && now > st.nextQuip) {
       showBubble(QUIPS[Math.floor(Math.random() * QUIPS.length)], 6000);
@@ -875,9 +1001,13 @@
     const wasDrag = drag.moved;
     let fling = null;
     if (wasDrag && drag.samples.length > 1 && performance.now() - drag.samples[drag.samples.length - 1].t < 120) { // only a release while still moving flings him
-      const sm = drag.samples, a = sm[0], b = sm[sm.length - 1], q = Math.max(16, b.t - a.t) / 1000;
+      const sm = drag.samples, b = sm[sm.length - 1];
+      let a = sm[0];
+      for (const s of sm) if (b.t - s.t <= 70) { a = s; break; } // where the hand was really heading at the moment of release
+      if (a === b) a = sm[sm.length - 2];
+      const q = Math.max(16, b.t - a.t) / 1000;
       const vx = (b.x - a.x) / q, vy = (b.y - a.y) / q;
-      if (Math.hypot(vx, vy) > 900) fling = { vx: clamp(vx, -3500, 3500) * 0.9, vy: clamp(vy, -3500, 3500) * 0.9 };
+      if (Math.hypot(vx, vy) > 900) fling = { vx: clamp(vx, -4200, 4200) * 0.95, vy: clamp(vy, -4200, 4200) * 0.95 };
     }
     drag = null;
     st.dragVx = 0;
@@ -1433,7 +1563,7 @@
       case 'chessresign': (async () => { const r = await pip.chessResign(); if (r && r.message) showBubble(r.message, 5000); })(); break;
       case 'chessteach': (async () => {
         closeChatForGame();
-        const w = await pickOne('Which button should I learn?', [['newGame', 'New game'], ['resign', 'Resign'], ['confirm', 'Resign confirm (Yes)']]);
+        const w = await pickOne('Which button should I learn?', [['newGame', 'New game'], ['playAgain', 'Play again (after game)'], ['resign', 'Resign'], ['confirm', 'Resign confirm (Yes)']]);
         if (!w) return;
         const r = await pip.chessTeach(w); if (r && r.message) showBubble(r.message, 5000);
       })(); break;

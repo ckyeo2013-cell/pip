@@ -664,6 +664,8 @@ function buildActionRules() {
     `\n\nTYPING: when the user asks you to type or write something into an app, call type_text RIGHT AWAY with the exact text, at_cursor true and no target: the user's cursor is almost always already in the box they mean, and at_cursor types there instantly (no slow window scan). Leave at_cursor off only when they name a specific box that is NOT where the cursor is. WRITING FOR THEM: when they ask you to ask, tell, reply or write something to someone ("help me ask Sam if he wants to call at 5"), compose the message yourself in their voice (short, natural, speaking to the other person as "you", with every detail they gave: names, times, places), then call type_text ONCE with it, at_cursor true, with no find_ui or look first, and press_enter true only if they said to send it. Afterwards say in a few words what you typed, and stop. ` +
     `Do not call find_ui first, and do not keep checking or retrying. If the app named is not open, open_app first, then type_text. After type_text succeeds, tell the user it is typed and stop. ` +
     `Only use find_ui plus a target when they name a specific box that is NOT where their cursor is. Never loop: at most a couple of tool calls per step of the job. ` +
+    `FIND SOMETHING THE USER LEAVES TO YOU: for ANY request like "find / show / play / recommend something interesting, cool, fun, good, new, random, relaxing..." (a video, song, game, recipe, article, show, place, fact, anything, on any site) YOU choose. Pick one specific, less-obvious concrete thing from your own knowledge that fits the topic and mood (a named concept, song and artist, recipe, game, article or video title, ideally with a known creator or source) and search for that exact name, never the user's vague words. Vary your picks, do not always take the most famous one. Then say in one line what you picked and why. ` +
+    `ALREADY-OPEN SITE: before opening any site (YouTube, Google, Reddit, Spotify, Gmail...), check whether it is already open, because open_url and search_site always open a NEW tab. Do ONE look_at_screen. If it is in front, work inside it (YouTube: press_keys "/" to focus the search box, then type_text the exact query with at_cursor true and press_enter true). If it is not in front, call browser find_tab (Chrome and Edge tab search), then type_text the site name (for example youtube) with at_cursor true and press_enter true, then look_at_screen once: if the site is now in front, work inside it. In other browsers use next_tab a few times and look. Only open a new tab when you checked and the site is not open. ` +
     `Use what is already on screen: when the user mentions an app, site or person that is probably already open ("text Sam", "on this page", "the Roblox tab"), do ONE look_at_screen first. If the app or page is already open, work INSIDE it: never open another tab, never use open_url or search_site for it, and never search for something you can already see. If the person or chat is visible (sidebar, DM list, tab), click it with click_screen, or call open_chat with open_app false only when they are not visible. For texting, skip the look: call open_chat ONCE with message and send, which does it all in one step. Open or search only when it is not on screen.` +
     `Recommendations: for "find me a good game / show / place / product for X", GIVE 3 specific named picks with one reason each, from your own knowledge or from reading the page that is open (fetch_url or look_at_screen), matched to what they said (for example a 2 player Roblox game for two friends: name real co-op or duo games). Then offer to open one. Never type the user's request itself ("2 player game") as a search, and never answer with only a search.` +
     `Messaging and group chats (Discord, Slack, Teams, WhatsApp): do the whole job yourself, never ask the user to open the chat. Use open_chat with the app and the person or group name; it opens the app and the chat with the keyboard. ` +
@@ -1081,8 +1083,8 @@ function registerIpc() {
     for (const n of names) { if (bt[n]) { await actions.clickFrac(bt[n].x, bt[n].y); await sleep(900); } }
   }
   ipcMain.handle('chess:teach', async (_e, which) => {
-    if (!['newGame', 'resign', 'confirm'].includes(which)) return { message: 'Unknown button.' };
-    const label = { newGame: 'NEW GAME / play button', resign: 'RESIGN button', confirm: 'resign CONFIRM (Yes) button' }[which];
+    if (!['newGame', 'playAgain', 'resign', 'confirm'].includes(which)) return { message: 'Unknown button.' };
+    const label = { newGame: 'NEW GAME / play button', playAgain: 'PLAY AGAIN button on the game-over pop-up', resign: 'RESIGN button', confirm: 'resign CONFIRM (Yes) button' }[which];
     for (let i = 6; i > 0; i--) { send('say', { text: `Hover the mouse on the ${label}. Learning it in ${i}...`, ms: 1100 }); await sleep(1000); }
     const p = screen.getCursorScreenPoint(), d = screen.getPrimaryDisplay().bounds;
     const bt = getBtns(); bt[which] = { x: (p.x - d.x) / d.width, y: (p.y - d.y) / d.height };
@@ -1109,8 +1111,9 @@ function registerIpc() {
       let st = await actions.readBoard(lastChess.board).catch(() => null);
       if (!st || !st.atStart) { // not at the start of a game: press New Game and wait for a fresh board (online matchmaking can take a while)
         send('say', { text: 'Starting a new match.', ms: 2500 });
-        await pressButtons(['newGame']);
-        for (let i = 0; i < 60 && !chessStopFlag; i++) { await sleep(1000); st = await actions.readBoard(lastChess.board).catch(() => null); if (st && st.atStart) break; }
+        if (getBtns().playAgain) { await pressButtons(['playAgain']); await sleep(2500); st = await actions.readBoard(lastChess.board).catch(() => null); } // the game-over pop-up's own button
+        if (!st || !st.atStart) await pressButtons(['newGame']);
+        for (let i = 0; i < 60 && !chessStopFlag && !(st && st.atStart); i++) { await sleep(1000); st = await actions.readBoard(lastChess.board).catch(() => null); if (st && st.atStart) break; }
       }
       if (chessStopFlag || !st || !st.atStart) { last = 'I could not find a fresh game, so I stopped.'; break; }
       const pipWhite = st.whiteBottom !== false; // Pip plays the side at the bottom of the board
