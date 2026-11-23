@@ -150,3 +150,31 @@ textarea:focus { background: var(--bg); border-color: var(--blue); box-shadow: 0
 #stop svg { width: 16px; height: 16px; fill: currentColor; pointer-events: none; }
 .typing .step { font-size: 11px; color: var(--sub); margin-left: 6px; align-self: center; max-width: 220px; }
 .typing:has(.step:not(:empty)) { padding-right: 14px; }
+
+/* ---- Pip's games window (chess, checkers, connect four, tic-tac-toe) */
+#gm { position: fixed; left: 24px; top: 24px; z-index: 6; display: none; background: var(--bg); color: var(--text); border-radius: 14px; box-shadow: var(--shadow); padding: 8px 10px 12px; width: 356px; }
+#gm .gm-hd { display: flex; gap: 6px; align-items: center; padding: 2px 0 6px; cursor: move; flex-wrap: wrap; }
+#gm .gm-hd select, #gm .gm-hd button { font: inherit; font-size: 12px; padding: 3px 7px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer; }
+#gm .gm-hd .x { margin-left: auto; }
+#gm .gm-status { font-size: 13px; color: var(--sub); min-height: 20px; padding: 0 2px 6px; }
+#gm .gm-body { display: flex; justify-content: center; }
+#gm .gm-board { display: grid; grid-template-columns: repeat(8, 40px); grid-template-rows: repeat(8, 40px); border: 2px solid var(--line); border-radius: 4px; overflow: hidden; }
+#gm .gm-cell { width: 40px; height: 40px; border: 0; padding: 0; margin: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; font: inherit; }
+#gm .gm-cell.lt { background: #eeeed2; }
+#gm .gm-cell.dk { background: #769656; }
+#gm .gm-cell.sel { outline: 3px solid #1a73e8; outline-offset: -3px; }
+#gm .gm-cell.hint::after { content: ''; width: 12px; height: 12px; border-radius: 50%; background: rgba(0, 0, 0, .28); position: absolute; }
+#gm .gm-cell.last { box-shadow: inset 0 0 0 40px rgba(255, 235, 59, .38); }
+#gm .gm-cell.chk { box-shadow: inset 0 0 0 40px rgba(217, 48, 37, .5); }
+#gm .gm-pc { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; box-shadow: 0 1px 3px rgba(0, 0, 0, .45); pointer-events: none; }
+#gm .gm-pc.w { background: #fafafa; color: #202124; border: 2px solid #9aa0a6; }
+#gm .gm-pc.b { background: #2b2b2b; color: #f1f3f4; border: 2px solid #111; }
+#gm .gm-pc.king { outline: 2px solid #f9a825; outline-offset: 1px; }
+#gm .gm-ttt { display: grid; grid-template-columns: repeat(3, 90px); grid-template-rows: repeat(3, 90px); gap: 4px; }
+#gm .gm-tcell { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; font: 700 44px/1 inherit; color: var(--text); cursor: pointer; }
+#gm .gm-c4 { display: grid; grid-template-columns: repeat(7, 44px); grid-template-rows: repeat(6, 44px); gap: 3px; background: #1a56c4; padding: 6px; border-radius: 10px; }
+#gm .gm-c4cell { width: 44px; height: 44px; border-radius: 50%; border: 0; background: #e8eaed; cursor: pointer; padding: 0; }
+#gm .gm-c4cell.red { background: #d93025; }
+#gm .gm-c4cell.yel { background: #fbc02d; }
+.pick { position: fixed; z-index: 7; background: var(--bg); color: var(--text); border-radius: 12px; box-shadow: var(--shadow); padding: 10px 12px; width: 260px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.pick button { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer; }

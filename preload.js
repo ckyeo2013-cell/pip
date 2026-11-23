@@ -41,4 +41,11 @@ contextBridge.exposeInMainWorld('pip', {
   onOpenChat: (cb) => on('open-chat', cb),
   onArea: (cb) => on('area', cb),
   onMood: (cb) => on('mood', cb),
+  onStatus: (cb) => on('status', cb),
+  chessScreen: (opts) => ipcRenderer.invoke('chess:screen', opts),
+  debugLog: (kind, text) => ipcRenderer.send('debug:log', kind, text),
+  debugCopy: () => ipcRenderer.invoke('debug:copy'),
+  chessStop: () => ipcRenderer.send('chess:stop'),
+  moodGet: () => ipcRenderer.invoke('mood:get'),
+  moodEvent: (kind) => ipcRenderer.send('mood:event', String(kind)),
 });

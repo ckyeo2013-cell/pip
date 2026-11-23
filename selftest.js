@@ -1399,6 +1399,37 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     P.endGame();
   });
 
+  await t('chess engine: standard perft counts, mate in one, deep and on time, opening book', async () => {
+    const chess = require('./chess.js');
+    assert.strictEqual(chess.perft(chess.START_FEN, 4), 197281);
+    assert.strictEqual(chess.perft('r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1', 3), 97862);
+    assert.strictEqual(chess.perft('r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1', 3), 9467);
+    assert.strictEqual(chess.bestMove('6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1', { ms: 300, queen: true }).uci, 'a1a8');
+    const t0 = Date.now(), r = chess.bestMove(chess.START_FEN, { ms: 1000 });
+    assert.ok(r.depth >= 9 && Date.now() - t0 < 2500, 'depth ' + r.depth);
+    assert.ok(chess.bestMoveState(chess.startState(), { ms: 200, moves: [] }).book);
+  });
+
+  await t('games window logic: tic-tac-toe is unbeatable, Pip beats a random connect four player, checkers rules force captures and crown kings, chess levels play legal moves', async () => {
+    const L = require('./minigames.js'), chess = require('./chess.js');
+    let lost = 0;
+    for (let g = 0; g < 60; g++) {
+      const b = new Array(9).fill(''); let turn = 'X';
+      while (!L.tttWinner(b)) { if (turn === 'X') { const f = b.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0); b[f[g % f.length]] = 'X'; } else b[L.tttPick(b.slice(), 'max')] = 'O'; turn = turn === 'X' ? 'O' : 'X'; }
+      if (L.tttWinner(b) === 'X') lost++;
+    }
+    assert.strictEqual(lost, 0);
+    const start = L.ckStart();
+    assert.strictEqual(L.ckMoves(start, 'w').length, 7);
+    const forced = start.slice(); forced[5 * 8 + 2] = ''; forced[2 * 8 + 5] = ''; forced[4 * 8 + 3] = 'w'; forced[3 * 8 + 4] = 'b';
+    const fm = L.ckMoves(forced, 'w'); assert.ok(fm.every((m) => m.caps.length > 0), 'a capture is available so only captures are legal');
+    const k = new Array(64).fill(''); k[1 * 8 + 2] = 'w'; const km = L.ckMoves(k, 'w'); assert.ok(L.ckApply(k, km.find((m) => m.path[1] === 0 * 8 + 1))[1] === 'W', 'reaching the far row crowns a king');
+    for (const level of ['easy', 'medium', 'hard', 'human']) {
+      const r = chess.bestMoveState(chess.startState(), { ms: 150, level, queen: true });
+      assert.ok(chess.legal(chess.startState()).some((m) => chess.sqName(m.from) === r.from && chess.sqName(m.to) === r.to), level + ' plays a legal move');
+    }
+  });
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`\n${passed} checks passed${process.exitCode ? ' (some FAILED)' : ''}`);
 })();

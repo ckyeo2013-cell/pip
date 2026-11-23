@@ -16,6 +16,7 @@
   const lerp = (a, b, t) => a + (b - a) * t;
   const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
   const rand = (a, b) => a + Math.random() * (b - a);
+  const sfx = (n) => { try { PipSfx.play(n); } catch (_) {} };
 
   const QUIPS = [
     'Sip some water?',
@@ -253,6 +254,7 @@
     stay: false, // chat told Pip to stay put
     away: null,  // sad: {phase:'sulk'|'out'|'gone'|'in', t0, dir, off}
     ax: 0,       // horizontal offset while walking off / back on
+    nextIdle: performance.now() + rand(20000, 40000), napUntil: 0, shake: 0, dragVx: 0, dragTiltCur: 0, ragRot: 0, rag: null,
   };
   const mouse = { x: area.w / 2, y: area.h / 2 };
   let thinkingFlag = false;
@@ -268,6 +270,7 @@
   function clampX() { st.x = clamp(st.x, -30, Math.max(-30, area.w - SIZE + 30)); }
 
   function startHop(tx, h, ty) {
+    sfx('hop');
     ty = ty === undefined ? st.y : ty;
     const dx = Math.abs(tx - st.x), dy = Math.abs(ty - st.y);
     const dist = Math.hypot(dx, dy);
@@ -351,7 +354,7 @@
           st.y = F.ty;
           st.flight = null;
           st.glide = 0.15;
-          st.landT = now;
+          st.landT = now; sfx('land');
           st.tiltTarget = 0;
           if (F.branch) st.perch = { until: now + 40000 };
           cheer(1100);
@@ -400,17 +403,18 @@
   const DANCE_SEG = 1300; // ms per move
   const DANCE_ROUTINE = ['sway', 'bounce', 'spin', 'wiggle', 'flourish', 'bounce', 'spin'];
   const DANCE_EXTRA = ['floss', 'shuffle', 'six_seven', 'headbang', 'dab', 'robot', 'moonwalk', 'backflip'];
-  const DANCE_ALL = DANCE_ROUTINE.concat(DANCE_EXTRA);
+  const DANCE_ALL = DANCE_ROUTINE.concat(DANCE_EXTRA, ['cartwheel', 'groom', 'stretch']);
+  const SHORT_MOVES = { backflip: 2, cartwheel: 2, groom: 2, stretch: 1 };
   function startDance(style) {
     const move = DANCE_ALL.includes(style) ? style : null;
-    const once = move === 'backflip' || move === 'cartwheel';
     let seq;
-    if (move) seq = once ? [move, move] : [move, move, move, move];
+    if (move) seq = new Array(SHORT_MOVES[move] || 4).fill(move);
     else {
       const ex = DANCE_EXTRA.slice().sort(() => Math.random() - 0.5).slice(0, 3);
       seq = DANCE_ROUTINE.slice(0, 4).concat(ex, ['flourish']);
     }
     if (seq.includes('six_seven')) showBubble('6... 7!', 2600);
+    sfx('dance');
     st.dance = { t0: performance.now(), seq, total: seq.length * DANCE_SEG };
   }
   function danceOffsets(now) {
@@ -437,11 +441,56 @@
       case 'shuffle': z.x = s(2) * 40; z.yaw = s(2) * 0.6; z.hop = -Math.abs(s(4)) * 16; break;
       case 'headbang': z.tilt = s(4) * 0.22; z.hop = s(4) * 8; z.glide = 0.15; break;
       case 'dab': z.glide = Math.sqrt(arc); z.tilt = 0.32 * arc; z.yaw = 0.8 * arc; break;
+      case 'groom': z.tilt = s(5) * 0.1; z.yaw = s(2.5) * 0.35; z.hop = -Math.abs(s(5)) * 3; z.glide = 0.25 + 0.15 * s(5); break;
+      case 'stretch': z.glide = arc; z.tilt = -0.12 * arc; z.yaw = 0; break;
       case 'robot': z.yaw = Math.round(s(1) * 2) / 2 * 0.7; z.tilt = Math.round(s(2) * 2) / 2 * 0.15; z.glide = Math.round(arc * 2) / 2; break;
     }
     happyUntil = Math.max(happyUntil, now + 250); // ears wiggle and he waves while dancing
     for (const k of Object.keys(z)) if (!(full && (k === 'flip' || k === 'tilt'))) z[k] *= w;
     return z;
+  }
+
+  // ---------------------------------------------------------------- ragdoll: fling him fast and he tumbles, bounces, then gets dizzy
+  function startRag(vx, vy) {
+    leavePerch(); st.flight = null; st.hop = null; st.hopY = 0; st.queue = []; st.dance = null; st.pendingCmd = null; st.napUntil = 0;
+    st.rag = { vx, vy, rot: 0, vrot: clamp(vx / 220, -14, 14) + (Math.random() - 0.5) * 4, hits: 0, peak: Math.hypot(vx, vy), rest: 0 };
+    setEmotion('scared', 3000);
+  }
+  function ragStep(now, dt) {
+    const r = st.rag;
+    if (r.hits !== (r.lastHits || 0)) { r.lastHits = r.hits; sfx('bounce'); }
+    r.vy += 2400 * dt;
+    st.x += r.vx * dt; st.y += r.vy * dt; r.rot += r.vrot * dt;
+    const lo = minPetX(), hi = maxPetX(), fl = floorY();
+    if (st.x < lo) { st.x = lo; r.vx = Math.abs(r.vx) * 0.65; r.vrot *= -0.8; r.hits++; }
+    if (st.x > hi) { st.x = hi; r.vx = -Math.abs(r.vx) * 0.65; r.vrot *= -0.8; r.hits++; }
+    if (st.y < 0) { st.y = 0; r.vy = Math.abs(r.vy) * 0.5; r.hits++; }
+    if (st.y >= fl) {
+      st.y = fl;
+      if (Math.abs(r.vy) > 250) { r.vy = -r.vy * 0.45; r.hits++; r.vrot *= 0.7; }
+      else { r.vy = 0; r.vx *= 0.88; r.vrot *= 0.85; }
+    }
+    if (st.y >= fl - 1 && Math.hypot(r.vx, r.vy) < 40 && Math.abs(r.vrot) < 0.6) r.rest += dt; else r.rest = 0;
+    if (r.rest > 0.5) {
+      st.rag = null;
+      const TAU = Math.PI * 2;
+      let w = r.rot % TAU; if (w > Math.PI) w -= TAU; if (w < -Math.PI) w += TAU;
+      st.ragRot = w; st.nextHop = now + 7000; st.y = fl; clampX(); pip.savePos(st.x);
+      if (r.peak > 1500 || r.hits >= 3) setEmotion('dizzy', 6000); else setEmotion('surprised', 1800);
+    }
+  }
+
+  // ---------------------------------------------------------------- idle behaviours
+  function pickIdle(now) {
+    const r = Math.random();
+    st.nextIdle = now + rand(25000, 70000);
+    if (r < 0.25) setEmotion('yawn', 2800);
+    else if (r < 0.5) startDance('groom');
+    else if (r < 0.65) { startDance('stretch'); setEmotion('yawn', 2200); }
+    else if (r < 0.85) {
+      const tx = clamp(mouse.x - SIZE / 2, minPetX(), maxPetX());
+      if (Math.abs(tx - st.x) > 120) { startHop(tx, 55); cheer(1200); } else setEmotion('happy', 2000);
+    } else { setEmotion('sleepy', 14000); st.napUntil = now + 14000; showBubble('zzz...', 3000); }
   }
 
   // ---------------------------------------------------------------- emotions
@@ -463,24 +512,39 @@
     jealous: { brow: 0.6, mouth: -0.5, blush: 0.3, earBack: 0.4, tilt: 0.1 },
     disgusted: { brow: 0.4, mouth: -1, earBack: 0.5, tilt: -0.1 },
     nervous: { wide: 0.5, mouth: -0.2, earBack: 0.3, brow: -0.5, shake: 0.03 },
+    dizzy: { wide: 0.5, mouth: -0.3, mouthO: 0.3, thinking: 0.9, wobble: 1 },
+    yawn: { sleepy: 0.6, mouthO: 1 },
     lonely: { brow: -0.8, mouth: -0.7, sleepy: 0.5, earBack: 0.4 },
   };
+  // resting face: shaped by how he feels about the user (saved between sessions, see mood memory in main.js)
+  function moodBase() {
+    const m = st.mood;
+    if (!m || settings.moodMemory === false) return EMO.neutral;
+    if (m.grudge) return { brow: 0.4, mouth: -0.45, earBack: 0.35 };
+    if (m.level === 'hurt' || m.level === 'wary') return { brow: -0.4, mouth: -0.3, sleepy: 0.15 };
+    if (m.level === 'close' || m.level === 'best friend') return { mouth: 0.55, happy: 0.1 };
+    if (m.level === 'friendly') return { mouth: 0.25 };
+    return EMO.neutral;
+  }
+  const refreshMood = () => pip.moodGet().then((m) => { st.mood = m; return m; }).catch(() => null);
   const EMO_KEYS = ['brow', 'mouth', 'mouthO', 'wide', 'blush', 'earBack', 'sleepy', 'happy', 'alert', 'thinking'];
   st.emo = { name: 'neutral', until: 0, cur: {} };
   function setEmotion(name, ms) {
-    if (name === 'sad') { goSad(); return; }
+    if (name === 'sad') { sfx('sad'); goSad(); return; }
     if (!EMO[name]) name = 'neutral';
+    if (name !== 'neutral' && st.emo.name !== name) sfx(name);
     if (st.away) comeBack();
     st.emo.name = name;
     st.emo.until = name === 'neutral' ? 0 : performance.now() + (ms || 9000);
     st.emo.t0 = performance.now();
+    if (name === 'dizzy') { showBubble('Whoa... everything is spinning', 3500); st.nextHop = performance.now() + 7000; }
     if (name === 'excited') for (const dx of [50, -50]) st.queue.push({ tx: clamp(st.x + dx, minPetX(), maxPetX()), h: 50 });
     if (name === 'love') startDance('sway');
     if (name === 'surprised') st.queue.push({ tx: st.x, h: 80 });
     if (name === 'proud') startDance('flourish');
   }
   function emoStep(now) { // eases the face toward the emotion; returns body offsets
-    const e = st.emo, T = (now < e.until ? EMO[e.name] : EMO.neutral) || {};
+    const e = st.emo, T = (now < e.until ? EMO[e.name] : moodBase()) || {};
     if (now >= e.until && e.name !== 'neutral') e.name = 'neutral';
     for (const k of EMO_KEYS) e.cur[k] = (e.cur[k] || 0) + ((T[k] || 0) - (e.cur[k] || 0)) * 0.12;
     const o = { tilt: 0, hop: 0, crouch: 0 };
@@ -489,11 +553,19 @@
     if (T.stomp && !st.hop) o.hop = -Math.max(0, Math.sin(now / 160)) * 7;
     if (T.bounce && !st.hop) o.hop = -Math.abs(Math.sin(now / 150)) * 12;
     if (T.crouch) o.crouch = T.crouch;
+    if (T.wobble) { o.tilt += Math.sin(now * 0.007) * 0.3; o.x = Math.sin(now * 0.0045) * 14; o.yaw = Math.sin(now * 0.009) * 0.9; }
     return o;
   }
   // quick reactions to what the user types, so he shows feelings even if the AI does not call the tool
   function reactToText(t) {
     const x = String(t).toLowerCase();
+    const rude = /\b(stupid|idiot|dumb|shut up|hate you|useless|annoying|you suck)\b/.test(x);
+    const sorry = /\b(sorry|my bad|i apologi[sz]e|forgive me)\b/.test(x);
+    const nice = /\b(love you|you.?re (the )?best|so cute|adorable|thanks|thank you|great job|well done|good job|awesome|amazing)\b/.test(x);
+    const hadGrudge = !!(st.mood && st.mood.grudge);
+    pip.moodEvent(rude ? 'rude' : sorry ? 'apology' : nice ? 'kind' : 'chat');
+    if (sorry && hadGrudge) { setEmotion('happy', 6000); showBubble('Okay. Apology accepted.', 4500); }
+    setTimeout(refreshMood, 400);
     if (/\b(stupid|idiot|dumb|shut up|hate you|useless|annoying|you suck)\b/.test(x)) setEmotion('mad');
     else if (/\b(go away|leave me alone)\b/.test(x)) setEmotion('sad');
     else if (/\b(love you|i love|you.?re (the )?best|so cute|adorable)\b/.test(x)) setEmotion('love');
@@ -516,7 +588,7 @@
   function comeBack(msg) {
     const a = st.away;
     if (!a || a.phase === 'in') return;
-    a.phase = 'in'; a.t0 = performance.now();
+    a.phase = 'in'; a.t0 = performance.now(); sfx('happy');
     petEl.style.visibility = ''; shEl.style.visibility = '';
     st.face = -a.dir;
     cheer(2500); alertUntil = performance.now() + 3000;
@@ -610,14 +682,17 @@
     requestAnimationFrame(frame);
     if (now - lastRender < 28) return; // ~35 fps keeps the overlay light on the GPU
     lastRender = now;
+    const dt = clamp((now - (st.lastT || now)) / 1000, 0, 0.06); st.lastT = now;
+    st.shake *= Math.pow(0.5, dt);
 
     // wandering: hops, plus the occasional long glide across the desktop
     const fp = updateFlight(now);
+    if (st.rag) ragStep(now, dt);
     if (st.perch && !st.flight && !st.stay) {
       if (st.chatOpen) st.perch.until = Math.max(st.perch.until, now + 15000);
       else if (now > st.perch.until) startFlight(st.x, floorY(), { branch: false }); // time to glide home
     }
-    if (!st.away && !st.hop && !st.flight && !st.perch && !st.dragging && !st.chatOpen && settings.wander && !quiet() && !st.stay && now > st.nextHop) {
+    if (!st.away && !st.rag && now > st.napUntil && !st.hop && !st.flight && !st.perch && !st.dragging && !st.chatOpen && settings.wander && !quiet() && !st.stay && now > st.nextHop) {
       const dir = Math.random() < 0.5 ? -1 : 1;
       const big = Math.random() < 0.3;
       const span = big ? rand(500, Math.max(600, area.w * 0.5)) : rand(120, 380);
@@ -626,7 +701,8 @@
       if (Math.abs(tx - st.x) >= 90) startHop(tx, big ? 150 : 60);
       st.nextHop = now + rand(10000, 24000);
     }
-    if (!st.away && !st.hop && !st.flight && !st.dragging && st.queue.length) {
+    if (!st.away && !st.rag && !st.hop && !st.flight && !st.dragging && !st.chatOpen && !st.dance && !quiet() && settings.wander && !st.stay && now > st.nextIdle) pickIdle(now);
+    if (!st.away && !st.rag && !st.hop && !st.flight && !st.dragging && st.queue.length) {
       const q = st.queue.shift();
       startHop(q.tx, q.h);
       if (q.cheer) cheer(q.cheer);
@@ -678,7 +754,11 @@
     if (st.away) { st.happy = 0; st.emo.until = 0; }
     const sadAmt = st.sadAmt || 0;
     const eo = emoStep(now), ec = st.emo.cur;
-    dz.hop += eo.hop; dz.tilt += eo.tilt;
+    dz.hop += eo.hop; dz.tilt += eo.tilt; dz.x += eo.x || 0; dz.yaw += eo.yaw || 0;
+    if (st.dragging) st.dragTiltCur += (clamp(st.dragVx / 1600, -0.8, 0.8) - st.dragTiltCur) * 0.25; else st.dragTiltCur *= 0.85;
+    dz.tilt += st.dragTiltCur;
+    if (st.rag) { dz.tilt += st.rag.rot; dz.glide += 0.5 + 0.5 * Math.sin(now / 55); }
+    else if (st.ragRot) { st.ragRot *= 0.9; if (Math.abs(st.ragRot) < 0.01) st.ragRot = 0; dz.tilt += st.ragRot; }
     const sadBrow = sadAmt, sadMouth = sadAmt;
     if (gl) {
       draw(Model.buildParts({
@@ -735,7 +815,11 @@
   function updateInteractive() {
     const hot = overPet(mouse.x, mouse.y);
     canvas.classList.toggle('hot', hot);
-    const want = st.dragging || !!panelDrag || !!resizing || hot || overPanel(mouse.x, mouse.y);
+    const gr = typeof PipGames !== 'undefined' && PipGames.isOpen() ? PipGames.rect() : null;
+    const overGames = !!gr && mouse.x >= gr.left && mouse.x <= gr.right && mouse.y >= gr.top && mouse.y <= gr.bottom;
+    const pk = document.querySelector('.pick'), pr = pk ? pk.getBoundingClientRect() : null;
+    const overPick = !!pr && mouse.x >= pr.left && mouse.x <= pr.right && mouse.y >= pr.top && mouse.y <= pr.bottom;
+    const want = st.dragging || !!panelDrag || !!resizing || hot || overPanel(mouse.x, mouse.y) || overGames || overPick;
     if (want !== interactive) {
       interactive = want;
       pip.setInteractive(want);
@@ -750,7 +834,7 @@
   let drag = null;
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
-    drag = { sx: e.clientX, sy: e.clientY, ox: st.x, oy: st.y, moved: false };
+    drag = { sx: e.clientX, sy: e.clientY, ox: st.x, oy: st.y, moved: false, samples: [], peak: 0 };
     canvas.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
@@ -766,9 +850,21 @@
       st.hop = null;
       st.hopY = 0;
       st.glide = 0.6;
+      st.rag = null; st.napUntil = 0; st.ragRot = 0;
       canvas.classList.add('drag');
     }
     if (drag.moved) {
+      const tn = performance.now(), sm = drag.samples;
+      sm.push({ x: e.clientX, y: e.clientY, t: tn });
+      while (sm.length > 2 && tn - sm[0].t > 110) sm.shift();
+      if (sm.length > 1) {
+        const a = sm[sm.length - 2], q = Math.max(8, tn - a.t) / 1000;
+        const vx = (e.clientX - a.x) / q, vy = (e.clientY - a.y) / q, sp = Math.hypot(vx, vy);
+        st.dragVx += (vx - st.dragVx) * 0.3;
+        drag.peak = Math.max(drag.peak, sp);
+        if (sp > 800) st.shake += (sp - 800) * q * 0.0012;
+        if (st.shake > 2.2 && !(st.emo.name === 'dizzy' && performance.now() < st.emo.until)) setEmotion('dizzy', 6000);
+      }
       st.x = drag.ox + dx;
       st.y = clamp(drag.oy + dy, 0, floorY());
       clampX();
@@ -777,12 +873,21 @@
   const endDrag = (e) => {
     if (!drag) return;
     const wasDrag = drag.moved;
+    let fling = null;
+    if (wasDrag && drag.samples.length > 1 && performance.now() - drag.samples[drag.samples.length - 1].t < 120) { // only a release while still moving flings him
+      const sm = drag.samples, a = sm[0], b = sm[sm.length - 1], q = Math.max(16, b.t - a.t) / 1000;
+      const vx = (b.x - a.x) / q, vy = (b.y - a.y) / q;
+      if (Math.hypot(vx, vy) > 900) fling = { vx: clamp(vx, -3500, 3500) * 0.9, vy: clamp(vy, -3500, 3500) * 0.9 };
+    }
     drag = null;
+    st.dragVx = 0;
     st.dragging = false;
     st.glide = 0;
     canvas.classList.remove('drag');
     try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
-    if (wasDrag) {
+    if (wasDrag && fling) {
+      startRag(fling.vx, fling.vy);
+    } else if (wasDrag) {
       // glide back down to the desktop floor like a proper sugar glider
       if (floorY() - st.y > 40) {
         // dropped up in the air: a branch grows right under him and he stays there
@@ -969,6 +1074,8 @@
 
   function openChat() {
     comeBack("You called?");
+    sfx('open');
+    if (st.napUntil > performance.now()) { st.napUntil = 0; st.emo.until = 0; }
     st.chatOpen = true;
     bubble.classList.remove('show');
     panel.classList.add('open');
@@ -1020,9 +1127,44 @@
     msgs.scrollTop = msgs.scrollHeight;
   });
 
+  function closeChatForGame() { try { if (st.chatOpen) closeChat(); } catch (_) {} }
+  // Chess on a real website or app, driven by Pip's own engine, no AI service involved.
+  async function screenChess() {
+    closeChatForGame();
+    const color = await pickOne('Chess on screen: which side are you playing?', [['white', 'I am white'], ['black', 'I am black']]);
+    if (!color) return;
+    showBubble('Open the chess game, then follow my steps.', 5000);
+    const res = await pip.chessScreen({ white: color === 'white', level: settings.chessLevel || 'max' });
+    if (res && res.message) showBubble(res.message, 8000);
+  }
+  // a tiny two-choice popup next to Pip
+  function pickOne(question, options) {
+    return new Promise((resolve) => {
+      const box = document.createElement('div');
+      box.className = 'pick';
+      const q = document.createElement('div'); q.textContent = question; box.appendChild(q);
+      const done = (v) => { box.remove(); resolve(v); };
+      for (const [v, label] of options) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', () => done(v)); box.appendChild(b); }
+      const c = document.createElement('button'); c.textContent = 'Cancel'; c.addEventListener('click', () => done(null)); box.appendChild(c);
+      document.body.appendChild(box);
+      box.style.left = Math.max(8, Math.min(area.w - 280, st.x - 40)) + 'px';
+      box.style.top = Math.max(8, st.y - 130) + 'px';
+    });
+  }
+  const CLIP_RE = /^(explain|summari[sz]e|fix|proofread|rewrite|shorten|simplify|translate(?: to ([a-z ]{2,20}))?)(?: (?:this|that|it|what i copied|my clipboard|the clipboard))?[.!]?$/i;
+  const CLIP_ASK = { explain: 'Explain what I copied.', summarize: 'Summarize what I copied in a few sentences.', fix: 'Fix any mistakes in what I copied (spelling, grammar, or bugs if it is code) and give me the corrected version.', proofread: 'Proofread what I copied and give me the corrected version.', rewrite: 'Rewrite what I copied so it reads better.', shorten: 'Shorten what I copied but keep the meaning.', simplify: 'Explain what I copied in simpler words.' };
   async function send(text, opts = {}) {
     text = text.trim();
     if (busy || !text) return;
+    const cm = !opts.ctx && text.match(CLIP_RE);
+    if (cm) {
+      let clip = '';
+      try { clip = (await pip.readClipboard()).trim(); } catch (_) {}
+      if (!clip) { localReply(text, 'Your clipboard is empty. Copy some text first, then ask me again.'); return; }
+      const verb = cm[1].toLowerCase().replace('summarise', 'summarize');
+      opts = { ...opts, ctx: { text: clip } };
+      text = verb.startsWith('translate') ? `Translate what I copied${cm[2] ? ' to ' + cm[2] : ' to English'}.` : CLIP_ASK[verb];
+    }
     PipVoice.stopSpeaking();
     addMsg('user', text);
     if (opts.ctx) convoCtx = opts.ctx;
@@ -1046,7 +1188,7 @@
       } else {
         history.push({ role: 'assistant', content: res.text });
         saveHistory();
-        addMsg('pet', res.text);
+        addMsg('pet', res.text); sfx('pop');
         cheer(1100);
         if (settings.voiceReply === 'always' || (settings.voiceReply !== 'never' && opts.voice)) PipVoice.speak(res.text);
       }
@@ -1282,6 +1424,11 @@
         inp.focus();
         inp.setSelectionRange(8, 8);
         break;
+      case 'games': closeChatForGame(); openGames(); break;
+      case 'screenchess': screenChess(); break;
+      case 'stopgame': pip.chessStop(); showBubble('Okay, I stopped.', 3000); break;
+      case 'clipsum': send('summarize'); break;
+      case 'clipfix': send('fix'); break;
       case 'clip': {
         let text = '';
         try { text = (await pip.readClipboard()).trim(); } catch (_) {}
@@ -1295,6 +1442,7 @@
   // ---------------------------------------------------------------- settings
   function applySettings() {
     $('nm').textContent = settings.petName;
+    try { PipSfx.setEnabled(settings.sounds !== false); PipSfx.setVolume(settings.soundVolume == null ? 0.5 : settings.soundVolume); } catch (_) {}
   }
   function renderCals(list) {
     settings.calendars = list;
@@ -1374,6 +1522,14 @@
     $('s-model').value = settings.model || 'claude-haiku-5-5';
     $('s-wander').checked = !!settings.wander;
     $('s-quips').checked = !!settings.quips;
+    $('s-short').checked = settings.shortReplies !== false;
+    $('s-fallback').checked = settings.fallback !== false;
+    $('s-react').checked = settings.reactions !== false;
+    $('s-sound').checked = settings.sounds !== false;
+    $('s-vol').value = Math.round((settings.soundVolume == null ? 0.5 : settings.soundVolume) * 100);
+    $('s-memory').checked = settings.moodMemory !== false;
+    $('s-level').value = settings.chessLevel || 'max';
+    $('s-clock').value = settings.chessClock || '';
     $('s-login').checked = !!settings.openAtLogin;
     $('s-actions').checked = settings.actions !== false;
     $('s-full').checked = settings.fullAccess !== false;
@@ -1405,6 +1561,11 @@
     settings.workFolder = '';
     $('s-folder').textContent = 'None chosen';
   });
+  window.addEventListener('error', (e) => { try { pip.debugLog('error', (e.message || '') + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno); } catch (_) {} });
+  window.addEventListener('unhandledrejection', (e) => { try { pip.debugLog('rejection', String((e.reason && (e.reason.stack || e.reason.message)) || e.reason)); } catch (_) {} });
+  $('s-debug').addEventListener('click', async () => {
+    try { const r = await pip.debugCopy(); $('s-status').textContent = `Copied ${r.lines} log lines. Paste them in your bug report.`; } catch (_) { $('s-status').textContent = 'Could not copy the log.'; }
+  });
   $('s-save').addEventListener('click', async () => {
     const saved = await pip.saveSettings({
       apiKey: $('s-key').value,
@@ -1424,6 +1585,14 @@
       model: $('s-model').value,
       wander: $('s-wander').checked,
       quips: $('s-quips').checked,
+      shortReplies: $('s-short').checked,
+      fallback: $('s-fallback').checked,
+      reactions: $('s-react').checked,
+      sounds: $('s-sound').checked,
+      soundVolume: Number($('s-vol').value) / 100,
+      moodMemory: $('s-memory').checked,
+      chessLevel: $('s-level').value,
+      chessClock: $('s-clock').value,
       openAtLogin: $('s-login').checked,
       actions: $('s-actions').checked,
       fullAccess: $('s-full').checked,
@@ -1446,6 +1615,12 @@
     const now = performance.now();
     if (m.type === 'call') { st.inCall = !!m.on; if (m.on) showBubble("Zoom meeting, I'll stay quiet", 5000); return; }
     if (quiet()) return;
+    if (settings.reactions === false && ['idle', 'music', 'copied', 'morning'].includes(m.type)) return;
+    if (m.type === 'emote') { if (m.name === 'excited' || m.name === 'proud') startDance('flourish'); setEmotion(m.name, 6000); return; }
+    if (m.type === 'idle') { setEmotion('bored', 9000); showBubble('Hello? Anyone there?', 5000); return; }
+    if (m.type === 'music') { if (m.on) { setEmotion('excited', 6000); startDance(); showBubble('Ooh, music!', 4000); } return; }
+    if (m.type === 'copied') { alertUntil = now + 2500; if (Math.random() < 0.25) showBubble('Ooh, what did you copy?', 3000); return; }
+    if (m.type === 'morning') { setEmotion('happy', 7000); showBubble('Good morning! Ready for today?', 6000); return; }
     if (m.type === 'return') {
       alertUntil = now + 4000;
       cheer(2200);
@@ -1460,6 +1635,63 @@
   });
   pip.onSettings((s) => { Object.assign(settings, s); applySettings(); });
   pip.onOpenChat(() => { if (!st.chatOpen) openChat(); else pip.focus(); });
+
+  // ---------------------------------------------------------------- battery reactions
+  try {
+    navigator.getBattery().then((b) => {
+      let low = false;
+      const chk = () => {
+        if (settings.reactions === false) return;
+        if (!b.charging && b.level <= 0.15 && !low) { low = true; if (!quiet()) { setEmotion('nervous', 9000); showBubble('Your battery is low. Time for a charger?', 7000); } }
+        else if (b.charging && low) { low = false; if (!quiet()) { setEmotion('happy', 5000); showBubble('Charging. Thank you!', 4000); } }
+      };
+      b.addEventListener('levelchange', chk); b.addEventListener('chargingchange', chk); chk();
+    }).catch(() => {});
+  } catch (_) {}
+
+  // ---------------------------------------------------------------- status pill: what Pip is doing right now
+  const statusEl = document.createElement('div');
+  statusEl.style.cssText = 'position:absolute;left:0;top:0;padding:3px 10px;border-radius:10px;font-size:12px;background:var(--bg);color:var(--text);box-shadow:var(--shadow);pointer-events:none;opacity:0;transition:opacity .2s;white-space:nowrap;z-index:2';
+  document.body.appendChild(statusEl);
+  let statusText = '', statusT = 0;
+  pip.onStatus(({ text }) => { statusText = noEmoji(text || '').slice(0, 60); statusT = performance.now(); });
+  setInterval(() => {
+    const now = performance.now();
+    if (statusText && now - statusT > 40000) statusText = '';
+    let label = statusText || (thinkingFlag ? 'Thinking...' : '');
+    if (!label && st.rag) label = 'Whoa!';
+    else if (!label && st.emo.name === 'dizzy' && now < st.emo.until) label = 'Dizzy...';
+    else if (!label && st.napUntil > now) label = 'Napping';
+    const show = !!label && !st.away;
+    if (label) statusEl.textContent = label;
+    statusEl.style.opacity = show ? '1' : '0';
+    statusEl.style.transform = `translate(${(st.x + st.ax + SIZE / 2).toFixed(0)}px, ${(st.y + st.hopY + SIZE * 0.95).toFixed(0)}px) translateX(-50%)`;
+  }, 120);
+
+  // ---------------------------------------------------------------- mood memory at startup: a long absence makes him miss you
+  refreshMood().then((m) => {
+    if (!m || settings.moodMemory === false || m.absentHours < 30) return;
+    setTimeout(() => {
+      setEmotion('lonely', 9000);
+      showBubble(m.grudge || m.bond < -15 ? 'Oh. You are back.' : m.bond > 15 ? 'I missed you!' : 'Hey, you are back.', 6000);
+    }, 2500);
+  });
+  setInterval(refreshMood, 60000);
+
+  // ---------------------------------------------------------------- games window: how Pip reacts to the game
+  if (typeof PipGames !== 'undefined') PipGames.init({
+    sfx,
+    say: (t) => showBubble(t, 4500),
+    emote: (name) => { if (name === 'excited' || name === 'proud') startDance('flourish'); setEmotion(name, 5000); },
+    status: (t) => { statusText = t; statusT = performance.now(); },
+    started: () => { pip.moodEvent('game'); setEmotion('excited', 3000); showBubble("Let's play!", 3000); },
+    end: (game, result) => {
+      if (result === 'pip') { sfx('win'); startDance(Math.random() < 0.5 ? 'backflip' : 'six_seven'); setEmotion('excited', 7000); showBubble('Good game!', 5000); }
+      else if (result === 'player') { sfx('lose'); setEmotion(Math.random() < 0.5 ? 'sad' : 'surprised', 6000); if (st.emo.name !== 'sad') showBubble('Well played. You got me.', 5000); }
+      else { sfx('draw'); setEmotion('neutral'); showBubble('A draw. Not bad!', 4500); }
+    },
+  });
+  const openGames = (which) => { PipGames.setLevel(settings.chessLevel || 'medium'); PipGames.open(which); };
 
   // ---------------------------------------------------------------- start
   pip.getSettings().then((s) => {

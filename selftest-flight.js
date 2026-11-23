@@ -147,4 +147,21 @@ S.canvasEvents.pointermove(ev(p.x + 300, p.y + 80));
 S.canvasEvents.pointerup(ev(p.x + 300, p.y + 80));
 S.step(2500); p = pos();
 assert.ok(Math.abs(p.y - floorPos.y) < 3 && !bshown()); ok('dropped near the floor he just settles down, no branch');
+// ---- ragdoll: a fast fling tumbles and bounces, then settles upright on the floor
+S.step(3000); p = pos();
+{
+  const x0 = p.x + 110, y0 = p.y + 100;
+  S.canvasEvents.pointerdown(ev(x0, y0));
+  S.canvasEvents.pointermove(ev(x0 + 20, y0 - 10));
+  let cx = x0 + 20, cy = y0 - 10;
+  for (let i = 0; i < 4; i++) { S.step(20); cx += 120; cy -= 40; S.canvasEvents.pointermove(ev(cx, cy)); }
+  S.canvasEvents.pointerup(ev(cx, cy));
+  S.step(150); const q = pos();
+  assert.ok(Number.isFinite(q.x) && Number.isFinite(q.y) && Number.isFinite(q.rot), 'ragdoll position is a number');
+  assert.ok(Math.abs(q.rot) > 0.05 || q.y < floorPos.y - 5, 'flung: tumbling or airborne, got ' + JSON.stringify(q));
+  ok('a fast fling sends him tumbling');
+  S.step(9000); const f = pos();
+  assert.ok(Math.abs(f.y - floorPos.y) < 3 && Math.abs(f.rot) < 0.1, 'settles upright on the floor, got ' + JSON.stringify(f));
+  ok('after the tumble he settles upright on the floor');
+}
 console.log('\nALL SIMULATION CHECKS PASSED');

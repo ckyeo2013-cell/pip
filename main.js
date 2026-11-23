@@ -10,6 +10,19 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
+
+// ---- debug log: the last 400 lines of everything Pip printed, so "Copy debug log" in settings makes bugs easy to report
+const DEBUG_LINES = [];
+function debugPush(kind, args) {
+  try {
+    const t = args.map((a) => (a instanceof Error ? (a.stack || a.message) : typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+    DEBUG_LINES.push(new Date().toISOString().slice(11, 23) + ' ' + kind + ' ' + t.slice(0, 600));
+    if (DEBUG_LINES.length > 400) DEBUG_LINES.shift();
+  } catch (_) {}
+}
+for (const k of ['log', 'info', 'warn', 'error']) { const o = console[k].bind(console); console[k] = (...a) => { debugPush(k, a); o(...a); }; }
+process.on('uncaughtException', (e) => { debugPush('uncaught', [e]); });
+process.on('unhandledRejection', (e) => { debugPush('rejection', [e]); });
 const { createActions } = require('./actions');
 const brain = require('./brain');
 const { runChat, runChatGemini, runChatGroq, runChatCloudflare, actionNudge, makeLoopGuard } = require('./agent');
@@ -50,6 +63,14 @@ const DEFAULTS = {
   voiceReply: 'voice',        // Pip talks back: 'voice' (after I talked) | 'always' | 'never'
   wander: true,
   quips: true,
+  shortReplies: true, // short answers by default (faster on free tiers)
+  fallback: true,     // switch to another AI provider you have a key for when one fails
+  reactions: true,    // react to music, copying text, low battery, long idle
+  chessClock: '',     // '' (untimed) or e.g. '3+2': Pip tracks his own clock and speeds up when low
+  chessLevel: 'max',  // easy | medium | hard | human | max
+  sounds: true,       // small synthesized sound effects
+  soundVolume: 0.5,
+  moodMemory: true,   // Pip remembers how you treat him
   openAtLogin: false,
   seenIntro: false,
   petX: null,
@@ -212,7 +233,35 @@ function sendArea() {
 }
 
 // ---- awareness: welcome-back, stretch and late-night nudges, quiet during Zoom calls, due tasks
-const aware = { streakStart: Date.now(), lastIdle: 0, lastStretch: 0, lateDay: '', inCall: false };
+// ---- mood memory: how Pip feels about the user, kept between sessions (bond -100..100, plus a grudge timer after rudeness)
+const MOOD = { bond: 0, grudgeUntil: 0, lastSeen: Date.now(), days: [], gainDay: '', gainToday: 0 };
+const moodFile = () => path.join(app.getPath('userData'), 'mood.json');
+function loadMood() {
+  try {
+    Object.assign(MOOD, JSON.parse(fs.readFileSync(moodFile(), 'utf8')));
+    const gone = Math.max(0, (Date.now() - (MOOD.lastSeen || Date.now())) / 86400000);
+    if (MOOD.bond > 0) MOOD.bond = Math.max(0, MOOD.bond - 0.5 * gone); else if (MOOD.bond < 0) MOOD.bond = Math.min(0, MOOD.bond + 3 * gone); // time heals, and friendships fade a little
+  } catch (_) {}
+}
+let moodTimer = null;
+function saveMood() { clearTimeout(moodTimer); moodTimer = setTimeout(() => { try { fs.writeFileSync(moodFile(), JSON.stringify(MOOD)); } catch (_) {} }, 600); }
+const moodLevel = (b) => (b < -30 ? 'hurt' : b < -10 ? 'wary' : b < 15 ? 'new' : b < 40 ? 'friendly' : b < 70 ? 'close' : 'best friend');
+function moodGain(n) { // positive changes are capped per day, so a friendship takes days, not one chat
+  const d = new Date().toDateString();
+  if (MOOD.gainDay !== d) { MOOD.gainDay = d; MOOD.gainToday = 0; }
+  const ok = Math.max(0, Math.min(n, 8 - MOOD.gainToday));
+  MOOD.gainToday += ok; MOOD.bond = Math.min(100, MOOD.bond + ok);
+}
+function moodSummary() {
+  const now = Date.now();
+  return { bond: Math.round(MOOD.bond), level: moodLevel(MOOD.bond), grudge: now < MOOD.grudgeUntil, days: MOOD.days.length, absentHours: (now - (MOOD.lastSeen || now)) / 3600000 };
+}
+function moodTouch() {
+  const d = new Date().toDateString();
+  if (!MOOD.days.includes(d)) { MOOD.days.push(d); if (MOOD.days.length > 400) MOOD.days.shift(); }
+}
+
+const aware = { streakStart: Date.now(), lastIdle: 0, lastStretch: 0, lateDay: '', inCall: false, idleSent: false, music: undefined, clip: undefined, clipOwn: '', morningDay: '' };
 const quietNow = () => !!settings.quiet || aware.inCall;
 function checkTasks() {
   if (!store || quietNow()) return;
@@ -229,6 +278,9 @@ function checkCall() {
     if (err) return;
     const on = /cpthost/i.test(String(out)); // Zoom's meeting helper only runs during a meeting
     if (on !== aware.inCall) { aware.inCall = on; send('mood', { type: 'call', on }); }
+    const music = /spotify|music\.app|\/Music$|musicbee|itunes|vlc|tidal|deezer|foobar|winamp|rhythmbox/im.test(String(out)); // only whether a music app is running
+    if (aware.music !== undefined && music !== aware.music && settings.reactions !== false && !quietNow()) send('mood', { type: 'music', on: music });
+    aware.music = music;
   });
 }
 function startAwareness() {
@@ -240,6 +292,9 @@ function startAwareness() {
     if (aware.lastIdle >= 600 && idle < 20) send('mood', { type: 'return', away: Math.round(aware.lastIdle / 60) });
     if (idle >= 300) aware.streakStart = now; // a 5-minute break resets the "working for hours" clock
     aware.lastIdle = idle;
+    if (idle >= 300 && !aware.idleSent) { aware.idleSent = true; if (settings.reactions !== false && !quietNow()) send('mood', { type: 'idle' }); }
+    if (idle < 20) aware.idleSent = false;
+    { const dd = new Date(); if (idle < 60 && dd.getHours() >= 5 && dd.getHours() < 11 && aware.morningDay !== dd.toDateString()) { aware.morningDay = dd.toDateString(); if (settings.reactions !== false && !quietNow()) send('mood', { type: 'morning' }); } }
     const mins = (now - aware.streakStart) / 60000;
     if (mins >= 90 && now - aware.lastStretch > 60 * 60000 && !quietNow()) { aware.lastStretch = now; send('mood', { type: 'stretch', mins: Math.round(mins) }); }
     const d = new Date(), h = d.getHours();
@@ -247,6 +302,15 @@ function startAwareness() {
     checkTasks();
   }, 15000);
   setInterval(checkCall, 30000);
+  // notice when new text is copied (only compares it with the last copy, never stores or sends it anywhere)
+  setInterval(() => {
+    if (!win || win.isDestroyed() || settings.reactions === false || quietNow()) return;
+    try {
+      const t = clipboard.readText();
+      if (aware.clip === undefined) { aware.clip = t; return; }
+      if (t && t !== aware.clip) { aware.clip = t; if (t !== aware.clipOwn) send('mood', { type: 'copied' }); }
+    } catch (_) {}
+  }, 3000);
 }
 
 function startCursorPolling() {
@@ -537,6 +601,9 @@ function setupActions() {
     pipPid: process.pid,
     fetchFn: fetch,
     notify: (text, ms) => send('say', { text, ms }),
+    status: (text) => send('status', { text }),
+    emote: (name) => send('mood', { type: 'emote', name }),
+    getChessLevel: () => settings.chessLevel,
     setOverlay: (visible) => {
       if (!win || win.isDestroyed()) return;
       if (visible) { if (overlayHeldForGame) { overlayHeldForGame = false; win.showInactive(); } }
@@ -589,8 +656,10 @@ function buildActionRules() {
     `\n\nTYPING: when the user asks you to type or write something into an app, call type_text RIGHT AWAY with the exact text, at_cursor true and no target: the user's cursor is almost always already in the box they mean, and at_cursor types there instantly (no slow window scan). Leave at_cursor off only when they name a specific box that is NOT where the cursor is. WRITING FOR THEM: when they ask you to ask, tell, reply or write something to someone ("help me ask Sam if he wants to call at 5"), compose the message yourself in their voice (short, natural, speaking to the other person as "you", with every detail they gave: names, times, places), then call type_text ONCE with it, at_cursor true, with no find_ui or look first, and press_enter true only if they said to send it. Afterwards say in a few words what you typed, and stop. ` +
     `Do not call find_ui first, and do not keep checking or retrying. If the app named is not open, open_app first, then type_text. After type_text succeeds, tell the user it is typed and stop. ` +
     `Only use find_ui plus a target when they name a specific box that is NOT where their cursor is. Never loop: at most a couple of tool calls per step of the job. ` +
+    `Use what is already on screen: when the user mentions an app, site or person that is probably already open ("text Sam", "on this page", "the Roblox tab"), do ONE look_at_screen first. If the app or page is already open, work INSIDE it: never open another tab, never use open_url or search_site for it, and never search for something you can already see. If the person or chat is visible (sidebar, DM list, tab), click it with click_screen, or call open_chat with open_app false only when they are not visible. For texting, skip the look: call open_chat ONCE with message and send, which does it all in one step. Open or search only when it is not on screen.` +
+    `Recommendations: for "find me a good game / show / place / product for X", GIVE 3 specific named picks with one reason each, from your own knowledge or from reading the page that is open (fetch_url or look_at_screen), matched to what they said (for example a 2 player Roblox game for two friends: name real co-op or duo games). Then offer to open one. Never type the user's request itself ("2 player game") as a search, and never answer with only a search.` +
     `Messaging and group chats (Discord, Slack, Teams, WhatsApp): do the whole job yourself, never ask the user to open the chat. Use open_chat with the app and the person or group name; it opens the app and the chat with the keyboard. ` +
-    `open_chat sends back a screenshot, so read the chat name at the top from it (do NOT call look_at_screen again); if it is wrong, call open_chat again with a fuller name. The message box normally has the cursor already, so call type_text ONCE with ONLY the message, at_cursor true (instant) and no target; set replace true so leftover text is replaced, and press_enter true only when they asked you to send it. ` +
+    `open_chat sends back a screenshot, so read the chat name at the top from it (do NOT call look_at_screen again); if it is wrong, call open_chat again with a fuller name. When the user gave you the message, pass it to open_chat as message (send true only if they said send/text/tell them), then you are done: do NOT call type_text. Only when you must compose or change text afterwards: the message box normally has the cursor already, so call type_text ONCE with ONLY the message, at_cursor true (instant) and no target; set replace true so leftover text is replaced, and press_enter true only when they asked you to send it. ` +
     `If the box does not have the cursor, click it yourself: look_at_screen, then click_screen on the message box, then type_text with at_cursor true. Never type extra words like "its" or the person's name into the box. If a message came out garbled, do not send another: retype it with replace true. ` +
     `To search INSIDE a chat (find a message), use the app's search shortcut with press_keys (Ctrl+F in Discord, Slack and WhatsApp), type_text the words, press enter, then look_at_screen and read the results to the user. ` +
     `For any other app that shares no buttons with find_ui: look_at_screen, then click_screen on what you need, then look again.` +
@@ -697,7 +766,7 @@ async function chat({ messages, ctx }) {
     `complete, correct, working answer at whatever length it needs, with no padding. Put all code in fenced code blocks with the language ` +
     `name, and give whole working files or functions rather than fragments unless asked. Say briefly how to run it if that is not obvious. ` +
     `If a request is unclear and a wrong guess would waste effort, ask one short question; otherwise just do it.\n` +
-    `The chat window is small: no markdown headings or tables. Short lists and **bold** are fine. An emoji now and then is fine.\n` +
+    `The chat window is small: no markdown headings or tables. Short lists and **bold** are fine. Never use emojis.\n` +
     `When the user asks you to help decide, choose ONE option decisively, give a one-line reason, and don't hedge.\n` +
     `Without tools you can only chat and help with what the user tells you or shares.\n` +
     `Today is ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.`;
@@ -715,6 +784,17 @@ async function chat({ messages, ctx }) {
     if (!full) tools = tools.filter((d) => d.name === 'pet_do');
   }
   system += '\n\nNever use emojis or emoticons in any reply. Plain words only.';
+  if (settings.moodMemory !== false) {
+    const m = moodSummary();
+    system += `\n\nYour relationship with the user: ${m.level} (${m.days} day${m.days === 1 ? '' : 's'} together).`;
+    if (m.grudge) system += ' They were rude to you earlier and have not apologised yet, so you are still a bit hurt: be shorter and cooler than usual, no exclamation marks, until they say sorry.';
+    else if (m.level === 'hurt' || m.level === 'wary') system += ' You do not fully trust them yet after past unkindness; be polite but a little guarded.';
+    else if (m.level === 'friendly') system += ' You like them; be warm.';
+    else if (m.level === 'close' || m.level === 'best friend') system += ' You know them well and care about them: be warm, playful and a little teasing, like a close friend.';
+  }
+  if (settings.shortReplies !== false) {
+    system = system.replace(/Length:[\s\S]*?otherwise just do it\.\n/, 'Length: keep every reply short, 1 to 3 sentences, no preamble and no recap. Only go longer when the user asks for detail, code, or step-by-step help, and then be complete but tight. ');
+  }
   if (tools.some((d) => d.name === 'pet_do')) system += PET_RULES;
   if (!full) {
     system += `\n\nThe switch "Let Pip do things for me" is OFF in settings, so you cannot open sites, apps or anything on the computer. ` +
@@ -757,6 +837,7 @@ async function chat({ messages, ctx }) {
         return Promise.resolve(a).then((r) => {
           r = applyPolicy(name, r, input);
           send('progress', { n, title: (r && r.title) || name });
+          send('status', { text: `Working: ${String((r && r.title) || name).toLowerCase().slice(0, 40)}` });
           if (r && !r.auto && !r.forceAsk && settings.trustSaid && r.risk !== 'high' && (TRUST_AUTO.includes(name) || (said && !NEVER_SKIP.includes(name) && saidByUser(said, clean[clean.length - 1].content)))) {
             r.auto = true; // the user's own words asked for this
             send('say', { text: `Doing it: ${String(r.title || name).slice(0, 50)}`, ms: 2500 });
@@ -768,21 +849,32 @@ async function chat({ messages, ctx }) {
       signal: chatAbort.signal,
       stopped: () => stopRequested,
       nudge: full ? (reply) => actionNudge(clean[clean.length - 1].content, reply) : null };
-    if (provider === 'cloudflare') {
-      return await runChatCloudflare({ ...common, accountId: settings.cloudflareAccountId, model: settings.cloudflareModel || DEFAULTS.cloudflareModel });
+    const callProvider = (p) => {
+      const c = { ...common, apiKey: getKey(p) };
+      if (p === 'cloudflare') return runChatCloudflare({ ...c, accountId: settings.cloudflareAccountId, model: settings.cloudflareModel || DEFAULTS.cloudflareModel });
+      if (p === 'groq') return runChatGroq({ ...c, model: settings.groqModel || DEFAULTS.groqModel });
+      if (p === 'gemini') return runChatGemini({ ...c, model: settings.geminiModel || DEFAULTS.geminiModel });
+      return runChat({ ...c, model: MODELS.includes(settings.model) ? settings.model : DEFAULTS.model });
+    };
+    // Automatic fallback: if this provider fails with a limit, timeout or server problem before doing anything,
+    // try the next provider that has a key saved. Never after a tool ran (that could repeat an action).
+    const usable = (p) => !!getKey(p) && (p !== 'cloudflare' || /^[0-9a-f]{32}$/i.test(settings.cloudflareAccountId || ''));
+    const order = [provider].concat(settings.fallback === false ? [] : PROVIDERS.filter((p) => p !== provider && usable(p)));
+    const RETRYABLE = /limit|429|timed out|Network problem|API error 5|had a problem|\(5\d\d\)|error 5\d\d|empty answer|overloaded|queue|busy|try again/i;
+    let last = null;
+    for (let k = 0; k < order.length; k++) {
+      send('status', { text: k === 0 ? 'Thinking...' : `${order[k - 1]} failed, trying ${order[k]}` });
+      if (k > 0) send('say', { text: `Switching to ${order[k]}`, ms: 3000 });
+      last = await callProvider(order[k]);
+      if (!last || !last.error || stopRequested || stepCount > 0 || !RETRYABLE.test(String(last.error))) return last;
     }
-    if (provider === 'groq') {
-      return await runChatGroq({ ...common, model: settings.groqModel || DEFAULTS.groqModel });
-    }
-    if (provider === 'gemini') {
-      return await runChatGemini({ ...common, model: settings.geminiModel || DEFAULTS.geminiModel });
-    }
-    return await runChat({ ...common, model: MODELS.includes(settings.model) ? settings.model : DEFAULTS.model });
+    return last;
   } catch (e) {
     return { error: `Something went wrong (${e.message})` };
   } finally {
     chatBusy = false;
     chatAbort = null;
+    send('status', { text: '' });
     if (actions) actions.endGame(); // game mode never outlives the request
   }
 }
@@ -818,7 +910,7 @@ function registerIpc() {
       if (PALETTES.includes(s.palette)) patch.palette = s.palette;
       if (s.style === 'classic' || s.style === 'yarn') patch.style = s.style;
       if (MODELS.includes(s.model)) patch.model = s.model;
-      for (const k of ['wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'macCalendar']) {
+      for (const k of ['wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'macCalendar', 'shortReplies', 'fallback', 'reactions', 'sounds', 'moodMemory']) {
         if (typeof s[k] === 'boolean') patch[k] = s[k];
       }
       if (s.toolPolicy && typeof s.toolPolicy === 'object') {
@@ -830,6 +922,9 @@ function registerIpc() {
         patch.toolPolicy = tp;
       }
       if (Array.isArray(s.trustedSites)) patch.trustedSites = [...new Set(s.trustedSites.map((h) => String(h).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '')).filter((h) => /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(h)))].slice(0, 30);
+      if (['easy', 'medium', 'hard', 'human', 'max'].includes(s.chessLevel)) patch.chessLevel = s.chessLevel;
+      if (typeof s.chessClock === 'string' && /^(|\d{1,3}(\+\d{1,2})?)$/.test(s.chessClock)) patch.chessClock = s.chessClock;
+      if (typeof s.soundVolume === 'number' && s.soundVolume >= 0 && s.soundVolume <= 1) patch.soundVolume = s.soundVolume;
       if (PROVIDERS.includes(s.provider)) patch.provider = s.provider;
       if (VOICE_PROVIDERS.includes(s.voiceProvider)) patch.voiceProvider = s.voiceProvider;
       if (VOICE_REPLIES.includes(s.voiceReply)) patch.voiceReply = s.voiceReply;
@@ -946,9 +1041,73 @@ function registerIpc() {
   // Only these pages can be opened from the settings screen.
   const KEY_PAGES = { anthropic: 'https://console.anthropic.com/settings/keys', gemini: 'https://aistudio.google.com/apikey', groq: 'https://console.groq.com/keys', cloudflare: 'https://dash.cloudflare.com/profile/api-tokens' };
   ipcMain.on('link:open', (_e, which) => { if (Object.prototype.hasOwnProperty.call(KEY_PAGES, which)) shell.openExternal(KEY_PAGES[which]); });
-  ipcMain.on('clipboard:write', (_e, t) => { if (typeof t === 'string') clipboard.writeText(t.slice(0, 200000)); });
+  ipcMain.on('clipboard:write', (_e, t) => { if (typeof t === 'string') { aware.clipOwn = t.slice(0, 200000); clipboard.writeText(aware.clipOwn); } });
   ipcMain.handle('clipboard:read', () => clipboard.readText().slice(0, 7000));
 
+  // ---- chess on a real website or app, played by Pip's own engine with no AI service: the user shows the board by hovering the mouse on two corners
+  let chessStopFlag = false;
+  ipcMain.on('chess:stop', () => { chessStopFlag = true; if (actions) actions.endGame(); send('status', { text: '' }); });
+  ipcMain.handle('chess:screen', async (_e, opts) => {
+    if (!actions) return { message: 'Pip cannot click here.' };
+    if (!settings.fullAccess) return { message: 'Turn on "Let Pip do things for me" in the Pip settings first, so I am allowed to click the board.' };
+    chessStopFlag = false;
+    const white = !!(opts && opts.white), level = (opts && opts.level) || settings.chessLevel || 'max';
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const corner = async (label, secs) => {
+      send('say', { text: `Put your mouse on the ${label} corner of the board. I will read it in ${secs} seconds.`, ms: secs * 1000 });
+      for (let i = secs; i > 0 && !chessStopFlag; i--) { send('status', { text: `${label} corner in ${i}` }); await sleep(1000); }
+      return screen.getCursorScreenPoint();
+    };
+    const a = await corner('TOP-LEFT', 6);
+    if (chessStopFlag) return { message: 'Stopped.' };
+    const b = await corner('BOTTOM-RIGHT', 5);
+    send('status', { text: '' });
+    if (chessStopFlag) return { message: 'Stopped.' };
+    const d = screen.getPrimaryDisplay().bounds;
+    const board = { x: (a.x - d.x) / d.width, y: (a.y - d.y) / d.height, w: (b.x - a.x) / d.width, h: (b.y - a.y) / d.height };
+    const wpx = (b.x - a.x), hpx = (b.y - a.y);
+    if (wpx < 120 || hpx < 120 || Math.abs(wpx - hpx) > 0.15 * Math.max(wpx, hpx)) return { message: 'Those corners do not make a square board. Try again, from the top-left square corner to the bottom-right one.' };
+    let final = '';
+    try {
+      await (await actions.prepare('start_game', { game: 'chess', max_steps: 150 })).run();
+      send('say', { text: white ? 'Okay, you are white. Make your first move, I am watching the board.' : 'Okay, I am white. Here I go.', ms: 3500 });
+      let first = true, errs = 0;
+      for (let i = 0; i < 400 && actions.gameActive() && !chessStopFlag; i++) {
+        const r = await (await actions.prepare('chess_play', first ? { board, my_color: white ? 'black' : 'white', level, moves: 60, clock: settings.chessClock || undefined } : { level, moves: 60 })).run();
+        first = false;
+        if (/Game over|I resign|offer a draw|Checkmate|Stalemate|was stopped/i.test(r)) { final = r; break; }
+        if (!/Played/.test(r) && /did not register|could not|not moved yet|turned off|blocked|missing|not available/i.test(r)) { if (++errs >= 3) { final = r; break; } } else errs = 0;
+      }
+    } catch (e) { final = String((e && e.message) || e); }
+    if (actions) actions.endGame();
+    send('status', { text: '' });
+    const msg = /I was checkmated/.test(final) ? 'Well played, you got me.' : /I won|Checkmate, I won/.test(final) ? 'Checkmate. Good game!' : /resign/i.test(final) ? 'I am lost, so I resign. Good game!' : /draw/i.test(final) ? 'This looks like a draw. Maybe offer one on the site.' : chessStopFlag ? 'Okay, I stopped the game.' : (final ? final.slice(0, 160) : 'The game ended.');
+    return { message: msg };
+  });
+  ipcMain.on('debug:log', (_e, kind, text) => debugPush('ui-' + String(kind).slice(0, 12), [String(text).slice(0, 600)]));
+  ipcMain.handle('debug:copy', () => {
+    const { apiKey, key, keys, ...safe } = publicSettings() || {};
+    const head = `Pip ${app.getVersion()} | ${process.platform} ${process.arch} | Electron ${process.versions.electron}\nSettings: ${JSON.stringify(safe)}\n--- last ${DEBUG_LINES.length} log lines ---\n`;
+    const text = (head + DEBUG_LINES.join('\n')).replace(/\b(gsk_|sk-|sk-ant-|AIza)[A-Za-z0-9_\-]{10,}/g, '$1[hidden]');
+    clipboard.writeText(text);
+    return { lines: DEBUG_LINES.length };
+  });
+  ipcMain.handle('mood:get', () => {
+    if (settings.moodMemory === false) return { bond: 0, level: 'new', grudge: false, days: 0, absentHours: 0 };
+    const s = moodSummary();
+    MOOD.lastSeen = Date.now(); moodTouch(); saveMood();
+    return s;
+  });
+  ipcMain.on('mood:event', (_e, kind) => {
+    if (settings.moodMemory === false) return;
+    const now = Date.now();
+    if (kind === 'rude') { MOOD.bond = Math.max(-100, MOOD.bond - 6); MOOD.grudgeUntil = Math.min(now + 3 * 3600000, Math.max(now, MOOD.grudgeUntil) + 30 * 60000); }
+    else if (kind === 'apology') { if (now < MOOD.grudgeUntil) { MOOD.grudgeUntil = 0; moodGain(2); } }
+    else if (kind === 'kind') moodGain(1.5);
+    else if (kind === 'chat') moodGain(0.3);
+    else if (kind === 'game') moodGain(1);
+    MOOD.lastSeen = now; saveMood();
+  });
   ipcMain.on('interactive', (_e, v) => {
     if (win && !win.isDestroyed()) win.setIgnoreMouseEvents(!v, { forward: true });
   });
@@ -967,9 +1126,11 @@ if (!app.requestSingleInstanceLock()) {
     if (win) { win.showInactive(); win.webContents.send('open-chat'); }
   });
 
-  app.whenReady().then(() => {
+  if (app.commandLine) if (app.commandLine) app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required'); // lets the sound effects play without a click first
+app.whenReady().then(() => {
     if (process.platform === 'darwin' && app.dock) app.dock.hide();
     loadSettings();
+    loadMood();
     store = createStore(path.join(app.getPath('userData'), 'memory.json'));
     chats = createChats(path.join(app.getPath('userData'), 'chats.json'));
     registerIpc();
