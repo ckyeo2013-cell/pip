@@ -57,6 +57,102 @@ function startOrientation(snap) {
   const diff = lum(6) - lum(0); // bottom minus top
   return Math.abs(diff) < 5 ? null : diff > 0; // true: white is at the bottom; null: cannot tell
 }
+// Which cells hold a piece? A piece makes the middle of a cell busy (high spread of brightness); an empty square, even one
+// tinted by a move highlight, is flat. Cells are numbered top-left first, whichever way the board faces.
+function occupancy(snap) {
+  const W = snap.width, CELL = W / 8, out = new Array(64).fill(false), m = CELL * 0.22;
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    let n = 0, s = 0, s2 = 0;
+    for (let y = Math.floor(r * CELL + m); y < (r + 1) * CELL - m; y++) for (let x = Math.floor(c * CELL + m); x < (c + 1) * CELL - m; x++) {
+      const i = (y * W + x) * 4, v = 0.114 * snap.bitmap[i] + 0.587 * snap.bitmap[i + 1] + 0.299 * snap.bitmap[i + 2];
+      n++; s += v; s2 += v * v;
+    }
+    out[r * 8 + c] = Math.sqrt(Math.max(0, s2 / n - (s / n) * (s / n))) > 10;
+  }
+  return out;
+}
+// ---- local piece recognition (no AI): learn what each piece looks like from positions we know for sure (the start position, or a
+// position the AI read and the board confirmed), then recognise pieces on a board we have not seen before, even mid-game.
+// A piece is described by its shape (which pixels differ from the square's own background colour) and its brightness.
+const PIECES = 'PNBRQKpnbrqk';
+function cellFeatures(snap, r, c) {
+  const W = snap.width, CELL = W / 8, S = Math.floor(CELL), x0 = Math.floor(c * CELL), y0 = Math.floor(r * CELL);
+  const px = (x, y) => { const i = ((y0 + y) * W + x0 + x) * 4; return [snap.bitmap[i + 2], snap.bitmap[i + 1], snap.bitmap[i]]; };
+  const counts = new Map();
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) { // the background is the commonest colour on the cell's outer ring (also right on a highlighted square)
+    if (x > 1 && x < S - 2 && y > 1 && y < S - 2) continue;
+    const p = px(x, y), k = (p[0] >> 3) * 1024 + (p[1] >> 3) * 32 + (p[2] >> 3);
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  let bk = 0, bn = -1; for (const [k, n] of counts) if (n > bn) { bn = n; bk = k; }
+  const bg = [(bk >> 10) * 8 + 4, ((bk >> 5) & 31) * 8 + 4, (bk & 31) * 8 + 4];
+  const mask = new Uint8Array(S * S); let lum = 0, area = 0;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const p = px(x, y);
+    if (Math.abs(p[0] - bg[0]) + Math.abs(p[1] - bg[1]) + Math.abs(p[2] - bg[2]) > 60) { mask[y * S + x] = 1; lum += 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]; area++; }
+  }
+  return { mask, S, lum: area ? lum / area : 0, area };
+}
+const maskStr = (m) => Array.from(m).join('');
+function maskScore(a, bStr, S) { // best overlap (intersection over union) allowing the picture to be off by one pixel
+  let best = 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    let inter = 0, uni = 0;
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const yb = y + dy, xb = x + dx, va = a[y * S + x], vb = yb >= 0 && yb < S && xb >= 0 && xb < S && bStr.charCodeAt(yb * S + xb) === 49 ? 1 : 0;
+      if (va || vb) { uni++; if (va && vb) inter++; }
+    }
+    if (uni && inter / uni > best) best = inter / uni;
+  }
+  return best;
+}
+function classifyCell(f, lib) {
+  const per = {};
+  for (const ch of PIECES) for (const s of lib[ch] || []) {
+    const sc = maskScore(f.mask, s.m, f.S) - Math.min(0.3, Math.abs(f.lum - s.lum) / 255);
+    if (per[ch] === undefined || sc > per[ch]) per[ch] = sc;
+  }
+  const r = Object.entries(per).sort((a, b) => b[1] - a[1]);
+  return r.length ? { ch: r[0][0], score: r[0][1], gap: r.length > 1 ? r[0][1] - r[1][1] : 1 } : null;
+}
+// cells: index (top-left first) -> piece letter for squares we are SURE about. Returns true when something new was learned.
+function learnPieces(lib, snap, cells) {
+  let changed = false;
+  for (const [i, ch] of Object.entries(cells)) {
+    const f = cellFeatures(snap, i >> 3, i & 7);
+    if (f.area < 8 || f.area > f.S * f.S * 0.8) continue;
+    const arr = lib[ch] = lib[ch] || [];
+    if (arr.some((s) => maskScore(f.mask, s.m, f.S) > 0.9 && Math.abs(s.lum - f.lum) < 25)) continue; // already known
+    if (arr.length >= 6) arr.shift();
+    arr.push({ m: maskStr(f.mask), lum: Math.round(f.lum) });
+    changed = true;
+  }
+  return changed;
+}
+// Read a whole board. Returns { board (FEN piece placement), flipped, weak } or null when the pieces are not clear enough (then the AI has to read it).
+function recognizeBoard(snap, lib, flippedHint) {
+  if (!Object.keys(lib).length) return null;
+  const occ = occupancy(snap), cells = new Array(64).fill('');
+  let weak = 0;
+  for (let i = 0; i < 64; i++) {
+    if (!occ[i]) continue;
+    const r = classifyCell(cellFeatures(snap, i >> 3, i & 7), lib);
+    if (!r || r.score < 0.5 || r.gap < 0.03) weak++;
+    cells[i] = r ? r.ch : '';
+  }
+  if (weak > 2 || cells.some((c, i) => occ[i] && !c)) return null;
+  let wr = 0, wn = 0, br = 0, bn = 0;
+  cells.forEach((c, i) => { if (c === 'P') { wr += i >> 3; wn++; } else if (c === 'p') { br += i >> 3; bn++; } });
+  let flipped = !!flippedHint; // white pawns sit lower on the screen than black ones when white is at the bottom
+  if (wn && bn && Math.abs(wr / wn - br / bn) > 0.5) flipped = !(wr / wn > br / bn);
+  const rows = [];
+  for (let r = 0; r < 8; r++) {
+    let s = '', e = 0;
+    for (let f = 0; f < 8; f++) { const p = cells[cellOf(r * 8 + f, flipped)]; if (p) { if (e) { s += e; e = 0; } s += p; } else e++; }
+    rows.push(s + (e || ''));
+  }
+  return { board: rows.join('/'), flipped, weak };
+}
 // board square (engine index: rank 8 first) -> cell in the picture (top-left first); flipped = black at the bottom
 const cellOf = (sq, flipped) => { const r = sq >> 3, c = sq & 7; return (flipped ? 7 - r : r) * 8 + (flipped ? 7 - c : c); };
 // the legal move whose two squares both changed the most
@@ -129,6 +225,7 @@ function createActions({
   blurWindow = () => {},
   countdown = 5,
   grabBoard = null,       // async (region) => { bitmap, width, height }: a small raw picture of just the chessboard
+  chessLib = null,        // { load(), save(obj) }: where the learned piece shapes are kept
   captureScreen = null,   // async () => { data (base64 jpeg), width, height }
   calendar = null,        // { search(input), describe() }
   getFull = () => false,  // is full access on?
@@ -349,6 +446,9 @@ function createActions({
   // ------------------------------------------------------------ tools
   // Game mode: one approval lets Pip look, type plain keys and press ordinary buttons for the rest of THIS request only.
   let gameOn = false, gameBudget = 0;
+  let _lib = null; // learned piece shapes, kept between sessions
+  const getLib = () => { if (!_lib) { try { _lib = (chessLib && chessLib.load()) || {}; } catch (_) { _lib = {}; } } return _lib; };
+  const saveLib = () => { try { if (chessLib && _lib) chessLib.save(_lib); } catch (_) {} };
   let chessGame = null; // chess_play remembers the position and the last board picture between calls
   let clipRestore = null; // the user's clipboard comes back a moment AFTER a paste, in the background, so typing does not wait for it
   const flushClipboard = () => { if (clipRestore) { clearTimeout(clipRestore.timer); const r = clipRestore; clipRestore = null; r.fn(); } };
@@ -771,6 +871,34 @@ function createActions({
           }
           const grab = () => grabBoard(g.region);
           if (!g.snap) g.snap = await grab();
+          if (!g.occChecked && g.moves.length === 0) { // is the position we think we are in really the one on the screen? (joining a game in progress)
+            g.occChecked = true;
+            const occ = occupancy(g.snap);
+            if (g.fromStart) {
+              let bad = 0; for (let i = 0; i < 64; i++) if (occ[i] !== (i < 16 || i >= 48)) bad++;
+              if (bad > 6) {
+                const rec = recognizeBoard(g.snap, getLib(), g.flipped);
+                const fen2 = rec && `${rec.board} ${g.myWhite ? 'w' : 'b'} - - 0 1`;
+                let ok = false;
+                if (fen2) { try { const st2 = chess.parseFen(fen2); chess.bestMoveState(st2, { ms: 30 }); g.st = st2; g.hist = [st2]; g.fromStart = false; g.flipped = rec.flipped; ok = true; status('Chess: joined a game in progress, read the pieces myself'); } catch (_) { ok = false; } }
+                if (!ok) { chessGame = null; throw new Error(`FEN needed: the board is not at the starting position (${bad} squares differ), so this game is already in progress. Look at the screen, read every piece into a FEN (side to move included) and call chess_play again with fen, my_color and flipped.`); }
+              } else g.learnStart = occ;
+            } else {
+              const miss = (fl) => { const bad = []; for (let sq = 0; sq < 64; sq++) if (!!g.st.board[sq] !== occ[cellOf(sq, fl)]) bad.push(chess.sqName(sq)); return bad; };
+              const a = miss(g.flipped), b = miss(!g.flipped), best = b.length < a.length ? b : a;
+              if (b.length < a.length) g.flipped = !g.flipped; // the FEN fits the board better the other way up
+              if (best.length > 4) { chessGame = null; throw new Error(`FEN does not match the board: the squares ${best.slice(0, 8).join(', ')} disagree about being empty or not. Look at the screen again, re-read every piece, and call chess_play again with a corrected fen.`); }
+              const sure = {}; // the AI's reading is confirmed by the board: remember what these pieces look like
+              for (let sq = 0; sq < 64; sq++) if (g.st.board[sq] && !best.includes(chess.sqName(sq))) sure[cellOf(sq, g.flipped)] = g.st.board[sq];
+              if (learnPieces(getLib(), g.snap, sure)) saveLib();
+            }
+          }
+          if (g.learnStart && g.fromStart) { // the start position is known exactly: a free lesson in what the pieces look like (after the direction check below)
+            const occ0 = g.learnStart; g.learnStart = null;
+            const bw0 = startOrientation(g.snap), fl0 = bw0 === null ? g.flipped : !bw0, sure = {}, start0 = chess.startState();
+            for (let sq = 0; sq < 64; sq++) { const cl = cellOf(sq, fl0); if (start0.board[sq] && occ0[cl]) sure[cl] = start0.board[sq]; }
+            if (learnPieces(getLib(), g.snap, sure)) saveLib();
+          }
           if (!g.oriChecked && g.fromStart && g.moves.length === 0) { // trust the pixels over what the model or the settings say about which way the board faces
             g.oriChecked = true;
             const bw = startOrientation(g.snap);
@@ -1889,7 +2017,7 @@ function createActions({
       {
         name: 'chess_play',
         description: "PLAY CHESS: the easiest way, one call per move, no reading pieces from a picture. First call: board = the chessboard's area as fractions of the WHOLE screen ({x, y, w, h}, top-left corner and size), my_color ('white' or 'black', the user's side), flipped (true when black is at the bottom), new_game true. Later calls need no arguments. Each call waits for the opponent's reply (it works out their move from which squares changed), picks the best move with the built-in engine and clicks it, then tells you what happened. Keep calling it until it says the game is over. If it says it cannot tell the opponent's move, look_at_screen, write the position as FEN, and call it again with fen.",
-        input_schema: { type: 'object', properties: { board: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } }, required: ['x', 'y', 'w', 'h'] }, my_color: { type: 'string', enum: ['white', 'black'] }, flipped: { type: 'boolean' }, new_game: { type: 'boolean' }, fen: str('Only to resync: the current position in FEN, side to move included.'), wait_ms: { type: 'number', description: 'How long to wait for the opponent (default 45000).' }, think_ms: { type: 'number', description: 'Engine thinking time in ms (default 2500).' }, level: { type: 'string', enum: ['easy', 'medium', 'hard', 'human', 'max'], description: 'How strong to play (default: the level chosen in Pip settings).' }, clock: { type: 'string', description: "The game's time control for me, like '3+2' (minutes + increment seconds) or '5'. Pip then keeps his own clock and plays faster when low on time." }, time_left: { type: 'number', description: "Seconds on MY clock, read from the screen, to resync Pip's own clock (optional)." }, time_control: { type: 'string', enum: ['bullet', 'blitz', 'rapid', 'classical'], description: 'If the game is timed, so Pip thinks for a fitting time.' }, moves: { type: 'number', description: 'Most turns to play in a row before reporting back (default 60). It keeps playing by itself.' } } },
+        input_schema: { type: 'object', properties: { board: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } }, required: ['x', 'y', 'w', 'h'] }, my_color: { type: 'string', enum: ['white', 'black'] }, flipped: { type: 'boolean' }, new_game: { type: 'boolean' }, fen: str('The current position in FEN, side to move included. REQUIRED when joining a game that is already in progress (Pip checks it against the board and names the squares that disagree); also use it to resync.'), wait_ms: { type: 'number', description: 'How long to wait for the opponent (default 45000).' }, think_ms: { type: 'number', description: 'Engine thinking time in ms (default 2500).' }, level: { type: 'string', enum: ['easy', 'medium', 'hard', 'human', 'max'], description: 'How strong to play (default: the level chosen in Pip settings).' }, clock: { type: 'string', description: "The game's time control for me, like '3+2' (minutes + increment seconds) or '5'. Pip then keeps his own clock and plays faster when low on time." }, time_left: { type: 'number', description: "Seconds on MY clock, read from the screen, to resync Pip's own clock (optional)." }, time_control: { type: 'string', enum: ['bullet', 'blitz', 'rapid', 'classical'], description: 'If the game is timed, so Pip thinks for a fitting time.' }, moves: { type: 'number', description: 'Most turns to play in a row before reporting back (default 60). It keeps playing by itself.' } } },
       },
       {
         name: 'chess_best_move',
