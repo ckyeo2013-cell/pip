@@ -266,6 +266,25 @@ function clicksCommand(points, platform, gapMs = 250, maxPoints = 4) {
   return { cmd: 'xdotool', args };
 }
 
+// Move the cursor along a path of small steps (like a hand would) and click where asked.
+// steps: [{ x, y, ms (wait after arriving), click (true to click there) }], at most 120.
+function glideCommand(steps, platform) {
+  const st = (steps || []).slice(0, 120).map((p) => ({ x: Math.round(Number(p.x)), y: Math.round(Number(p.y)), ms: Math.max(0, Math.min(1500, Math.round(Number(p.ms)) || 0)), click: !!p.click }));
+  if (!st.length || st.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y) || p.x < 0 || p.y < 0 || p.x > 20000 || p.y > 20000)) throw new Error('That is not a spot on the screen.');
+  if (platform === 'win32') {
+    const script = "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class PipMouse { [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int x, int y); [DllImport(\"user32.dll\")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e); }'; [void][PipMouse]::SetProcessDPIAware(); " + st.map((p) => `[void][PipMouse]::SetCursorPos(${p.x}, ${p.y}); Start-Sleep -Milliseconds ${p.ms}` + (p.click ? '; [PipMouse]::mouse_event(2,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 55; [PipMouse]::mouse_event(4,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 40' : '')).join('; ');
+    return { cmd: 'powershell.exe', args: psArgs(script) };
+  }
+  if (platform === 'darwin') {
+    const js = "ObjC.import('ApplicationServices'); function post(t,x,y){var e=$.CGEventCreateMouseEvent(null,t,{x:x,y:y},0);$.CGEventPost($.kCGHIDEventTap,e);} " +
+      st.map((p) => `post(5,${p.x},${p.y}); delay(${p.ms / 1000});` + (p.click ? ` post(1,${p.x},${p.y}); delay(0.055); post(2,${p.x},${p.y}); delay(0.04);` : '')).join(' ');
+    return { cmd: 'osascript', args: ['-l', 'JavaScript', '-e', js] };
+  }
+  const args = [];
+  st.forEach((p) => { args.push('mousemove', String(p.x), String(p.y)); if (p.ms) args.push('sleep', String(p.ms / 1000)); if (p.click) args.push('click', '1', 'sleep', '0.04'); });
+  return { cmd: 'xdotool', args };
+}
+
 // Press at the first point, move through the others in order, release at the last (Strands, word search, solitaire, sliders).
 // Every hop is cut into small steps so the page sees a real drag, not a jump.
 function dragCommand(points, platform, holdMs = 60) {
@@ -776,7 +795,7 @@ function mediaCommand(action, platform, value) {
 module.exports = {
   BROWSER_ACTIONS, browserKeys, focusBrowserCommand, focusAppCommand, parseFocusResult, BROWSER_PROCESSES,
   START_APPS_SCRIPT, parseStartApps, pickStartApp, editDistance, APP_PROTOCOLS, SCROLL_DIRS, scrollCommands, gameKeyCommand, GAME_KEYS,
-  clickCommand, clicksCommand, dragCommand, chatApp, CHAT_APPS, SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
+  clickCommand, clicksCommand, glideCommand, dragCommand, chatApp, CHAT_APPS, SITES, resolveSite, SEARCH_SITES, firstYoutubeId, resolveAppName, SAFE_APPS, MEDIA_ACTIONS, MEDIA_LABELS, mediaCommand,
   PAGES, pageNames, settingsLaunch,
   psArgs, buildShell, shellName, checkCommand, isReadOnlyCommand,
   parseCombo, buildKeyCommand,

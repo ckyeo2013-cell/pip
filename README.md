@@ -163,6 +163,10 @@ Say "play Wordle", "do today's Connections", "play Krillion", "solve this sudoku
 
 Pip gets a **playbook** for the game when it starts (see `games.js`): Wordle and clones, Connections, Spelling Bee, crosswords and the Mini, Strands, Sudoku, 2048, Minesweeper, board games, trivia and quiz games, memory and word-search games, plus a general one for anything new. Tools for games: `game_keys` (typing and arrow keys), `click_many` (several clicks in one call), `drag_screen` (press, move along a path, release), `chess_play` (a full chess game), `sudoku_solve` (exact solver). Each of these sends back a screenshot, so no separate look is needed. Real-time action games, ranked play, money and accounts are excluded. Dragging uses the OS mouse events: it needs `xdotool` on Linux and the Accessibility permission on macOS. For trivia and harder puzzles choose **Sonnet** in settings.
 
+**Chess feels more like a friend (v1.21):** Pip gets bored if you think for more than about 40 seconds (a comment, a yawn, a second one much later), glances at the board and drifts to a perch beside it while you think (never onto the board, and he never touches your mouse), plays looser when rushed and sharper on long thinks (with the odd slip in quiet positions), teases a quick blunder, notices a very fast or very slow opponent, gives a short recap after the game, and remembers your win/loss record across games.
+
+**Blunder and brilliant sliders (v1.22):** Settings has "Blunders per game" (0 to 8) and "Brilliant moves per game" (0 to 5), each with an Auto tick box (Auto = what the strength setting gives). Each game draws its own count around your average and spreads it over the game. Blunders are overlooks: an attacked piece left hanging, a piece put where it is taken, a capture not seen. They never happen in the opening, while in check, or with hardly any choice. A brilliant needs a real sacrifice that works, so that number is "up to". The sliders apply when Pip plays on a real board; the small Games window keeps its own style and strength pickers.
+
 ## Automatic updates (GitHub)
 1. Put this project in a GitHub repo and set `repository.url` in `package.json` to it.
 2. Bump `version` in `package.json`, commit, then push a tag: `git tag v1.20.1 && git push --tags`.
@@ -173,3 +177,6 @@ Windows and Linux update fully on their own. macOS needs a signed app for silent
 ## Voice
 - Ctrl/Cmd+Alt+Space: talk to Pip in the chat. Ctrl/Cmd+Alt+D: dictate into any app (fillers removed, "comma", "new line", "scratch that" work).
 - Pip's spoken voice uses Gemini, Cloudflare or Groq neural voices (same key as hearing); it falls back to the computer's voice.
+
+
+**Mouse fidgeting (v1.23):** While you think, Pip can move the real mouse like a person: rest it over a piece, wander to another, try a move in the air, wiggle a little. It never clicks, hands the cursor back where it found it, only starts once your mouse has been still for a few seconds, and stops for 30 seconds if you grab it. Turn it off in Settings > Chess ("Pip fidgets with the mouse while I think").

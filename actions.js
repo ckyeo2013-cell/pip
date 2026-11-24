@@ -298,6 +298,9 @@ function createActions({
   emote = () => {},
   getChessLevel = () => 'max',
   getChessConfirm = () => false, // ask before every chess move (one move per approval)
+  getChessFidget = () => true,   // while the opponent thinks, Pip hovers and wanders the real mouse a little (never clicks; stops if the user grabs it)
+  fidgetAfterMs = 8000,          // how long into the opponent's turn before he starts fidgeting
+  fidgetStillMs = 4000,          // the user's mouse must have been still this long first
   hidePanel = () => {},
   blurWindow = () => {},
   countdown = 5,
@@ -317,6 +320,8 @@ function createActions({
   setOverlay = null,      // (visible) => void: hides Pip's full-screen window while a chess game runs, so it cannot cover or slow the browser, and brings it back afterwards
   getScreenInfo = null,   // () => { workArea: {x,y,width,height}, scaleFactor }: switches on find_ui / press_ui and flying to the typing spot
   pipPid = process.pid,   // Pip's own window is never read or pressed
+  boredMs = 40000,        // chess: how long the opponent may think before Pip gets bored and says so
+  recapMs = 4800,         // chess: how long after the last move Pip gives his short recap
   flightMs = 1700,        // how long to wait for Pip to land before acting
   stageMs = 1700,         // how long Pip acts out a job (flies to the browser's top bar, the taskbar...) before doing it
   fetchFn = typeof fetch === 'function' ? fetch : null,
@@ -1044,7 +1049,7 @@ function createActions({
           const pick = (a) => a[Math.floor(Math.random() * a.length)];
           const PV = { p: 1, n: 3, b: 3, r: 5, q: 9 };
           // short in-character remarks (and a matching feeling), at most one every few moves unless it matters
-          const chat = (kind, force) => {
+          const chat = (kind, force, quiet) => { // quiet: do not count it as one of the remarks that space the others out
             const T = {
               oppBigCapture: [['Ouch, that one hurt.', 'sad'], ['Hey, that was my piece!', 'mad']],
               oppBlunder: [['Ooh, I think you left something hanging.', 'surprised'], ['Hmm, was that on purpose?', 'surprised'], ['Free piece? Do not mind if I do.', 'happy'], ['Did you mean to do that, or did your hand slip?', 'surprised']],
@@ -1059,11 +1064,122 @@ function createActions({
               resign: [['I am lost. Good game, I resign.', 'sad']],
               lowTime: [['Ooh, my clock is getting low. Moving fast!', 'nervous'], ['Time is running out, no more overthinking!', 'nervous']],
               draw: [['This looks like a draw to me.', 'neutral']],
+              thinkHard: [['Hmm... give me a sec.', 'confused'], ['Ooh, tricky one. Let me think.', 'nervous'], ['Wait wait wait, let me look at this.', 'confused'], ['Hmmmm.', 'confused'], ['Okay okay, what are you up to?', 'nervous']],
+              thinkEasy: [['Easy one.', 'happy'], ['Yep, obvious.', 'proud'], ['Mm-hm.', 'neutral']],
+              thinkBored: [['Take your time, I am just sitting here.', 'bored'], ['*yawn*', 'yawn'], ['Still thinking? No rush. Really.', 'bored']],
+              boredLong: [['Hello? Are you still there?', 'bored'], ['*big yawn* Wake me when you have moved.', 'sleepy'], ['I could have counted all my whiskers by now.', 'bored']],
+              slowReturn: [['Finally! Was that worth the wait?', 'happy'], ['Oh, you are alive! Nice move.', 'happy']],
+              quickBlunder: [['That was fast. Maybe too fast?', 'surprised'], ['Whoa, hands quicker than the brain there.', 'happy'], ['Slow down, speedy. That might have been a slip.', 'surprised']],
+              quickMover: [['You are playing fast. Is somebody chasing you?', 'surprised'], ['Okay okay, no time to think, I get it.', 'nervous'], ['Slow down, I am getting dizzy.', 'dizzy']],
             }[kind];
             if (!T || (!force && g.moves.length - (g.lastTalk === undefined ? -9 : g.lastTalk) < 4)) return;
-            g.lastTalk = g.moves.length;
+            if (!quiet) g.lastTalk = g.moves.length;
             const [line, feel] = pick(T);
             notify(line, 4500); emote(feel);
+          };
+          // middle of a square as a fraction of the whole screen (for glances and drifting)
+          const sqFrac = (sq) => {
+            const col = sq & 7, row = sq >> 3, c = g.flipped ? 7 - col : col, r = g.flipped ? 7 - row : row;
+            return { x: g.region.x + g.region.w * (c + 0.5) / 8, y: g.region.y + g.region.h * (r + 0.5) / 8 };
+          };
+          const later = (ms, fn) => { const tm0 = setTimeout(() => { if (chessGame === g) fn(); }, ms); if (tm0.unref) tm0.unref(); };
+          // Something to do while the opponent thinks, so he is not a statue: glance around the board (look at a piece, then another, then off
+          // to the side) and now and then drift to a perch beside the board, never on it (it would cover the pieces he is reading).
+          // The real mouse is never touched: it belongs to the user while it is their turn.
+          const idleAct = (idleMs) => {
+            // the mouse fidget has its own rhythm: first one a few seconds into their turn, then every 10 to 25 seconds while they keep thinking
+            if (getChessFidget() && !g.fidgeting && idleMs >= fidgetAfterMs && Date.now() >= (g.nextFidgetAt || 0) && Date.now() - (g.curMovedAt || 0) >= fidgetStillMs && Date.now() > (g.fidgetPause || 0)) {
+              g.nextFidgetAt = Date.now() + 10000 + Math.random() * 15000; g.fidgetP = fidget(); return;
+            }
+            if (idleMs < 5000 || Date.now() < (g.nextIdleAt || 0)) return;
+            g.nextIdleAt = Date.now() + 7000 + Math.random() * 9000;
+            const theirs = []; for (let sq = 0; sq < 64; sq++) { const pc = g.st.board[sq]; if (pc && (pc === pc.toUpperCase()) !== g.myWhite) theirs.push(sq); }
+            const mine = []; for (let sq = 0; sq < 64; sq++) { const pc = g.st.board[sq]; if (pc && (pc === pc.toUpperCase()) === g.myWhite) mine.push(sq); }
+            const r = Math.random();
+            if (r < 0.55 && theirs.length) { // "what are you going to do with that?"
+              const a = sqFrac(pick(theirs)), b = sqFrac(pick(theirs.concat(mine)));
+              if (pet) { pet({ action: 'look', x: a.x, y: a.y, ms: 1400 }); later(1500, () => pet({ action: 'look', x: b.x, y: b.y, ms: 1000 })); }
+              if (Math.random() < 0.3) emote('confused');
+            } else if (r < 0.85 && pet) { // drift to the side of the board
+              const info0 = getScreenInfo ? getScreenInfo() : null, bw = info0 && (info0.bounds || info0.workArea) ? (info0.bounds || info0.workArea).width : 1920, mx = 150 / bw, R = g.region;
+              const rightRoom = R.x + R.w + mx < 0.94, leftRoom = R.x - mx > 0.06;
+              const side = rightRoom && leftRoom ? (Math.random() < 0.5 ? 'r' : 'l') : rightRoom ? 'r' : leftRoom ? 'l' : null;
+              if (side && side !== g.driftSide) {
+                g.driftSide = side;
+                pet({ action: 'fly', x: side === 'r' ? R.x + R.w + mx : R.x - mx, y: Math.min(0.95, Math.max(0.05, R.y + R.h * (0.2 + Math.random() * 0.6))) });
+              } else { const a = sqFrac(pick(theirs.length ? theirs : mine)); pet({ action: 'look', x: a.x, y: a.y, ms: 1500 }); }
+            } else if (pet) { // look away, off the board, like someone who is waiting
+              pet({ action: 'look', x: Math.random() < 0.5 ? 0.15 : 0.85, y: 0.2 + Math.random() * 0.5, ms: 1800 });
+            }
+          };
+          // the record against this user, in a few words ("You lead 3-2." / "We are level at 2-2.")
+          const recordText = (rec) => {
+            if (!rec || rec.user + rec.pip + rec.draws < 2) return '';
+            return rec.user > rec.pip ? `You lead ${rec.user}-${rec.pip}.` : rec.pip > rec.user ? `I lead ${rec.pip}-${rec.user}.` : `We are level at ${rec.user}-${rec.pip}.`;
+          };
+          // the result is known: keep the record, then a short recap of how the game felt a moment after the last remark
+          const wrapUp = (result) => { // 'user' (they won), 'pip' (I won) or 'draw'
+            if (g.wrapped) return; g.wrapped = true;
+            let rec = null; try { rec = store && store.recordChess ? store.recordChess(result) : null; } catch (_) { /* the record is a nicety */ }
+            const ev2 = (g.evals || []).filter((x) => x != null), n = ev2.length, mid = ev2.slice(Math.floor(n * 0.2), Math.max(Math.floor(n * 0.2) + 3, Math.floor(n * 0.8)));
+            const close = mid.length >= 3 && mid.every((x) => Math.abs(x) <= 1.5);
+            let line, feel;
+            if (result === 'draw') { line = 'A draw. Neither of us blinked.'; feel = 'neutral'; }
+            else if (result === 'user') { line = close ? 'That middlegame was close. You earned that one.' : n >= 3 && ev2.slice(-3).every((x) => x <= -4) ? 'You really outplayed me there.' : 'Good game. You got me.'; feel = close ? 'happy' : 'sad'; }
+            else { line = close ? 'That was close for a long while.' : (g.oppSwings || 0) >= 2 ? 'You had your chances, you know.' : 'Good game, that was fun.'; feel = 'proud'; }
+            const rt = recordText(rec);
+            const text = `${line} ${rt} Rematch?`.replace(/\s+/g, ' ');
+            later(recapMs, () => { notify(text, 7000); emote(feel); });
+          };
+          if (!g.greeted) { // a returning opponent: remind them where the series stands
+            g.greeted = true;
+            let rec = null; try { rec = store && store.chessRecord ? store.chessRecord() : null; } catch (_) { /* optional */ }
+            if (rec && rec.user + rec.pip + rec.draws >= 1 && g.moves.length === 0) {
+              const rt = recordText({ user: rec.user, pip: rec.pip, draws: rec.draws }) || `That makes ${rec.user + rec.pip + rec.draws} games so far.`;
+              later(1800, () => { notify(`Round ${rec.user + rec.pip + rec.draws + 1}. ${rt}`, 4500); emote('excited'); });
+            }
+          }
+          // Fidgeting with the real mouse while the opponent thinks, like a person: rest the cursor over a piece, wander to another, "try" a move
+          // in the air, wiggle. It never clicks, always leaves the cursor where it found it, and gives up for a while if the user grabs the mouse.
+          const alive = () => gameOn && chessGame === g && !g.fidgetStop;
+          const runGlide = (steps) => { const c = sys.glideCommand(steps, platform); return new Promise((res) => execFile(c.cmd, c.args, { timeout: 8000, windowsHide: true }, () => res())); };
+          const arcSteps = (from, to, ms) => { // a curved, eased path with no click
+            const dx = to.x - from.x, dy = to.y - from.y, dist = Math.hypot(dx, dy) || 1, n = Math.max(6, Math.min(22, Math.round(dist / 30)));
+            const bend = (Math.random() < 0.5 ? -1 : 1) * dist * (0.03 + Math.random() * 0.05), nx = -dy / dist, ny = dx / dist, out = [];
+            for (let k = 1; k <= n; k++) { const u = k / n, e = u * u * u * (u * (u * 6 - 15) + 10), w = Math.sin(Math.PI * u) * bend; out.push({ x: from.x + dx * e + nx * w, y: from.y + dy * e + ny * w, ms: Math.max(6, Math.round(ms / n)) }); }
+            return out;
+          };
+          const fidget = async () => {
+            if (g.fidgeting) return; g.fidgeting = true;
+            try {
+              const info = getScreenInfo ? getScreenInfo() : null;
+              if (!info || !info.cursor || !Number.isFinite(info.cursor.x) || !sys.glideCommand) return;
+              const bb = info.bounds || info.workArea, sf = platform === 'darwin' ? 1 : (info.scaleFactor || 1);
+              const toPx = (f) => ({ x: (bb.x + f.x * bb.width) * sf, y: (bb.y + f.y * bb.height) * sf });
+              const cell = (g.region.w * bb.width * sf) / 8, jit = () => (Math.random() - 0.5) * cell * 0.4;
+              const occ = []; for (let sq = 0; sq < 64; sq++) if (g.st.board[sq]) occ.push(sq);
+              const sqPx = (sq) => { const p = toPx(sqFrac(sq)); return { x: p.x + jit(), y: p.y + jit() }; };
+              const home = { x: info.cursor.x, y: info.cursor.y }, legs = [], r = Math.random();
+              if (r < 0.5 && occ.length) { // rest over a piece, think, then over another
+                legs.push({ to: sqPx(pick(occ)), ms: 500 + Math.random() * 500, pause: 700 + Math.random() * 900 });
+                if (Math.random() < 0.6) legs.push({ to: sqPx(pick(occ)), ms: 400 + Math.random() * 400, pause: 500 + Math.random() * 700 });
+              } else if (r < 0.8 && occ.length) { // try a move in the air: over a piece, across to a square, then back
+                const a = pick(occ), c = Math.floor(Math.random() * 64);
+                legs.push({ to: sqPx(a), ms: 500 + Math.random() * 400, pause: 450 }, { to: sqPx(c), ms: 450 + Math.random() * 300, pause: 350 }, { to: sqPx(a), ms: 350 + Math.random() * 250, pause: 300 });
+              } else { // a little restless wiggle
+                for (let i = 0; i < 3; i++) legs.push({ to: { x: home.x + (Math.random() - 0.5) * 70, y: home.y + (Math.random() - 0.5) * 70 }, ms: 200 + Math.random() * 150, pause: 40 });
+              }
+              legs.push({ to: { x: home.x + (Math.random() - 0.5) * 20, y: home.y + (Math.random() - 0.5) * 20 }, ms: 450 + Math.random() * 400, pause: 0 }); // hand the mouse back
+              let cur = home; g.fidgetAt = home;
+              for (const leg of legs) {
+                if (!alive()) break;
+                const now = getScreenInfo && getScreenInfo().cursor;
+                if (now && Math.hypot(now.x - g.fidgetAt.x, now.y - g.fidgetAt.y) > 45) { g.fidgetPause = Date.now() + 30000; break; } // the user took the mouse
+                const steps = arcSteps(cur, leg.to, leg.ms); steps[steps.length - 1].ms += Math.round(leg.pause);
+                await runGlide(steps); cur = leg.to; g.fidgetAt = leg.to;
+              }
+              g.curLast = cur; g.curMovedAt = Date.now() - fidgetStillMs; // our own moves do not count as the user moving it
+            } catch (_) { /* a fidget is never worth an error */ } finally { g.fidgeting = false; }
           };
           let said = '';
           if (g.st.white !== g.myWhite) { // the opponent's turn: watch the board until a legal move shows up
@@ -1083,8 +1199,19 @@ function createActions({
             };
             const take = (m, cur) => { g.lastOppTook = (g.st.board[m.to] || (m.ep ? 'p' : '') || '').toLowerCase(); seen = m; g.st = chess.apply(g.st, m); g.snap = cur; g.moves.push(uci(m)); g.hist.push(g.st); };
             { const c0 = await grab(); const pm = occMatch(c0); if (pm) take(pm, c0); } // the opponent may already have replied
+            if (!g.oppWaitFrom) { g.oppWaitFrom = g.myMoveAt || Date.now(); g.boredStage = 0; g.curMovedAt = Date.now(); g.curLast = null; g.nextFidgetAt = 0; } // (the mouse counts as just used: Pip made his move with it) // when the opponent's turn began (kept across the 90 s re-waits)
             while (!seen && Date.now() < until && gameOn) {
               await sleep(500); // every look is a screen capture, so do not hammer the graphics card while the browser is busy
+              if (!g.fidgeting && getScreenInfo) { // is the user using the mouse? (a still mouse is fair game for a fidget)
+                const cu = (getScreenInfo() || {}).cursor;
+                if (cu && Number.isFinite(cu.x)) { if (g.curLast && Math.hypot(cu.x - g.curLast.x, cu.y - g.curLast.y) > 6) g.curMovedAt = Date.now(); g.curLast = { x: cu.x, y: cu.y }; }
+              }
+              { // a slow opponent: act while waiting, and get bored (about 40 s, then a second time much later)
+                const idle = Date.now() - g.oppWaitFrom;
+                idleAct(idle);
+                if (g.boredStage === 0 && idle >= boredMs) { g.boredStage = 1; chat('thinkBored', true, true); }
+                else if (g.boredStage === 1 && idle >= boredMs * 2.5) { g.boredStage = 2; chat('boredLong', true, true); }
+              }
               let cur = await grab();
               { // premoves: the reply can land while my own snapshot was still mid-animation, so the changed-squares test may never fire; trust the occupied squares instead
                 let pm = occMatch(cur);
@@ -1105,12 +1232,20 @@ function createActions({
             said = `Opponent played ${chess.sqName(seen.from)} to ${chess.sqName(seen.to)}. `;
             status(`Chess: opponent played ${chess.sqName(seen.from)} to ${chess.sqName(seen.to)}`);
             g.turnStart = Date.now(); // my clock is running now
-            if (g.myMoveAt) { const dt = Date.now() - g.myMoveAt; g.replyAvg = g.replyAvg ? 0.7 * g.replyAvg + 0.3 * dt : dt; }
+            if (g.myMoveAt) {
+              const dt = Date.now() - g.myMoveAt; g.replyAvg = g.replyAvg ? 0.7 * g.replyAvg + 0.3 * dt : dt;
+              g.lastReplyMs = dt; g.fastRun = dt < 2500 ? (g.fastRun || 0) + 1 : 0;
+              const cool = Date.now() - (g.reactAt || 0) > 45000;
+              if (g.boredStage >= 1 && dt > 60000 && cool) { g.reactAt = Date.now(); chat('slowReturn', true, true); } // they came back after a long think
+              else if (g.fastRun >= 4 && cool) { g.reactAt = Date.now(); g.fastRun = 0; chat('quickMover', true, true); } // four quick moves in a row
+            }
+            g.oppWaitFrom = null; g.boredStage = 0;
+            if (g.fidgetP) { g.fidgetStop = true; try { await g.fidgetP; } catch (_) { /* ignore */ } g.fidgetStop = false; g.fidgetP = null; } // hands off the mouse before Pip plays
             if ((PV[g.lastOppTook] || 0) >= 5) chat('oppBigCapture');
           }
           if (!gameOn) return 'The game was stopped.';
           const over = chess.status(g.st);
-          if (over) { chat(over === 'checkmate' ? (g.st.white === g.myWhite ? 'lost' : 'won') : 'draw', true); return `${said}Game over: ${over}${over === 'checkmate' ? (g.st.white === g.myWhite ? ' (I was checkmated).' : ' (I won!).') : ' (a draw).'} Call end_game and tell the user.`; }
+          if (over) { chat(over === 'checkmate' ? (g.st.white === g.myWhite ? 'lost' : 'won') : 'draw', true); wrapUp(over === 'checkmate' ? (g.st.white === g.myWhite ? 'user' : 'pip') : 'draw'); return `${said}Game over: ${over}${over === 'checkmate' ? (g.st.white === g.myWhite ? ' (I was checkmated).' : ' (I won!).') : ' (a draw).'} Call end_game and tell the user.`; }
           status('Chess: thinking about my move');
           const quick = !(input && input.think_ms) && g.moves.length < 10; // opening moves are well known: think less there
           // time awareness: a stated time control wins; otherwise a quick opponent means a quick game, so think less (never below 0.7 s)
@@ -1125,29 +1260,53 @@ function createActions({
             if (rem < 20000 && !g.lowSaid) { g.lowSaid = true; chat('lowTime'); }
           }
           const level = (input && input.level) || getChessLevel() || 'sharp:7';
-          const thinkOpts = { ms: quick ? Math.min(800, tm) : tm, queen: true, hist: g.hist, moves: g.fromStart ? g.moves : null, level };
+          // How rushed this move is, -1 (a long think) to +1 (a snap decision): rushed moves slip more, long thinks are sharper.
+          // Played-fast and sunk-into-it moods are picked here, so the strength and the time he takes agree with each other.
+          const mood = Math.random(), fastMood = mood < 0.1, deepMood = mood > 0.94 && g.moves.length >= 10;
+          let haste = (fastMood ? 0.8 : 0) - (deepMood ? 0.8 : 0) + (quick ? 0.15 : 0);
+          if (tc) haste += { bullet: 0.5, blitz: 0.25, rapid: 0, classical: -0.2 }[tc] || 0;
+          if (g.clockMs) { const remH = g.clockMs - (Date.now() - (g.turnStart || Date.now())); haste += remH < 20000 ? 0.6 : remH < 60000 ? 0.3 : 0; }
+          if (g.replyAvg && g.replyAvg < 4000 && g.moves.length >= 6 && !(input && input.think_ms)) haste += 0.2;
+          haste = Math.max(-1, Math.min(1, haste));
+          // Per-round targets from the settings ("about 2.5 blunders and 1 brilliant per game"): each game draws its own count around that average
+          // (so some games have none and some have more), and the budget is spread over the moves that are left.
+          const tg = chess.levelTargets(level), pipMoves = Math.ceil(g.moves.length / 2), movesLeft = Math.max(6, 36 - pipMoves);
+          const poisson = (mean) => { let k = 0, p = 1; const L0 = Math.exp(-mean); do { k++; p *= Math.random(); } while (p > L0 && k < 30); return k - 1; };
+          const left = Math.max(0.15, movesLeft / 36); // a target changed in the middle of a game (the "no blunders" button) counts for the rest of it
+          if (tg.b === undefined) g.budgetB = undefined; else if (g.budgetFor !== tg.b) { g.budgetFor = tg.b; g.budgetB = tg.b === 0 ? 0 : (g.slips || 0) + poisson(tg.b * left); }
+          if (tg.f === undefined) g.budgetF = undefined; else if (g.budgetForF !== tg.f) { g.budgetForF = tg.f; g.budgetF = tg.f === 0 ? 0 : (g.brills || 0) + poisson(tg.f * left); }
+          const thinkOpts = { ms: quick ? Math.min(800, tm) : tm, queen: true, hist: g.hist, moves: g.fromStart ? g.moves : null, level, haste,
+            noSlip: g.moves.length < 10 }; // the opening is book: nobody blunders move 3
+          if (g.budgetB !== undefined) thinkOpts.blunderRate = Math.min(0.5, Math.max(0, g.budgetB - (g.slips || 0)) / movesLeft);
+          if (g.budgetF !== undefined) thinkOpts.flairRate = Math.min(0.9, Math.max(0, g.budgetF - (g.brills || 0)) / movesLeft * 2.5); // a sacrifice that really works is rare: try more often
+          const thinkStart = Date.now();
           let best;
           try { best = await thinkAsync(g.st, thinkOpts); } catch (_) { best = chess.bestMoveState(g.st, thinkOpts); } // no thread available: think on the main one
           if (!gameOn) { status(''); return 'The game was stopped.'; }
+          if (best.blunder) g.slips = (g.slips || 0) + 1;
+          if (best.brilliant) g.brills = (g.brills || 0) + 1;
           if (best.note) status('Chess: ' + (best.blunder ? 'slip, ' : best.brilliant ? 'brilliant, ' : '') + best.note);
           // feelings about how the game is going, and resigning or drawing when it is clear
           const ev = best.mateIn != null ? (best.mateIn > 0 ? 99 : -99) : best.evalPawns;
           (g.evals = g.evals || []).push(ev);
           if (ev != null && g.prevEv != null) {
-            if (ev - g.prevEv >= 2.5) chat('oppBlunder'); else if (ev - g.prevEv <= -2.5) chat('surprise');
+            const swing = ev - g.prevEv, rushedOpp = g.lastReplyMs != null && g.lastReplyMs < 2500 && g.moves.length >= 8;
+            if (swing >= 2.5) g.oppSwings = (g.oppSwings || 0) + 1;
+            if (swing >= 1.5 && rushedOpp && Date.now() - (g.reactAt || 0) > 45000) { g.reactAt = Date.now(); chat('quickBlunder', true); } // a quick move that threw something away: tease
+            else if (swing >= 2.5) chat('oppBlunder'); else if (swing <= -2.5) chat('surprise');
           }
           if (ev != null) {
             if (best.mateIn > 0 && best.mateIn <= 3) chat('mateSoon'); else if (ev >= 4) chat('winning'); else if (ev <= -4) chat('losing');
           }
-          g.prevEv = ev;
+          g.prevEvBefore = g.prevEv; g.prevEv = ev;
           const lastEv = g.evals.slice(-3), longEv = g.evals.slice(-12);
           if (g.moves.length >= 30 && lastEv.length === 3 && lastEv.every((x) => x != null && x <= -8)) {
-            status(''); chat('resign', true);
+            status(''); chat('resign', true); wrapUp('user');
             return `${said}I am hopelessly lost, so I resign (I cannot press the resign button myself: tell the user, and that they won). Call end_game.`;
           }
           const reps = g.hist.filter((h) => chess.key(h) === chess.key(g.st)).length;
           if (reps >= 3 || (g.moves.length >= 60 && longEv.length === 12 && longEv.every((x) => x != null && Math.abs(x) <= 0.15))) {
-            status(''); chat('draw', true);
+            status(''); chat('draw', true); wrapUp('draw');
             return `${said}${reps >= 3 ? 'This position has now happened three times' : 'The position is dead equal'}, so I would offer a draw (I cannot press the draw button myself: tell the user). Call end_game.`;
           }
           const mv = chess.legal(g.st).find((m) => chess.sqName(m.from) === best.from && chess.sqName(m.to) === best.to && (m.promo || null) === best.promo);
@@ -1159,6 +1318,35 @@ function createActions({
           if (!info || !getFull()) throw new Error('Clicking is turned off or not available here.');
           const b = info.bounds || info.workArea, sf = platform === 'darwin' ? 1 : (info.scaleFactor || 1);
           const px = (sq) => { const p = spot(sq); return { x: (b.x + p.x * b.width) * sf, y: (b.y + p.y * b.height) * sf }; };
+          { // human-like total time per move (1-10 s): longer in hard positions, with real randomness, never a fixed rhythm
+            const nLegal = chess.legal(g.st).length;
+            let d = Math.min(1, Math.max(0, (nLegal - 8) / 32)) * 0.35;                                  // more options, more to weigh
+            if (ev != null) { d += Math.max(0, 1 - Math.abs(ev) / 4) * 0.25; d += Math.min(1, Math.abs(ev - (g.prevEvBefore != null ? g.prevEvBefore : ev)) / 2.5) * 0.2; } // balanced or suddenly changed = tricky
+            const mn = g.moves.length;
+            d += mn < 8 ? -0.2 : mn < 30 ? 0.2 : 0.1;                                                    // book moves are quick, the middlegame is the hard part
+            if (best.capture && g.lastOppTook) d -= 0.15;                                                // a recapture is obvious
+            if (chess.inCheck(g.st)) d -= 0.15;                                                          // forced replies are quick
+            if (best.mateIn > 0 && best.mateIn <= 3) d -= 0.2;                                           // a found mate is played at once
+            d = Math.min(1, Math.max(0, d));
+            const cap = { bullet: 2500, blitz: 5000, rapid: 8000, classical: 10000 }[tc] || 10000;
+            let T = 1000 + (cap - 1000) * Math.pow(d, 1.3);                                              // 1 s up to the cap
+            T *= Math.exp((Math.random() + Math.random() + Math.random() - 1.5) * 0.7);                  // wide, uneven spread: 0.5x to 2x
+            if (fastMood) T = 900 + Math.random() * 900;                                                 // sometimes he just plays fast
+            else if (deepMood) T = Math.max(T, cap * (0.7 + Math.random() * 0.3));                       // sometimes he really sinks into it
+            if (best.blunder && !deepMood) T = Math.min(T, 1000 + Math.random() * 2400);                 // a slip looks like a quick, careless move
+            if (g.lastT && Math.abs(T - g.lastT) < 600) T += (Math.random() < 0.5 ? -1 : 1) * (600 + Math.random() * 900); // never the same rhythm twice
+            T = Math.min(cap, Math.max(900, T));
+            if (g.clockMs) { const rem = g.clockMs - (Date.now() - (g.turnStart || Date.now())); T = rem < 8000 ? 500 : Math.min(T, rem / 25); }
+            if (ev != null) T *= ev > 3 ? 0.85 : ev < -3 ? 1.25 : 1;                                      // confident = quicker, worried = slower
+            if (mn > 40) T *= 0.88;                                                                       // a bit of fatigue late in the game
+            T = Math.min(cap, Math.max(900, T));
+            g.lastT = T;
+            if (T > 6500 && Math.random() < 0.55) chat('thinkHard', true);                               // sometimes thinks out loud when it is hard
+            else if (T < 1800 && d < 0.35 && Math.random() < 0.25) chat('thinkEasy');
+            else if (T > 3000) emote('confused');
+            const hp = Math.round(T - (Date.now() - thinkStart));                                        // the engine's own thinking counts toward it
+            if (hp > 60) { status('Chess: ' + best.from + ' to ' + best.to + ' (about to play)'); await sleep(hp); if (!gameOn) return 'The game was stopped.'; }
+          }
           status(`Chess: playing ${best.from} to ${best.to}`);
           const pts = [px(mv.from), px(mv.to)];
           if (mv.promo) pts.push(px(mv.to)); // the queen appears on the square itself on the usual sites
@@ -1175,9 +1363,36 @@ function createActions({
           const toPts = mv.promo ? [pts[1], pts[1]] : [pts[1]];
           hidePanel();
           blurWindow();
-          await sleep(300); // Pip's chat has to be out of the way and the game window has to own the mouse before the first click
+          await sleep(200 + Math.random() * 450); // Pip's chat has to be out of the way and the game window has to own the mouse before the first click
           if (!gameOn) return 'The game was stopped.';
-          await runClicks(pts, 350);
+          // Move the mouse over like a hand would (curved, eased, a little overshoot, a short hover before each click) instead of teleporting.
+          const glideTo = (from, to, steps) => {
+            const dx = to.x - from.x, dy = to.y - from.y, dist = Math.hypot(dx, dy) || 1;
+            const n = Math.max(12, Math.min(34, Math.round(dist / 22))), total = Math.min(950, 230 + dist * 0.32) * (0.8 + Math.random() * 0.55);
+            const bend = (Math.random() < 0.5 ? -1 : 1) * dist * (0.03 + Math.random() * 0.06), nx = -dy / dist, ny = dx / dist;
+            const over = Math.random() < 0.45 ? 4 + Math.random() * 7 : 0, ox = (dx / dist) * over, oy = (dy / dist) * over;
+            for (let k = 1; k <= n; k++) {
+              const u = k / n, e = u * u * u * (u * (u * 6 - 15) + 10), w = Math.sin(Math.PI * u) * bend;      // smooth start and stop, sideways arc
+              const sp = 0.6 + 0.8 * Math.sin(Math.PI * u) ** 2;                                           // faster in the middle
+              steps.push({ x: from.x + dx * e + nx * w + (k === n && over ? ox : 0), y: from.y + dy * e + ny * w + (k === n && over ? oy : 0), ms: Math.max(4, Math.round(total / n / sp * 0.75)) });
+            }
+            if (over) steps.push({ x: to.x, y: to.y, ms: 50 + Math.round(Math.random() * 60) }); // settle back onto the square
+            steps[steps.length - 1].ms += 70 + Math.round(Math.random() * 190); // a beat of hovering before the click
+            steps[steps.length - 1].click = true;
+          };
+          let glided = false;
+          if (info.cursor && Number.isFinite(info.cursor.x)) {
+            try {
+              const steps = []; glideTo(info.cursor, pts[0], steps);
+              steps[steps.length - 1].ms += 120 + Math.round(Math.random() * 350); // pick up the piece, then carry it over
+              glideTo(pts[0], pts[1], steps);
+              if (mv.promo) { steps.push({ x: pts[1].x, y: pts[1].y, ms: 300 + Math.round(Math.random() * 200), click: true }); }
+              const c = sys.glideCommand(steps, platform);
+              await new Promise((resolve, reject) => execFile(c.cmd, c.args, { timeout: 20000, windowsHide: true }, (err) => (err ? reject(err) : resolve())));
+              glided = true;
+            } catch (_) { glided = false; } // anything odd: fall back to the plain clicks below
+          }
+          if (!glided) await runClicks(pts, 220 + Math.round(Math.random() * 380));
           await sleep(350); // online sites take a moment to confirm the move
           let after = await settle(await grab());
           let d = cellDiffs(g.snap, after);
@@ -1203,7 +1418,7 @@ function createActions({
           g.myMoveAt = Date.now();
           if (g.clockMs) g.clockMs = Math.max(0, g.clockMs - (g.myMoveAt - (g.turnStart || g.myMoveAt))) + (g.incMs || 0);
           const end = chess.status(g.st);
-          if (end === 'checkmate') chat('won', true); else if (end) chat('draw', true);
+          if (end === 'checkmate') { chat('won', true); wrapUp('pip'); } else if (end) { chat('draw', true); wrapUp('draw'); }
           else if (chess.inCheck(g.st)) chat('check'); else if (best.capture && (PV[(g.lastMine || '')] || 0) >= 5) chat('bigCapture');
           return `${said}Played ${best.from} to ${best.to}${mv.promo ? ' (queen)' : ''}${mv.castle ? ' (castling)' : ''}. ${end === 'checkmate' ? 'Checkmate, I won! Call end_game and tell the user.' : end ? 'Stalemate, a draw. Call end_game and tell the user.' : 'Now the opponent moves: call chess_play again.'}`;
           };

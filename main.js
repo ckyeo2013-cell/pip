@@ -79,6 +79,10 @@ const DEFAULTS = {
   chessClock: '',     // '' (untimed) or e.g. '3+2': Pip tracks his own clock and speeds up when low
   chessLevel: 'sharp',  // sharp | sloppy
   chessStrength: 7,  // 1..10
+  chessBlunders: -1,   // average blunders per game, 0..8 (-1 = whatever the strength gives)
+  chessBrilliants: -1, // average brilliant moves per game, 0..5 (-1 = whatever the strength gives)
+  chessFidget: true,   // Pip hovers and wanders the real mouse while you think (never clicks)
+  chessBlundersWas: -1, // what the blunder setting was before the "no blunders" button turned it off
   sounds: true,       // small synthesized sound effects
   soundVolume: 0.5,
   appPersona: true,    // Pip's tone follows the app in front (only its name goes to the AI)
@@ -671,7 +675,11 @@ function setupActions() {
     protectedPaths: [app.getPath('userData')],
     remind,
     pet: (cmd) => send('pet', cmd),
-    getScreenInfo: () => { const d = screen.getPrimaryDisplay(); return { workArea: d.workArea, bounds: d.bounds, scaleFactor: d.scaleFactor || 1 }; },
+    getScreenInfo: () => {
+      const d = screen.getPrimaryDisplay(); let cursor = null;
+      try { const c = screen.getCursorScreenPoint(); const sf = d.scaleFactor || 1; const q = (process.platform === 'win32' && screen.dipToScreenPoint) ? screen.dipToScreenPoint(c) : (process.platform === 'darwin' ? c : { x: c.x * sf, y: c.y * sf }); cursor = { x: q.x, y: q.y }; } catch (_) {}
+      return { workArea: d.workArea, bounds: d.bounds, scaleFactor: d.scaleFactor || 1, cursor };
+    },
     pipPid: process.pid,
     fetchFn: fetch,
     notify: (text, ms) => send('say', { text, ms }),
@@ -679,6 +687,7 @@ function setupActions() {
     emote: (name) => send('mood', { type: 'emote', name }),
     getChessLevel: () => chessLv(),
     getChessConfirm: () => !!settings.chessConfirm,
+    getChessFidget: () => settings.chessFidget !== false,
     chessLib: {
       load: () => JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'chess-pieces.json'), 'utf8')),
       save: (o) => fs.writeFileSync(path.join(app.getPath('userData'), 'chess-pieces.json'), JSON.stringify(o)),
@@ -1048,7 +1057,7 @@ function registerIpc() {
       if (SKINS.includes(s.skin)) patch.skin = s.skin;
       if (COSMETICS.includes(s.style)) patch.style = s.style;
       if (MODELS.includes(s.model)) patch.model = s.model;
-      for (const k of ['shapeWindow', 'wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'autoUpdate', 'chessConfirm', 'actionLog', 'macCalendar', 'shortReplies', 'fallback', 'reactions', 'sounds', 'moodMemory', 'appPersona']) {
+      for (const k of ['shapeWindow', 'wander', 'quips', 'openAtLogin', 'seenIntro', 'actions', 'fullAccess', 'autoLook', 'autoType', 'autoPress', 'trustSaid', 'voiceHotkey', 'autoUpdate', 'chessConfirm', 'chessFidget', 'actionLog', 'macCalendar', 'shortReplies', 'fallback', 'reactions', 'sounds', 'moodMemory', 'appPersona']) {
         if (typeof s[k] === 'boolean') patch[k] = s[k];
       }
       if (s.toolPolicy && typeof s.toolPolicy === 'object') {
@@ -1062,6 +1071,9 @@ function registerIpc() {
       if (Array.isArray(s.trustedSites)) patch.trustedSites = [...new Set(s.trustedSites.map((h) => String(h).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '')).filter((h) => /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(h)))].slice(0, 30);
       if (['sharp', 'sloppy'].includes(s.chessLevel)) patch.chessLevel = s.chessLevel;
       if (Number.isFinite(Number(s.chessStrength))) patch.chessStrength = Math.max(1, Math.min(10, Number(s.chessStrength)));
+      if (Number.isFinite(Number(s.chessBlunders))) patch.chessBlunders = Number(s.chessBlunders) < 0 ? -1 : Math.min(8, Number(s.chessBlunders));
+      if (Number.isFinite(Number(s.chessBlundersWas))) patch.chessBlundersWas = Number(s.chessBlundersWas) < 0 ? -1 : Math.min(8, Number(s.chessBlundersWas));
+      if (Number.isFinite(Number(s.chessBrilliants))) patch.chessBrilliants = Number(s.chessBrilliants) < 0 ? -1 : Math.min(5, Number(s.chessBrilliants));
       if (typeof s.chessClock === 'string' && /^(|\d{1,3}(\+\d{1,2})?)$/.test(s.chessClock)) patch.chessClock = s.chessClock;
       if (typeof s.soundVolume === 'number' && s.soundVolume >= 0 && s.soundVolume <= 1) patch.soundVolume = s.soundVolume;
       if (PROVIDERS.includes(s.provider)) patch.provider = s.provider;
@@ -1201,7 +1213,7 @@ function registerIpc() {
   let lastChess = null; // { board, white } of the last game, for the Rematch button
   ipcMain.on('chess:stop', () => { chessStopFlag = true; if (actions) actions.endGame(); send('status', { text: '' }); });
   // ---- hands-free chess: one game by Pip's own engine; Pip's colour is passed in
-  const chessLv = () => (settings.chessLevel === 'sloppy' ? 'sloppy' : 'sharp') + ':' + (settings.chessStrength || 7).toFixed(2);
+  const chessLv = () => (settings.chessLevel === 'sloppy' ? 'sloppy' : 'sharp') + ':' + (settings.chessStrength || 7).toFixed(2) + (settings.chessBlunders >= 0 ? ':b' + Number(settings.chessBlunders).toFixed(2) : '') + (settings.chessBrilliants >= 0 ? ':f' + Number(settings.chessBrilliants).toFixed(2) : '');
   async function playOne(board, pipColor, level, hello) {
     let final = '';
     await (await actions.prepare('start_game', { game: 'chess', max_steps: 150 })).run();

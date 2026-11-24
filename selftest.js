@@ -1410,6 +1410,82 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     assert.ok(chess.bestMoveState(chess.startState(), { ms: 200, moves: [] }).book);
   });
 
+  await t('chess engine: rushed moves slip more than long thinks, and a slow opponent gets Pip bored', async () => {
+    const chess = require('./chess.js');
+    const st = chess.parseFen('r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P1B2/2PBPN2/PP1N1PPP/R2QK2R w KQ - 0 9');
+    const slips = (haste) => { let n = 0; for (let i = 0; i < 50; i++) if (chess.bestMoveState(st, { ms: 100, level: 'sloppy:5', haste, queen: true }).blunder) n++; return n; };
+    const slow = slips(-1), fast = slips(1);
+    assert.ok(fast > slow + 8, `rushed slips ${fast} should clearly exceed long-think slips ${slow}`);
+    // the record against the user is kept across restarts
+    const f = path.join(tmp, 'rec.json'); const S = require('./store.js');
+    let store = S.createStore(f);
+    assert.strictEqual(store.promptText().includes('chess record'), false);
+    store.recordChess('user'); store.recordChess('user'); store.recordChess('pip'); store.recordChess('bogus');
+    store = S.createStore(f);
+    assert.deepStrictEqual(store.chessRecord(), { user: 2, pip: 1, draws: 0, last: 'pip', run: 1 });
+    assert.match(store.promptText(), /they have won 2, you have won 1/);
+    // Pip (white) plays, the fake opponent takes a long time, then moves: Pip says a bored line, glances around, and recaps nothing early
+    const world = { pieces: new Map(), hl: new Set(), sel: null };
+    chess.startState().board.forEach((p, i) => { if (p) world.pieces.set(i, p); });
+    const REG = { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, SCR = { x: 0, y: 0, width: 1000, height: 1000 };
+    const render = () => {
+      const bm = Buffer.alloc(128 * 128 * 4);
+      for (let sq = 0; sq < 64; sq++) {
+        const r = sq >> 3, c = sq & 7, p = world.pieces.get(sq), dark = (r + c) % 2; let col = dark ? [90, 120, 60] : [220, 225, 200];
+        if (world.hl.has(sq)) col = [col[0] * 0.5, col[1] * 0.9, col[2] + 20];
+        for (let y = r * 16; y < r * 16 + 16; y++) for (let x = c * 16; x < c * 16 + 16; x++) {
+          let v = col; if (p && x >= c * 16 + 4 && x < c * 16 + 12 && y >= r * 16 + 3 && y < r * 16 + 13) v = p === p.toUpperCase() ? [250, 250, 250] : [30, 30, 30];
+          const i = (y * 128 + x) * 4; bm[i] = v[0]; bm[i + 1] = v[1]; bm[i + 2] = v[2]; bm[i + 3] = 255;
+        }
+      }
+      return { bitmap: bm, width: 128, height: 128 };
+    };
+    const sqAt = (px, py) => { const c = Math.floor(((px / 1000 - REG.x) / REG.w) * 8), r = Math.floor(((py / 1000 - REG.y) / REG.h) * 8); return r * 8 + c; };
+    const glides = []; world.cursor = { x: 900, y: 950 };
+    const exec = (cmd, args, o, cb) => {
+      if (args.includes('mousemove') && !args.includes('click')) glides.push(args.slice());
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === 'mousemove') world.cursor = { x: Number(args[i + 1]), y: Number(args[i + 2]) };
+        if (args[i] !== 'click') continue;
+        const sq = sqAt(world.cursor.x, world.cursor.y), p = world.pieces.get(sq);
+        if (world.sel === null) { if (p && p === p.toUpperCase()) world.sel = sq; }
+        else if (sq !== world.sel) { world.pieces.set(sq, world.pieces.get(world.sel)); world.pieces.delete(world.sel); world.hl = new Set([world.sel, sq]); world.sel = null; }
+      }
+      cb(null, '');
+    };
+    const said = [], pets = [];
+    const P = mkActions({ platform: 'linux', execFile: exec, getFull: () => true, getScreenInfo: () => ({ bounds: SCR, workArea: SCR, scaleFactor: 1, cursor: world.cursor }), grabBoard: async () => render(),
+      boredMs: 900, fidgetAfterMs: 600, fidgetStillMs: 300, recapMs: 10, notify: (x) => said.push(x), pet: (c) => pets.push(c), store });
+    await (await P.prepare('start_game', { game: 'Chess' })).run();
+    const call = async (extra) => (await P.prepare('chess_play', { think_ms: 200, wait_ms: 8000, moves: 1, ...extra })).run();
+    const r1 = await call({ board: REG, my_color: 'white', flipped: false, new_game: true });
+    assert.match(r1, /^Played /, r1);
+    setTimeout(() => { // the opponent (black) finally answers 1...e5-ish: any legal black move
+      const st2 = chess.apply(chess.startState(), chess.legal(chess.startState()).find((m) => chess.sqName(m.from) + chess.sqName(m.to) === r1.match(/Played ([a-h][1-8]) to ([a-h][1-8])/).slice(1, 3).join('')));
+      const m = chess.legal(st2)[0];
+      world.pieces.set(m.to, world.pieces.get(m.from)); world.pieces.delete(m.from); world.hl = new Set([m.from, m.to]);
+    }, 7000);
+    await call({});
+    assert.ok(said.some((x) => /sitting here|yawn|No rush/.test(x)), 'Pip got bored while waiting: ' + JSON.stringify(said));
+    assert.ok(pets.some((c) => c.action === 'look' || c.action === 'fly'), 'Pip acted while waiting');
+    assert.ok(glides.length >= 2, 'Pip fidgeted with the mouse while waiting (glides without a click): ' + glides.length);
+    for (const c of pets) if (c.action === 'fly') assert.ok(c.x < REG.x || c.x > REG.x + REG.w, 'he never perches on the board');
+  });
+  await t('chess: per-round blunder and brilliant targets travel in the level string, slips are overlooks, never in the opening', async () => {
+    const chess = require('./chess.js');
+    assert.deepStrictEqual(chess.levelTargets('sharp:7.00:b2.50:f1.00'), { b: 2.5, f: 1 });
+    assert.deepStrictEqual(chess.levelTargets('sharp:7.00'), {});
+    assert.deepStrictEqual(chess.levelTargets('sharp:7:bx:f-1'), {});
+    const st = chess.parseFen('r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P1B2/2PBPN2/PP1N1PPP/R2QK2R w KQ - 0 9');
+    const count = (o) => { let n = 0, ov = 0; for (let i = 0; i < 40; i++) { const r = chess.bestMoveState(st, { ms: 100, level: 'sharp:7', queen: true, ...o }); if (r.blunder) { n++; if (r.overlook) ov++; } } return { n, ov }; };
+    assert.strictEqual(count({ blunderRate: 0 }).n, 0, 'a zero target means no blunders');
+    assert.strictEqual(count({ blunderRate: 1, noSlip: true }).n, 0, 'no slips in the opening');
+    const hi = count({ blunderRate: 0.5 });
+    assert.ok(hi.n >= 8, 'a high target blunders often: ' + hi.n);
+    const threatened = chess.parseFen('r1bqk2r/ppp2ppp/2n2n2/3pp3/1b2P3/2NP1N2/PPP2PPP/R1BQKB1R w KQkq - 0 6'); // the knight on c3 is attacked
+    let ov = 0; for (let i = 0; i < 50; i++) { const r = chess.bestMoveState(threatened, { ms: 100, level: 'sharp:7', queen: true, blunderRate: 0.6 }); if (r.overlook) { ov++; assert.match(r.note, /overlooked|missed that/); } }
+    assert.ok(ov >= 1, 'slips include overlooked threats when a piece is attacked: ' + ov);
+  });
   await t('games window logic: tic-tac-toe is unbeatable, Pip beats a random connect four player, checkers rules force captures and crown kings, chess levels play legal moves', async () => {
     const L = require('./minigames.js'), chess = require('./chess.js');
     let lost = 0;

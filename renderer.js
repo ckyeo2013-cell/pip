@@ -4,7 +4,7 @@
  */
 (() => {
   'use strict';
-  const chessLv = () => (settings.chessLevel === 'sloppy' ? 'sloppy' : 'sharp') + ':' + (Number(settings.chessStrength) || 7).toFixed(2);
+  const chessLv = () => (settings.chessLevel === 'sloppy' ? 'sloppy' : 'sharp') + ':' + (Number(settings.chessStrength) || 7).toFixed(2) + (settings.chessBlunders >= 0 ? ':b' + Number(settings.chessBlunders).toFixed(2) : '') + (settings.chessBrilliants >= 0 ? ':f' + Number(settings.chessBrilliants).toFixed(2) : '');
   const Model = globalThis.GliderModel;
   const pip = window.pip;
 
@@ -794,6 +794,12 @@
   // Commands from the chat (the pet_do tool): hop, dance, cheer, go/fly somewhere, land, stay, roam.
   function petCommand(c) {
     if (!c || typeof c !== 'object' || st.dragging) return;
+    // glance: look at a spot on the screen (fractions) for a moment instead of at the cursor; never interrupts what he is doing
+    if (c.action === 'look') {
+      const lx = Number(c.x), ly = Number(c.y);
+      if (Number.isFinite(lx) && Number.isFinite(ly)) st.gaze = { x: clamp(lx, 0, 1) * area.w, y: clamp(ly, 0, 1) * area.h, until: performance.now() + clamp(Number(c.ms) || 1200, 200, 6000) };
+      return;
+    }
     // already flying: do the new move once Pip has landed
     if (st.away && c.action !== 'sad' && !(c.action === 'feel' && c.emotion === 'sad')) { comeBack(); if (c.action === 'return') return; if (['hop', 'dance', 'cheer', 'feel'].includes(c.action)) setTimeout(() => petCommand(c), 1700); return; }
     if (c.action === 'feel') { setEmotion(c.emotion); return; }
@@ -901,8 +907,9 @@
 
     // look at the cursor anywhere on the desktop
     const cx = st.x + SIZE / 2, cy = st.y + st.hopY + SIZE * 0.4;
-    const tYaw = clamp((mouse.x - cx) / 400, -1, 1) * 0.75;
-    const tPitch = clamp((cy - mouse.y) / 400, -1, 1) * 0.4;
+    const gz = st.gaze && now < st.gaze.until ? st.gaze : null; // a glance at the chessboard wins over the cursor for a moment
+    const tYaw = clamp(((gz ? gz.x : mouse.x) - cx) / 400, -1, 1) * 0.75;
+    const tPitch = clamp((cy - (gz ? gz.y : mouse.y)) / 400, -1, 1) * 0.4;
     const K = (r) => 1 - Math.exp(-dt * r); // frame-rate independent easing
     st.lookYaw += (tYaw - st.lookYaw) * K(7.6);
     st.lookPitch += (tPitch - st.lookPitch) * K(7.6);
@@ -1651,6 +1658,15 @@
       case 'screenchess': screenChess(); break;
       case 'rematch': (async () => { closeChatForGame(); const r = await pip.chessScreen({ rematch: true, level: chessLv() }); if (r && r.message) showBubble(r.message, 8000); })(); break;
       case 'chessauto': (async () => { closeChatForGame(); const r = await pip.chessAuto({ level: chessLv() }); if (r && r.message) showBubble(r.message, 9000); })(); break;
+      case 'noblunders': { // one tap: Pip stops blundering (also mid-game); tap again to give the old setting back
+        const off = settings.chessBlunders === 0, was = Number(settings.chessBlundersWas);
+        (async () => {
+          const saved = await pip.saveSettings({ chessBlunders: off ? (was >= 0 ? was : -1) : 0, chessBlundersWas: off ? -1 : (Number.isFinite(Number(settings.chessBlunders)) ? Number(settings.chessBlunders) : -1) });
+          Object.assign(settings, saved); syncNoBl();
+          showBubble(settings.chessBlunders === 0 ? 'No more blunders. I will play my best from here.' : 'Okay, I can slip again.', 3500);
+        })();
+        break;
+      }
       case 'chessresign': (async () => { const r = await pip.chessResign(); if (r && r.message) showBubble(r.message, 5000); })(); break;
       case 'chessteach': (async () => {
         closeChatForGame();
@@ -1760,7 +1776,7 @@
     $('s-voicetts').value = settings.voiceTts || 'natural';
     $('s-voicestyle').value = settings.voiceStyle || 'cheerful';
     $('s-autoupd').checked = settings.autoUpdate !== false;
-    $('s-chessconfirm').checked = !!settings.chessConfirm;
+    $('s-chessconfirm').checked = !!settings.chessConfirm; $('s-chessfidget').checked = settings.chessFidget !== false;
     $('s-actionlog').checked = settings.actionLog !== false;
     $('s-gmodel').value = settings.geminiModel || 'gemini-2.5-flash';
     showProvider();
@@ -1781,6 +1797,10 @@
     $('s-memory').checked = settings.moodMemory !== false;
     $('s-apppersona').checked = settings.appPersona !== false;
     $('s-level').value = settings.chessLevel === 'sloppy' ? 'sloppy' : 'sharp'; $('s-strength').value = settings.chessStrength || 7;
+    { const bl = Number(settings.chessBlunders), br = Number(settings.chessBrilliants);
+      $('s-blauto').checked = !(bl >= 0); $('s-blunders').value = bl >= 0 ? bl : 2; $('s-blunders').disabled = !(bl >= 0);
+      $('s-bralto').checked = !(br >= 0); $('s-brill').value = br >= 0 ? br : 1; $('s-brill').disabled = !(br >= 0);
+      $('s-blunders-v').textContent = $('s-blauto').checked ? 'auto' : $('s-blunders').value; $('s-brill-v').textContent = $('s-bralto').checked ? 'auto' : $('s-brill').value; }
     $('s-clock').value = settings.chessClock || '';
     $('s-shape').checked = settings.shapeWindow !== false;
     $('s-login').checked = !!settings.openAtLogin;
@@ -1885,6 +1905,8 @@
   $('s-debug').addEventListener('click', async () => {
     try { const r = await pip.debugCopy(); $('s-status').textContent = `Copied ${r.lines} log lines. Paste them in your bug report.`; } catch (_) { $('s-status').textContent = 'Could not copy the log.'; }
   });
+  const syncNoBl = () => { const b = document.querySelector('[data-c="noblunders"]'); if (b) b.textContent = settings.chessBlunders === 0 ? 'Chess: blunders are OFF (tap to allow)' : 'Chess: no blunders'; };
+  syncNoBl();
   async function saveNow() {
     const saved = await pip.saveSettings({
       apiKey: $('s-key').value,
@@ -1896,6 +1918,7 @@
       voiceStyle: $('s-voicestyle').value,
       autoUpdate: $('s-autoupd').checked,
       chessConfirm: $('s-chessconfirm').checked,
+      chessFidget: $('s-chessfidget').checked,
       actionLog: $('s-actionlog').checked,
       geminiModel: $('s-gmodel').value,
       groqKey: $('s-grkey').value,
@@ -1921,6 +1944,8 @@
       appPersona: $('s-apppersona').checked,
       chessLevel: $('s-level').value,
       chessStrength: Number($('s-strength').value),
+      chessBlunders: $('s-blauto').checked ? -1 : Number($('s-blunders').value),
+      chessBrilliants: $('s-bralto').checked ? -1 : Number($('s-brill').value),
       chessClock: $('s-clock').value,
       shapeWindow: $('s-shape').checked,
       openAtLogin: $('s-login').checked,
@@ -1936,7 +1961,7 @@
       macCalendar: $('s-maccal').checked,
     });
     Object.assign(settings, saved);
-    applySettings();
+    applySettings(); syncNoBl();
     for (const [id, f, ph] of [['s-key', 'hasAnthropicKey', 'sk-ant-...'], ['s-gkey', 'hasGeminiKey', 'AIza...'], ['s-grkey', 'hasGroqKey', 'gsk_...'], ['s-cfkey', 'hasCloudflareKey', 'API token']]) if ($(id).value) { $(id).value = ''; $(id).placeholder = settings[f] ? 'Key saved (type to replace)' : ph; }
     $('s-status').textContent = 'Saved';
     clearTimeout(saveNow.t2); saveNow.t2 = setTimeout(() => { $('s-status').textContent = ''; }, 1200);
@@ -1986,7 +2011,7 @@
     }
   });
   pip.onGame((g) => { st.gameOn = !!g.on; if (g.on) showBubble('Playing. Click me to stop the game.', 4000); });
-  pip.onSettings((s) => { Object.assign(settings, s); applySettings(); });
+  pip.onSettings((s) => { Object.assign(settings, s); applySettings(); syncNoBl(); });
   pip.onOpenChat(() => { if (!st.chatOpen) openChat(); else pip.focus(); });
   pip.onChatNote(({ text }) => { if (!st.chatOpen) openChat(); addMsg('pet', text); });
   pip.onClipHelper(async () => { // tray item or Ctrl/Cmd+Alt+C: one tap to do something useful with what you just copied
@@ -2076,6 +2101,10 @@
   }
   $('s-skin').addEventListener('change', () => { settings.skin = $('s-skin').value; startDance('twirl'); });
   $('s-palette').addEventListener('change', () => { settings.palette = $('s-palette').value; });
+  for (const [auto, sl, val] of [['s-blauto', 's-blunders', 's-blunders-v'], ['s-bralto', 's-brill', 's-brill-v']]) { // sliders with an "auto" tick box
+    const sync = () => { $(sl).disabled = $(auto).checked; $(val).textContent = $(auto).checked ? 'auto' : $(sl).value; };
+    $(auto).addEventListener('change', sync); $(sl).addEventListener('input', sync);
+  }
   $('s-trymove').addEventListener('click', () => { const v = $('s-move').value; if (v === 'karate chop' || v === 'kick' || v === 'bow' || v === 'flex') improvise(v); else startDance(v); });
   const openGames = (which) => { PipGames.setLevel(chessLv()); PipGames.open(which); };
 

@@ -40,6 +40,7 @@
       <button data-c="rematch">Chess rematch</button>
       <button data-c="chessauto">Chess: play on its own</button>
       <button data-c="chessteach">Chess: teach buttons</button>
+      <button data-c="noblunders">Chess: no blunders</button>
       <button data-c="chessresign">Chess: resign</button>
       <button data-c="stopgame">Stop the game</button>
       <button data-c="cheer">Cheer me up</button>
@@ -267,6 +268,7 @@
       </div>
       <div class="sec" id="sec-chess">
       <label class="check"><input id="s-chessconfirm" type="checkbox"> Ask me before every chess move (off: Pip plays by himself once the game starts)</label>
+      <label class="check"><input id="s-chessfidget" type="checkbox"> Pip fidgets with the mouse while I think (hovers over pieces, never clicks, backs off if I grab the mouse)</label>
       <label for="s-clock">Chess clock (so Pip speeds up when low on time)</label>
       <select id="s-clock"><option value="">Untimed</option><option value="1">1 min (bullet)</option><option value="1+1">1+1</option><option value="3">3 min (blitz)</option><option value="3+2">3+2</option><option value="5">5 min</option><option value="10">10 min (rapid)</option><option value="15+10">15+10</option></select>
       <label for="s-level">Chess style</label>
@@ -276,6 +278,11 @@
       </select>
       <label for="s-strength">Chess strength</label>
       <div style="display:flex;gap:8px;align-items:center"><span class="hint">Weaker</span><input id="s-strength" type="range" min="1" max="10" step="0.05" value="7" style="flex:1"><span class="hint">Stronger</span></div>
+      <label for="s-blunders">Blunders per game (average)</label>
+      <div style="display:flex;gap:8px;align-items:center"><input id="s-blunders" type="range" min="0" max="8" step="0.5" value="2" style="flex:1"><span class="hint" id="s-blunders-v" style="min-width:34px;text-align:right">auto</span><label class="hint" style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="s-blauto" checked> auto</label></div>
+      <label for="s-brill">Brilliant moves per game (average)</label>
+      <div style="display:flex;gap:8px;align-items:center"><input id="s-brill" type="range" min="0" max="5" step="0.5" value="1" style="flex:1"><span class="hint" id="s-brill-v" style="min-width:34px;text-align:right">auto</span><label class="hint" style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="s-bralto" checked> auto</label></div>
+      <div class="hint">Blunders are overlooks (a piece left hanging, a threat missed), never in the opening. A brilliant needs a real sacrifice to exist, so the number is "up to".</div>
       </div>
       <div class="sec" id="sec-general">
       <label class="check"><input id="s-autoupd" type="checkbox"> Update Pip automatically when a new version is released on GitHub</label>

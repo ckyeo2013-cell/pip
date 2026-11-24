@@ -688,6 +688,12 @@ const MODES = {
   sharp: { depth: [3, 8], sdepth: [2, 3], temp: [40, 12], blunder: [0.07, 0.015], maxLoss: [380, 300], flair: [0.35, 0.6], deepD: [7, 10] },
   sloppy: { depth: [2, 5], sdepth: [1, 2], temp: [120, 50], blunder: [0.4, 0.14], maxLoss: [900, 550], flair: [0.02, 0.06], deepD: [4, 6] },
 };
+// A level string may carry per-round targets after the strength: "sharp:7:b2.5:f1" = on average 2.5 blunders and 1 brilliant move per game.
+function levelTargets(level) {
+  const out = {};
+  for (const part of String(level).split(':').slice(2)) { const k = part[0], v = Number(part.slice(1)); if ((k === 'b' || k === 'f') && Number.isFinite(v) && v >= 0) out[k] = Math.min(12, v); }
+  return out;
+}
 function skillFor(level) {
   const [m, n] = String(level).split(':'), M = MODES[m];
   if (!M) return null;
@@ -697,26 +703,33 @@ function skillFor(level) {
 }
 const PNAME = ['', 'pawn', 'knight', 'bishop', 'rook', 'queen', 'king'];
 // After a move, find the reply that punishes it and describe it in words, so every blunder has a reason ("missed that the bishop takes the rook on a8")
-function whyBad(m) {
+function whyBad(m) { return whyBadInfo(m).text; }
+function whyBadInfo(m) {
   make(m);
   const n = gen(1, false), save = MB[1].slice(0, n);
-  let wv = INF, text = 'missed the reply';
+  let wv = INF, text = 'missed the reply', cap = false, cto = -1, cvic = 0;
   for (let i = 0; i < n; i++) {
     const r = save[i], from = r & 63, to = (r >> 6) & 63, fl = r >> 16, att = bd[from] & 7, vic = (fl & 2) ? 1 : bd[to] & 7;
     make(r);
     if (attackedBy(ksq[side ^ 1], side)) { unmake(); continue; }
     const v = negamax(1, -INF, INF, 2, true);
     unmake();
-    if (v < wv) { wv = v; text = (fl & 1) ? 'missed that the ' + PNAME[att] + ' takes the ' + PNAME[vic] + ' on ' + sqName(to) : 'missed ' + PNAME[att] + ' to ' + sqName(to); }
+    if (v < wv) { wv = v; cap = !!(fl & 1); cto = to; cvic = vic; text = (fl & 1) ? 'missed that the ' + PNAME[att] + ' takes the ' + PNAME[vic] + ' on ' + sqName(to) : 'missed ' + PNAME[att] + ' to ' + sqName(to); }
   }
   unmake();
-  return text;
+  return { text, cap, to: cto, vic: cvic };
 }
 // Style players: score every move at a shallow and at a real depth, then
 //  - BLUNDER: with a chance (higher in busy positions and when behind) choose a move that looks fine at his shallow horizon but is really worse, never a random one
 //  - BRILLIANT: a sacrifice that looks bad shallowly but holds up at a deeper depth, played with probability `flair` when the game is still balanced
-function runStyle(st, level, ms, hist) {
-  const L = skillFor(level);
+// haste (-1 .. 1): how rushed this move is. A snap decision (+1) looks less deep, slips about twice as often and plays fewer sacrifices;
+// a long think (-1) slips about half as often and finds more of them. 0 = the level's normal strength.
+function runStyle(st, level, ms, hist, x0) {
+  const L = skillFor(level), X = x0 || {};
+  const h = Math.max(-1, Math.min(1, Number(X.haste) || 0));
+  if (Number.isFinite(X.flairRate)) L.flair = Math.max(0, Math.min(1, X.flairRate)); // a per-round target for brilliant moves, already turned into a chance for this move
+  const hm = h > 0 ? 1 + 1.2 * h : 1 + 0.55 * h; // multiplier on the chance of a slip: 0.45 .. 2.2
+  L.flair = Math.min(0.9, L.flair * (1 - 0.55 * h));
   const full = runSearch(st, { ms: Math.max(80, Math.min(ms, 400)), maxDepth: 2, hist });
   if (full.none || full.forced) return full;
   const roots = legalRoot();
@@ -756,17 +769,51 @@ function runStyle(st, level, ms, hist) {
   let mat = 0;
   for (const p of st.board) if (p) mat += (isWhite(p) === st.white ? 1 : -1) * VAL[p.toLowerCase()];
   const tilt = mat < -300 ? 1.6 : mat < -100 ? 1.25 : 1, busy = roots.length > 35 ? 1.3 : roots.length < 20 ? 0.8 : 1;
-  if (Math.random() < Math.min(0.6, L.blunder * tilt * busy)) {
-    const bad = sc.filter((x) => x.v < best.v - 120 && x.v >= best.v - L.maxLoss && x.v > -MATE + 200 && x.s >= sBest - 60)
-      .sort((a, b) => (b.s + Math.random() * 30) - (a.s + Math.random() * 30));
-    if (bad.length) { deadline = Date.now() + 500; stopped = false; return out(bad[0], { kind: 'blunder', note: whyBad(bad[0].m) }); }
+  const finish = () => { // a normal move: the best, or a near-best one picked softly
+    const w = sc.filter((x) => x.v > best.v - 4 * L.temp).map((x) => ({ x, w: Math.exp((x.v - best.v) / L.temp) }));
+    let r = Math.random() * w.reduce((a, b) => a + b.w, 0), pk = best;
+    for (const e of w) { r -= e.w; if (r <= 0) { pk = e.x; break; } }
+    return out(pk);
+  };
+  // Slips happen where a person would make them, never at random: not while in check or with hardly any choice, not in the book opening, and
+  // mostly as an overlook: a piece left en prise, a threat not answered, a capture not seen. Those get picked over vague positional drifts.
+  const inChk = attackedBy(ksq[side], side ^ 1);
+  const slipOk = !X.noSlip && !inChk && roots.length >= 6;
+  const target = Number.isFinite(X.blunderRate);
+  const quiet = Math.abs(best.v) < 150 && sc.filter((x) => x.v > best.v - 60).length >= 4;
+  const lapse = quiet && !target ? Math.min(0.06, L.blunder * 0.3) : 0;
+  const baseB = target ? X.blunderRate : L.blunder;
+  const tension = roots.filter((r) => (r >> 16) & 1).length >= 3 ? 1.25 : 1; // pieces in contact: easier to overlook something
+  if (slipOk && Math.random() < Math.min(0.6, (baseB * tilt * busy * tension + lapse) * hm)) {
+    const threat = new Set(); // my pieces that were already attacked before this move
+    for (let q = 0; q < 64; q++) { const pc = bd[q]; if (pc && (pc >> 3) === side && (pc & 7) >= 2 && (pc & 7) < 6 && attackedBy(q, side ^ 1)) threat.add(q); }
+    const window = (x) => x.v < best.v - 120 && x.v >= best.v - L.maxLoss && x.v > -MATE + 200;
+    const pool = sc.filter((x) => window(x) && x.s >= sBest - 60)
+      .sort((a, b) => (b.s + Math.random() * 30) - (a.s + Math.random() * 30)).slice(0, 6);
+    // the plain overlook: a piece that was already attacked is just left there (he did not notice the threat); only when something is attacked
+    if (threat.size) for (const x of sc.filter(window).sort((a, b) => b.v - a.v).slice(0, 12)) if (!pool.includes(x) && !threat.has(x.m & 63)) pool.push(x);
+    if (pool.length) {
+      deadline = Date.now() + 500; stopped = false;
+      const cands = pool.map((x) => {
+        const info = whyBadInfo(x.m), from = x.m & 63, mover = (bd[from] & 7);
+        const stillThreat = info.cap && threat.has(info.to) && info.to !== ((x.m >> 6) & 63) && from !== info.to; // the piece that was attacked is simply left there
+        const hung = info.cap && info.to === ((x.m >> 6) & 63) && mover >= 2; // moved a piece onto a square where it is taken
+        const seenAtHorizon = x.s >= sBest - 60; // otherwise it is only a believable slip if it is an unanswered threat
+        let wt = info.cap ? 3 : 0.4;
+        if (stillThreat) wt *= 2.2; else if (hung) wt *= 1.5;
+        if (!seenAtHorizon && !stillThreat) wt = 0;
+        const note = stillThreat ? 'overlooked that the ' + PNAME[info.vic] + ' on ' + sqName(info.to) + ' was under attack' : hung ? 'overlooked that the ' + PNAME[mover] + ' can be taken on ' + sqName(info.to) : info.text;
+        return { x, wt, note, overlook: info.cap };
+      });
+      if (!cands.some((c) => c.wt > 0)) return finish();
+      let r2 = Math.random() * cands.reduce((a, b) => a + b.wt, 0), ch = cands[0];
+      for (const c of cands) { r2 -= c.wt; if (r2 <= 0) { ch = c; break; } }
+      return out(ch.x, { kind: 'blunder', note: ch.note, overlook: ch.overlook });
+    }
   }
-  const w = sc.filter((x) => x.v > best.v - 4 * L.temp).map((x) => ({ x, w: Math.exp((x.v - best.v) / L.temp) }));
-  let r = Math.random() * w.reduce((a, b) => a + b.w, 0), pk = best;
-  for (const e of w) { r -= e.w; if (r <= 0) { pk = e.x; break; } }
-  return out(pk);
+  return finish();
 }
-function runSkill(st, level, ms, hist) { return runStyle(st, level, ms, hist); }
+function runSkill(st, level, ms, hist, x) { return runStyle(st, level, ms, hist, x); }
 function perftFast(fen, depth) {
   setPosition(parseFen(fen)); G = 0; HL[0] = hLo; HH[0] = hHi; qOnly = false;
   const go = (d, ply) => {
@@ -827,12 +874,13 @@ function status(st) { return legal(st).length ? null : (inCheck(st) ? 'checkmate
 
 function bestMove(fen, opts) { return bestMoveState(parseFen(fen), opts); }
 // opts: ms (thinking time), maxDepth, queen (only ever promote to a queen), hist (earlier states of this game, for repetitions),
+//       haste (-1 long think .. 1 snap decision: rushed moves slip more, long thinks slip less; only used by the styled levels),
 //       moves (UCI list since the standard start position, enables the opening book)
-function bestMoveState(st, { ms = 1500, maxDepth = 64, queen = false, hist = null, moves = null, level = 'max' } = {}) {
+function bestMoveState(st, { ms = 1500, maxDepth = 64, queen = false, hist = null, moves = null, level = 'max', haste = 0, blunderRate, flairRate, noSlip = false } = {}) {
   queenOnly = qOnly = !!queen;
-  try { return bestMoveInner(st, { ms, maxDepth, hist, moves, level }); } finally { queenOnly = qOnly = false; }
+  try { return bestMoveInner(st, { ms, maxDepth, hist, moves, level, x: { haste, blunderRate, flairRate, noSlip } }); } finally { queenOnly = qOnly = false; }
 }
-function bestMoveInner(st, { ms, maxDepth, hist, moves, level }) {
+function bestMoveInner(st, { ms, maxDepth, hist, moves, level, x }) {
   // the side that is NOT to move must not be in check (a misread board)
   if (attacked(st.board, kingSq(st.board, !st.white), st.white)) throw new Error('That position is not legal: the side that just moved is still in check. The board was probably misread.');
   const info = (m, extra) => {
@@ -843,18 +891,18 @@ function bestMoveInner(st, { ms, maxDepth, hist, moves, level }) {
     const bm = bookMove(moves, st);
     if (bm) return info(bm, { depth: 0, evalPawns: null, mateIn: null, book: true });
   }
-  const r = skillFor(level) ? runSkill(st, level, ms, hist) : runSearch(st, { ms: Math.max(100, Math.min(20000, ms)), maxDepth: Math.min(MAXD - 10, maxDepth), hist });
+  const r = skillFor(level) ? runSkill(st, level, ms, hist, x) : runSearch(st, { ms: Math.max(100, Math.min(20000, ms)), maxDepth: Math.min(MAXD - 10, maxDepth), hist });
   if (r.none) return { over: true, status: r.check ? 'checkmate' : 'stalemate', side: st.white ? 'white' : 'black' };
   const m = moveToObj(r.move);
   // hand back the same move object the move generator would (so callers compare apples with apples)
   const lm = legal(st).find((x) => x.from === m.from && x.to === m.to && (x.promo || null) === (m.promo || null));
   if (!lm) throw new Error('internal: the engine produced a move the rules do not allow');
   const mate = Math.abs(r.score) > MATE - 100;
-  return info(lm, { depth: r.depth, nodes: r.nodes, evalPawns: mate ? null : Math.round(r.score) / 100, mateIn: mate ? Math.ceil((MATE - Math.abs(r.score)) / 2) * (r.score > 0 ? 1 : -1) : null, note: r.note || null, blunder: r.kind === 'blunder', brilliant: r.kind === 'brilliant' });
+  return info(lm, { depth: r.depth, nodes: r.nodes, evalPawns: mate ? null : Math.round(r.score) / 100, mateIn: mate ? Math.ceil((MATE - Math.abs(r.score)) / 2) * (r.score > 0 ? 1 : -1) : null, note: r.note || null, blunder: r.kind === 'blunder', brilliant: r.kind === 'brilliant', overlook: !!r.overlook });
 }
 
 function perft(fen, depth) { return perftFast(fen, depth); }
 const key = (st) => st.board.map((p) => p || '.').join('') + (st.white ? 'w' : 'b') + (st.K ? 'K' : '') + (st.Q ? 'Q' : '') + (st.k ? 'k' : '') + (st.q ? 'q' : '') + st.ep;
 
-const api = { bestMove, bestMoveState, perft, parseFen, legal, apply, status, startState, sqName, sqIndex, START_FEN, key, inCheck, LEVELS: ['sharp', 'sloppy'] };
+const api = { levelTargets, bestMove, bestMoveState, perft, parseFen, legal, apply, status, startState, sqName, sqIndex, START_FEN, key, inCheck, LEVELS: ['sharp', 'sloppy'] };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else globalThis.PipChess = api;

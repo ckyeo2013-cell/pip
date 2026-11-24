@@ -1,20 +1,43 @@
 name: Build installers
 
+# Every push to main/master automatically bumps the patch version (1.5.2 -> 1.5.3),
+# builds the installers and publishes them, so installed copies update by themselves.
 on:
   push:
-    tags: ["v*"]
+    branches: [main, master]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  bump:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.push.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: push
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          npm version patch --no-git-tag-version
+          V=$(node -p "require('./package.json').version")
+          git commit -am "Release v$V [skip ci]"
+          git push
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: bump
     strategy:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
