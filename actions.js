@@ -90,6 +90,11 @@ function occupancy(snap) {
   }
   return out;
 }
+// How many squares differ clearly between two snapshots. A move (castling and en passant included, plus the last-move highlights
+// going and coming) never changes more than about seven squares, so a lot more than that means something is drawn over the board:
+// a "game over" pop-up (the opponent resigned, a flag fell, a draw was agreed) or a menu.
+const COVER_CELLS = 10;
+function coverCount(a, b, thr) { return cellDiffs(a, b).filter((v) => v > thr).length; }
 // ---- local piece recognition (no AI): learn what each piece looks like from positions we know for sure (the start position, or a
 // position the AI read and the board confirmed), then recognise pieces on a board we have not seen before, even mid-game.
 // A piece is described by its shape (which pixels differ from the square's own background colour) and its brightness.
@@ -322,6 +327,8 @@ function createActions({
   pipPid = process.pid,   // Pip's own window is never read or pressed
   boredMs = 40000,        // chess: how long the opponent may think before Pip gets bored and says so
   recapMs = 4800,         // chess: how long after the last move Pip gives his short recap
+  freezeMs = 20000,       // chess: clocks that were ticking and then all stand still this long during the opponent's turn mean the game has ended
+  getChessButtons = () => ({}), // buttons the user taught Pip: { resign: {x, y}, confirm, draw, drawConfirm, playAgain, newGame } (fractions of the screen)
   flightMs = 1700,        // how long to wait for Pip to land before acting
   stageMs = 1700,         // how long Pip acts out a job (flies to the browser's top bar, the taskbar...) before doing it
   fetchFn = typeof fetch === 'function' ? fetch : null,
@@ -1010,7 +1017,20 @@ function createActions({
             g.occChecked = true;
             const occ = occupancy(g.snap);
             if (g.fromStart) {
-              let bad = 0; for (let i = 0; i < 64; i++) if (occ[i] !== (i < 16 || i >= 48)) bad++;
+              const badAt = (o) => { let n = 0; for (let i = 0; i < 64; i++) if (o[i] !== (i < 16 || i >= 48)) n++; return n; };
+              let bad = badAt(occ);
+              if (bad > 6 && firstCall && input && input.new_game) {
+                // A rematch / new game was just asked for: the site needs a few seconds to clear the old pop-up and set the pieces up again.
+                // Wait for the starting position instead of mistaking the old finished game for one in progress.
+                status('Chess: waiting for the new game to start');
+                const startBy = Date.now() + clamp(input.start_wait_ms, 0, 60000, 15000);
+                while (bad > 6 && Date.now() < startBy && gameOn) {
+                  await sleep(700);
+                  g.snap = await grab(); bad = badAt(occupancy(g.snap));
+                }
+                if (bad <= 6) { await sleep(400); g.snap = await grab(); bad = badAt(occupancy(g.snap)); } // let the pieces stop sliding in
+                if (!gameOn) return 'The game was stopped.';
+              }
               if (bad > 6) {
                 let rec = recognizeBoard(g.snap, getLib(), g.flipped);
                 if (!rec) { try { rec = bootstrapBoard(await grabBoard(g.region, 384), g.flipped); } catch (_) {} } // no learned pieces: read the shapes from a sharper picture
@@ -1018,7 +1038,7 @@ function createActions({
                 let ok = false;
                 if (fen2) { try { const st2 = chess.parseFen(fen2); chess.bestMoveState(st2, { ms: 30 }); g.st = st2; g.hist = [st2]; g.fromStart = false; g.flipped = rec.flipped; ok = true; if (rec.boot && rec.sure && learnPieces(getLib(), g.snap, rec.sure)) saveLib(); status('Chess: joined a game in progress, read the pieces myself'); } catch (_) { ok = false; } }
                 if (!ok) { chessGame = null; throw new Error(`FEN needed: the board is not at the starting position (${bad} squares differ), so this game is already in progress. Look at the screen, read every piece into a FEN (side to move included) and call chess_play again with fen, my_color and flipped.`); }
-              } else g.learnStart = occ;
+              } else g.learnStart = occupancy(g.snap);
             } else {
               const miss = (fl) => { const bad = []; for (let sq = 0; sq < 64; sq++) if (!!g.st.board[sq] !== occ[cellOf(sq, fl)]) bad.push(chess.sqName(sq)); return bad; };
               const a = miss(g.flipped), b = miss(!g.flipped), best = b.length < a.length ? b : a;
@@ -1062,6 +1082,9 @@ function createActions({
               won: [['Checkmate. Good game!', 'excited'], ['Checkmate. Tiny glider, big brain.', 'proud']],
               lost: [['Well played. You got me.', 'sad'], ['Fine. Rematch. Right now.', 'mad']],
               resign: [['I am lost. Good game, I resign.', 'sad']],
+              oppResigned: [['Oh, you resigned? Good game, that was fun!', 'happy'], ['You resigned! I will take the win. Good game.', 'proud']],
+              gameEnded: [['It looks like the game ended. Good game!', 'neutral']],
+              drawAgreed: [['A draw. Fair enough, good game!', 'neutral']],
               lowTime: [['Ooh, my clock is getting low. Moving fast!', 'nervous'], ['Time is running out, no more overthinking!', 'nervous']],
               draw: [['This looks like a draw to me.', 'neutral']],
               thinkHard: [['Hmm... give me a sec.', 'confused'], ['Ooh, tricky one. Let me think.', 'nervous'], ['Wait wait wait, let me look at this.', 'confused'], ['Hmmmm.', 'confused'], ['Okay okay, what are you up to?', 'nervous']],
@@ -1118,8 +1141,10 @@ function createActions({
             return rec.user > rec.pip ? `You lead ${rec.user}-${rec.pip}.` : rec.pip > rec.user ? `I lead ${rec.pip}-${rec.user}.` : `We are level at ${rec.user}-${rec.pip}.`;
           };
           // the result is known: keep the record, then a short recap of how the game felt a moment after the last remark
+          const recapLater = (fn) => { const tm1 = setTimeout(fn, recapMs); if (tm1.unref) tm1.unref(); }; // end_game clears the game right after the result, so this must not wait for it
           const wrapUp = (result) => { // 'user' (they won), 'pip' (I won) or 'draw'
             if (g.wrapped) return; g.wrapped = true;
+            if (result === 'none') { recapLater(() => { notify('Want a rematch?', 5000); emote('neutral'); }); return; } // result unknown: no record
             let rec = null; try { rec = store && store.recordChess ? store.recordChess(result) : null; } catch (_) { /* the record is a nicety */ }
             const ev2 = (g.evals || []).filter((x) => x != null), n = ev2.length, mid = ev2.slice(Math.floor(n * 0.2), Math.max(Math.floor(n * 0.2) + 3, Math.floor(n * 0.8)));
             const close = mid.length >= 3 && mid.every((x) => Math.abs(x) <= 1.5);
@@ -1129,7 +1154,39 @@ function createActions({
             else { line = close ? 'That was close for a long while.' : (g.oppSwings || 0) >= 2 ? 'You had your chances, you know.' : 'Good game, that was fun.'; feel = 'proud'; }
             const rt = recordText(rec);
             const text = `${line} ${rt} Rematch?`.replace(/\s+/g, ' ');
-            later(recapMs, () => { notify(text, 7000); emote(feel); });
+            recapLater(() => { notify(text, 7000); emote(feel); });
+          };
+          // The game has ended without a move on the board: a result pop-up covers it, or every clock stopped (the opponent resigned, a flag fell,
+          // a draw was agreed). If I had offered a draw, that is what happened. If I was clearly ahead, the likeliest reason is that they gave up:
+          // say so and count the win. Otherwise stay neutral and keep no record.
+          const gameCovered = (said0, why) => {
+            const evs = (g.evals || []).filter((x) => x != null), lastE = evs.length ? evs[evs.length - 1] : null;
+            const ahead = lastE != null && lastE >= 3 && g.moves.length >= 8;
+            const drew = !!g.drawOffered;
+            if (drew) { chat('drawAgreed', true); wrapUp('draw'); }
+            else if (ahead) { chat('oppResigned', true); wrapUp('pip'); }
+            else { chat('gameEnded', true); wrapUp('none'); }
+            const how = why === 'clocks' ? 'every clock on the screen has stopped ticking' : 'a result pop-up now covers the board';
+            const reason = drew ? 'they accepted my draw offer' : ahead ? 'the opponent resigned, I was winning' : 'the opponent resigned, or time ran out, or a draw was agreed';
+            return `${said0 || ''}Game over: ${how}, so the game has ended without another move (${reason}).${ahead && !drew ? ' I won.' : ''} Call end_game and tell the user. If they want another game: start_game, press the site's Rematch / Play again button, then chess_play with board, my_color, flipped (colours often swap) and new_game true.`;
+          };
+          // Clocks beside the board: if they were ticking during earlier waits and now everything around the board stands still while it is the
+          // opponent's turn, nobody is thinking any more. (This is how a resignation shows on sites that put the result beside the board.)
+          const ctxRegion = () => { const R = g.region, mx = R.w * 0.55, my = R.h * 0.14, x = Math.max(0, R.x - mx), y = Math.max(0, R.y - my); return { x, y, w: Math.min(1, R.x + R.w + mx) - x, h: Math.min(1, R.y + R.h + my) - y }; };
+          const watchClocks = async () => {
+            let cur; try { cur = await grabBoard(ctxRegion(), 256); } catch (_) { return false; }
+            const prev = g.ctxPrev, now = Date.now(); g.ctxPrev = cur;
+            if (!prev || !cur || prev.width !== cur.width || prev.height !== cur.height) { g.lastActive = now; return false; }
+            const W = cur.width, H = cur.height, R = g.region, C = ctxRegion();
+            const bx0 = Math.floor((R.x - C.x) / C.w * W), bx1 = Math.ceil((R.x + R.w - C.x) / C.w * W), by0 = Math.floor((R.y - C.y) / C.h * H), by1 = Math.ceil((R.y + R.h - C.y) / C.h * H);
+            let n = 0;
+            for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+              if (x >= bx0 && x < bx1 && y >= by0 && y < by1) continue; // the board itself is watched separately
+              const i = (y * W + x) * 4;
+              if (Math.abs(cur.bitmap[i] - prev.bitmap[i]) + Math.abs(cur.bitmap[i + 1] - prev.bitmap[i + 1]) + Math.abs(cur.bitmap[i + 2] - prev.bitmap[i + 2]) > 90) n++;
+            }
+            if (n > 0) { g.lastActive = now; if (n < W * H * 0.06) g.ticks = (g.ticks || 0) + 1; } // a small change is a clock; a big one is a window change, not a tick
+            return (g.ticks || 0) >= 4 && now - g.lastActive >= freezeMs && now - (g.oppWaitFrom || now) >= freezeMs;
           };
           if (!g.greeted) { // a returning opponent: remind them where the series stands
             g.greeted = true;
@@ -1199,7 +1256,7 @@ function createActions({
             };
             const take = (m, cur) => { g.lastOppTook = (g.st.board[m.to] || (m.ep ? 'p' : '') || '').toLowerCase(); seen = m; g.st = chess.apply(g.st, m); g.snap = cur; g.moves.push(uci(m)); g.hist.push(g.st); };
             { const c0 = await grab(); const pm = occMatch(c0); if (pm) take(pm, c0); } // the opponent may already have replied
-            if (!g.oppWaitFrom) { g.oppWaitFrom = g.myMoveAt || Date.now(); g.boredStage = 0; g.curMovedAt = Date.now(); g.curLast = null; g.nextFidgetAt = 0; } // (the mouse counts as just used: Pip made his move with it) // when the opponent's turn began (kept across the 90 s re-waits)
+            if (!g.oppWaitFrom) { g.oppWaitFrom = g.myMoveAt || Date.now(); g.boredStage = 0; g.curMovedAt = Date.now(); g.curLast = null; g.nextFidgetAt = 0; g.lastActive = Date.now(); g.ctxPrev = null; } // (the mouse counts as just used: Pip made his move with it) // when the opponent's turn began (kept across the 90 s re-waits)
             while (!seen && Date.now() < until && gameOn) {
               await sleep(500); // every look is a screen capture, so do not hammer the graphics card while the browser is busy
               if (!g.fidgeting && getScreenInfo) { // is the user using the mouse? (a still mouse is fair game for a fidget)
@@ -1212,12 +1269,13 @@ function createActions({
                 if (g.boredStage === 0 && idle >= boredMs) { g.boredStage = 1; chat('thinkBored', true, true); }
                 else if (g.boredStage === 1 && idle >= boredMs * 2.5) { g.boredStage = 2; chat('boredLong', true, true); }
               }
+              if (Date.now() - (g.ctxAt || 0) >= 1000) { g.ctxAt = Date.now(); if (await watchClocks()) { status(''); return gameCovered(undefined, 'clocks'); } }
               let cur = await grab();
               { // premoves: the reply can land while my own snapshot was still mid-animation, so the changed-squares test may never fire; trust the occupied squares instead
                 let pm = occMatch(cur);
                 if (pm) { cur = await settle(cur); pm = occMatch(cur); if (pm) { take(pm, cur); break; } }
               }
-              if (cellDiffs(g.snap, cur).filter((v) => v > CHESS_T).length < 2) { g.oddPolls = 0; continue; }
+              if (cellDiffs(g.snap, cur).filter((v) => v > CHESS_T).length < 2) { g.oddPolls = 0; g.coverPolls = 0; continue; }
               { // the board reset to a new game, or the board is gone: the game has ended (resigned, timed out, agreed draw...)
                 const oc = occupancy(cur); let nb = 0, cnt = 0; for (let i = 0; i < 64; i++) { if (oc[i] !== (i < 16 || i >= 48)) nb++; if (oc[i]) cnt++; }
                 if ((nb <= 2 && g.moves.length >= 6) || cnt <= 4) { if (++g.oddPolls >= 3) { status(''); return 'Game over: the board was reset or closed, so the game has ended (resigned, out of time or a draw). Call end_game and tell the user.'; } }
@@ -1226,7 +1284,10 @@ function createActions({
               cur = await settle(cur);
               const dd = cellDiffs(g.snap, cur);
               const m = matchMove(dd, g.st, g.flipped, CHESS_T) || matchMove(dd, g.st, g.flipped, 8) || occMatch(cur); // low-contrast board themes change fewer colours
-              if (m) take(m, cur);
+              if (m) { g.coverPolls = 0; take(m, cur); }
+              else if (dd.filter((v) => v > CHESS_T).length >= COVER_CELLS) { // far more changed than any move could change, and no move fits: a pop-up sits on the board
+                if (++g.coverPolls >= 3) { const r = gameCovered(); status(''); return r; }
+              } else g.coverPolls = 0;
             }
             if (!seen) return gameOn ? 'The opponent has not moved yet, or I could not tell which move they made. If the board shows a new position, use look_at_screen, write the FEN, and call chess_play again with fen to resync; otherwise call chess_play again to keep waiting.' : 'The game was stopped.';
             said = `Opponent played ${chess.sqName(seen.from)} to ${chess.sqName(seen.to)}. `;
@@ -1302,12 +1363,18 @@ function createActions({
           const lastEv = g.evals.slice(-3), longEv = g.evals.slice(-12);
           if (g.moves.length >= 30 && lastEv.length === 3 && lastEv.every((x) => x != null && x <= -8)) {
             status(''); chat('resign', true); wrapUp('user');
-            return `${said}I am hopelessly lost, so I resign (I cannot press the resign button myself: tell the user, and that they won). Call end_game.`;
+            const rb = getChessButtons() || {};
+            return rb.resign ? `${said}I am hopelessly lost, so I resign. Press the resign button with chess_press (button resign), then call end_game and tell the user they won.` : `${said}I am hopelessly lost, so I resign (I cannot press the resign button myself: tell the user, and that they won). Call end_game.`;
           }
           const reps = g.hist.filter((h) => chess.key(h) === chess.key(g.st)).length;
-          if (reps >= 3 || (g.moves.length >= 60 && longEv.length === 12 && longEv.every((x) => x != null && Math.abs(x) <= 0.15))) {
+          if (!(input && input.no_draw) && (reps >= 3 || (g.moves.length >= 60 && longEv.length === 12 && longEv.every((x) => x != null && Math.abs(x) <= 0.15)))) {
+            const why = reps >= 3 ? 'This position has now happened three times' : 'The position is dead equal', db = getChessButtons() || {};
+            if (db.draw) { // I can press the draw button: offer it, and carry on if they decline (no_draw stops me offering again)
+              g.drawOffered = true; status(''); chat('draw', true);
+              return `${said}${why}, so I would offer a draw. Press the draw button with chess_press (button draw), then call chess_play again with no_draw true: if they accept, it notices by itself (if the game is over, call end_game).`;
+            }
             status(''); chat('draw', true); wrapUp('draw');
-            return `${said}${reps >= 3 ? 'This position has now happened three times' : 'The position is dead equal'}, so I would offer a draw (I cannot press the draw button myself: tell the user). Call end_game.`;
+            return `${said}${why}, so I would offer a draw (I cannot press the draw button myself: tell the user). Call end_game.`;
           }
           const mv = chess.legal(g.st).find((m) => chess.sqName(m.from) === best.from && chess.sqName(m.to) === best.to && (m.promo || null) === best.promo);
           const spot = (sq) => { // middle of a square, as a fraction of the whole screen
@@ -1346,6 +1413,10 @@ function createActions({
             else if (T > 3000) emote('confused');
             const hp = Math.round(T - (Date.now() - thinkStart));                                        // the engine's own thinking counts toward it
             if (hp > 60) { status('Chess: ' + best.from + ' to ' + best.to + ' (about to play)'); await sleep(hp); if (!gameOn) return 'The game was stopped.'; }
+          }
+          { // the opponent may have resigned (or a flag fallen) while I was thinking: never click through a result pop-up
+            const c1 = await grab();
+            if (coverCount(g.snap, c1, CHESS_T) >= COVER_CELLS) { await sleep(700); const c2 = await grab(); if (coverCount(g.snap, c2, CHESS_T) >= COVER_CELLS && Math.max(...cellDiffs(c1, c2)) < 6) { const r = gameCovered(said); status(''); return r; } }
           }
           status(`Chess: playing ${best.from} to ${best.to}`);
           const pts = [px(mv.from), px(mv.to)];
@@ -1396,18 +1467,38 @@ function createActions({
           await sleep(350); // online sites take a moment to confirm the move
           let after = await settle(await grab());
           let d = cellDiffs(g.snap, after);
-          for (let attempt = 1; attempt <= 4 && gameOn && (d[fromCell] < CHESS_T || d[toCell] < CHESS_T); attempt++) {
-            // The move did not go through. Work out which click was lost, instead of clicking the same squares again:
-            // a second click on a piece that is still selected would just un-select it.
-            if (d[fromCell] >= CHESS_T) await runClicks(toPts, 350 + attempt * 150);   // the piece lit up (selected) but the second click was lost: click only the destination
-            else await runClicks(pts, 500 + attempt * 300);                            // the first click was lost (the window was not ready yet): do both again, slower
-            await sleep(700);
-            after = await settle(await grab());
-            d = cellDiffs(g.snap, after);
-            if (d[fromCell] >= CHESS_T && d[toCell] < CHESS_T) { await runClicks([pts[0]], 350); await sleep(150); } // still selected: click it once more to un-select, so the next try starts clean
+          const moved = () => d[fromCell] >= CHESS_T && d[toCell] >= CHESS_T;
+          const retryClicks = async (tries) => {
+            for (let attempt = 1; attempt <= tries && gameOn && !moved(); attempt++) {
+              // The move did not go through. Work out which click was lost, instead of clicking the same squares again:
+              // a second click on a piece that is still selected would just un-select it.
+              if (d[fromCell] >= CHESS_T) await runClicks(toPts, 350 + attempt * 150);   // the piece lit up (selected) but the second click was lost: click only the destination
+              else await runClicks(pts, 500 + attempt * 300);                            // the first click was lost (the window was not ready yet): do both again, slower
+              await sleep(700);
+              after = await settle(await grab());
+              d = cellDiffs(g.snap, after);
+              if (d[fromCell] >= CHESS_T && d[toCell] < CHESS_T) { await runClicks([pts[0]], 350); await sleep(150); } // still selected: click it once more to un-select, so the next try starts clean
+            }
+          };
+          await retryClicks(4);
+          // Matchmaking guard: sites show the starting position while they still look for an opponent, and ignore clicks until the game
+          // really starts. If my very first move will not register, wait for the game to begin instead of giving up.
+          if (!moved() && gameOn && g.moves.length === 0 && g.st.white === g.myWhite) {
+            const startedBy = Date.now() + clamp(input && input.start_wait_ms, 1000, 120000, 60000);
+            status('Chess: the game does not seem to have started yet, waiting');
+            while (!moved() && gameOn && Date.now() < startedBy) {
+              await sleep(Math.min(3000, Math.max(200, startedBy - Date.now())));
+              if (!gameOn) break;
+              const cc = await grab();
+              if (coverCount(g.snap, cc, CHESS_T) >= COVER_CELLS) break; // a pop-up instead: handled below
+              after = cc; d = cellDiffs(g.snap, after);
+              if (moved()) break;
+              await retryClicks(1);
+            }
           }
           if (!gameOn) return 'The game was stopped.';
-          if (d[fromCell] < CHESS_T || d[toCell] < CHESS_T) {
+          if (!moved()) {
+            if (d.filter((v) => v > CHESS_T).length >= COVER_CELLS || coverCount(g.snap, after, CHESS_T) >= COVER_CELLS) { const r = gameCovered(said); status(''); return r; } // a pop-up swallowed the clicks: the game is over
             return `${said}I clicked ${best.from} then ${best.to} (and tried once more) but the board did not change, so the move did not register. Use look_at_screen to see why (not my turn, a menu or pop-up open, a promotion choice waiting, or the board area is wrong), fix it, then call chess_play again with board and flipped. Do not click the piece yourself first: chess_play does the clicking.`;
           }
           g.lastMine = (g.st.board[mv.to] || (mv.ep ? 'p' : '') || '').toLowerCase();
@@ -1437,7 +1528,12 @@ function createActions({
             firstCall = false;
             if (/^The opponent has not moved yet/.test(r) && gameOn) { // slow opponent: keep waiting (up to 30 minutes) instead of handing back to the AI
               waited += waitMs; n--;
-              const idleCap = (g.clockBase && g.clockBase <= 5 * 60000 ? 4 : 12) * 60000; // a short game cannot have a 10 minute wait: it ended
+              if (!(input && input.hands_free) && waited >= 90000 && waited < 12 * 60000) { // not Pip's own buttons: the AI can read a result banner next to the board
+                status('');
+                out.push(`Still waiting for the opponent (${Math.round(waited / 1000)} seconds). A site may show "resigned" or a result next to the board without covering it, which I cannot see: use look_at_screen once. If the game has ended, call end_game and tell the user; if the opponent is just thinking, call chess_play again.`);
+                break;
+              }
+              const idleCap = (chessGame && chessGame.clockBase && chessGame.clockBase <= 5 * 60000 ? 4 : 12) * 60000; // a short game cannot have a 10 minute wait: it ended
               if (waited < idleCap) continue;
               r = `Game over: the opponent has not moved for ${Math.round(waited / 60000)} minutes, so the game has probably ended. Call end_game and tell the user.`; n++;
             }
@@ -1450,7 +1546,27 @@ function createActions({
           const res = out.length > 1 ? `I played ${out.length} turns in a row. Latest: ${last}` : last;
           // A model that writes a chat reply here ends the whole request, and the user has to ask Pip to carry on.
           // Only a finished game may end it.
+          if (/^Still waiting for the opponent/.test(last)) return res;
           return gameOn && !/end_game|Game over/.test(res) ? `${res}\n\nThe game is NOT over. Call chess_play again right now with no arguments. Do not write a message to the user or ask for permission: game mode is already approved.` : res;
+        },
+      };
+    },
+
+    // Press one of the buttons the user taught Pip (resign, draw, play again, new game) in a chat-driven game. It never guesses a spot.
+    chess_press(input) {
+      if (!gameOn) throw new Error('Start a game first with start_game (the user approves once).');
+      const which = String((input && input.button) || '');
+      const names = { resign: ['resign', 'confirm'], draw: ['draw', 'drawConfirm'], play_again: ['playAgain'], new_game: ['newGame'] }[which];
+      if (!names) throw new Error("button must be 'resign', 'draw', 'play_again' or 'new_game'.");
+      return {
+        auto: true,
+        title: `Press the ${which.replace('_', ' ')} button`,
+        details: 'Clicks a button on the game site that the user taught Pip with the chess teach menu.',
+        async run() {
+          const bt = getChessButtons() || {};
+          if (!bt[names[0]]) return `I was never taught where the ${which.replace('_', ' ')} button is. Use look_at_screen and click_screen to press it, or tell the user they can teach it (chess teach in Pip's menu).`;
+          for (const n of names) if (bt[n]) { await clickFrac(bt[n].x, bt[n].y); await sleep(900); }
+          return `Pressed the ${which.replace('_', ' ')} button${names.length > 1 && bt[names[1]] ? ' and its confirmation' : ''}. ${which === 'resign' ? 'Now call end_game.' : which === 'draw' ? 'Now call chess_play again with no_draw true.' : 'Wait for the new board to appear (it can take a few seconds), then call chess_play with board, my_color, flipped and new_game true.'}`;
         },
       };
     },
@@ -2413,8 +2529,13 @@ function createActions({
       },
       {
         name: 'chess_play',
-        description: "PLAY CHESS: the easiest way, one call per move, no reading pieces from a picture. First call: board = the chessboard's area as fractions of the WHOLE screen ({x, y, w, h}, top-left corner and size), my_color ('white' or 'black', the user's side), flipped (true when black is at the bottom), new_game true. Later calls need no arguments. Each call waits for the opponent's reply (it works out their move from which squares changed), picks the best move with the built-in engine and clicks it, then tells you what happened. Keep calling it until it says the game is over. If it says it cannot tell the opponent's move, look_at_screen, write the position as FEN, and call it again with fen.",
-        input_schema: { type: 'object', properties: { board: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } }, required: ['x', 'y', 'w', 'h'] }, my_color: { type: 'string', enum: ['white', 'black'] }, flipped: { type: 'boolean' }, new_game: { type: 'boolean' }, fen: str('The current position in FEN, side to move included. REQUIRED when joining a game that is already in progress (Pip checks it against the board and names the squares that disagree); also use it to resync.'), wait_ms: { type: 'number', description: 'How long to wait for the opponent (default 45000).' }, think_ms: { type: 'number', description: 'Engine thinking time in ms (default 2500).' }, level: { type: 'string', description: "'sharp' or 'sloppy', optionally with strength 1-10, like 'sharp:8' (default: the level chosen in Pip settings)." }, clock: { type: 'string', description: "The game's time control for me, like '3+2' (minutes + increment seconds) or '5'. Pip then keeps his own clock and plays faster when low on time." }, time_left: { type: 'number', description: "Seconds on MY clock, read from the screen, to resync Pip's own clock (optional)." }, time_control: { type: 'string', enum: ['bullet', 'blitz', 'rapid', 'classical'], description: 'If the game is timed, so Pip thinks for a fitting time.' }, moves: { type: 'number', description: 'Most turns to play in a row before reporting back (default 60). It keeps playing by itself.' } } },
+        description: "PLAY CHESS: the easiest way, one call per move, no reading pieces from a picture. First call: board = the chessboard's area as fractions of the WHOLE screen ({x, y, w, h}, top-left corner and size), my_color ('white' or 'black', the user's side), flipped (true when black is at the bottom), new_game true. Later calls need no arguments. Each call waits for the opponent's reply (it works out their move from which squares changed), picks the best move with the built-in engine and clicks it, then tells you what happened. Keep calling it until it says the game is over (that includes the opponent resigning: it notices a result pop-up covering the board). PLAYING AGAIN: after end_game, call start_game, press the site's Rematch / Play again / New game button yourself, then call chess_play with board, my_color, flipped and new_game true: it waits up to 15 seconds for the new starting position. Colours usually swap in a rematch, so check which colour is at the bottom first. If it says it cannot tell the opponent's move, look_at_screen, write the position as FEN, and call it again with fen.",
+        input_schema: { type: 'object', properties: { board: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } }, required: ['x', 'y', 'w', 'h'] }, my_color: { type: 'string', enum: ['white', 'black'] }, flipped: { type: 'boolean' }, new_game: { type: 'boolean' }, fen: str('The current position in FEN, side to move included. REQUIRED when joining a game that is already in progress (Pip checks it against the board and names the squares that disagree); also use it to resync.'), wait_ms: { type: 'number', description: 'How long to wait for the opponent (default 45000).' }, think_ms: { type: 'number', description: 'Engine thinking time in ms (default 2500).' }, level: { type: 'string', description: "'sharp' or 'sloppy', optionally with strength 1-10, like 'sharp:8' (default: the level chosen in Pip settings)." }, no_draw: { type: 'boolean', description: 'Do not offer a draw again (use after a draw offer was declined).' }, start_wait_ms: { type: 'number', description: 'With new_game: how long to wait for the starting position to appear after pressing Rematch (default 15000).' }, clock: { type: 'string', description: "The game's time control for me, like '3+2' (minutes + increment seconds) or '5'. Pip then keeps his own clock and plays faster when low on time." }, time_left: { type: 'number', description: "Seconds on MY clock, read from the screen, to resync Pip's own clock (optional)." }, time_control: { type: 'string', enum: ['bullet', 'blitz', 'rapid', 'classical'], description: 'If the game is timed, so Pip thinks for a fitting time.' }, moves: { type: 'number', description: 'Most turns to play in a row before reporting back (default 60). It keeps playing by itself.' } } },
+      },
+      {
+        name: 'chess_press',
+        description: "Press a chess site button the user taught Pip (needs game mode): resign (also confirms), draw (offers a draw, also confirms), play_again (the game-over pop-up's own button) or new_game. Use resign only after chess_play said I resign, and draw only after it said it would offer a draw. If the button was not taught it says so: then use look_at_screen and click_screen.",
+        input_schema: { type: 'object', properties: { button: { type: 'string', enum: ['resign', 'draw', 'play_again', 'new_game'] } }, required: ['button'] },
       },
       {
         name: 'chess_best_move',

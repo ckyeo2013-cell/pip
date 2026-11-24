@@ -180,3 +180,12 @@ Windows and Linux update fully on their own. macOS needs a signed app for silent
 
 
 **Mouse fidgeting (v1.23):** While you think, Pip can move the real mouse like a person: rest it over a piece, wander to another, try a move in the air, wiggle a little. It never clicks, hands the cursor back where it found it, only starts once your mouse has been still for a few seconds, and stops for 30 seconds if you grab it. Turn it off in Settings > Chess ("Pip fidgets with the mouse while I think").
+
+**Resigns and rematches (v1.23.1):** Pip now notices when a result pop-up covers the board (the opponent resigned, a flag fell, a draw was agreed), says so, counts the win when he was clearly ahead, and stops instead of waiting minutes for a move. He never clicks through a pop-up. Rematch now presses your taught Play again / New game button, waits for the new pieces to be set up, and works out his colour from which side is at the bottom (sites swap colours). A slow opponent (over 90 s) no longer crashes the move loop, and in chat games Pip checks the screen after about 90 s of silence, because sites like Lichess show "resigned" beside the board, not over it. Tip: teach the Play again button once (chess teach) for hands-free rematches.
+
+**Chess, round two (v1.23.2):**
+- **Resignations with no pop-up (Lichess style):** Pip watches the area around the board. If clocks were ticking and then everything stands still for 20 seconds on the opponent's turn, he decides the game has ended, just like with a pop-up.
+- **Learns the Play again button:** if he has to wait while you start the next game by hand, he remembers where your mouse was and presses it himself next time (fix it any time with chess teach).
+- **Matchmaking guard:** if his first move will not register because the site is still looking for an opponent, he waits up to a minute for the game to begin instead of giving up.
+- **Resign and draw buttons in chat games:** new `chess_press` tool (resign, draw, play_again, new_game) uses the buttons you taught. Two new teachable buttons: Offer draw and Draw confirm. When Pip offers a draw and they decline, he plays on and does not ask again; if they accept he notices and records the draw.
+- **Remembers across restarts:** the last board, which seat Pip played and the taught buttons are saved per board position on the screen (`chess-profiles.json`), so Rematch and chess auto work after a restart and different sites keep their own buttons.

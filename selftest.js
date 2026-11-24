@@ -1326,6 +1326,169 @@ const throwsMsg = (fn, re) => { try { fn(); } catch (e) { assert.match(e.message
     }
   });
 
+  // A fake chess site for the next tests: pieces, move highlights, and a "game over" pop-up that can be drawn over the middle of the board.
+  const fakeChessSite = (chess) => {
+    const world = { pieces: new Map(), hl: new Set(), sel: null, cover: false, clicks: 0, locked: false, ctx: null, buttons: [] };
+    const reset = () => { world.pieces = new Map(); chess.startState().board.forEach((p, i) => { if (p) world.pieces.set(i, p); }); world.hl = new Set(); world.sel = null; };
+    reset();
+    const REG = { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, SCR = { x: 0, y: 0, width: 1000, height: 1000 };
+    const render = () => {
+      const bm = Buffer.alloc(128 * 128 * 4);
+      for (let sq = 0; sq < 64; sq++) {
+        const r = sq >> 3, c = sq & 7, p = world.pieces.get(sq), dark = (r + c) % 2;
+        let col = dark ? [90, 120, 60] : [220, 225, 200];
+        if (world.hl.has(sq)) col = [col[0] * 0.5, col[1] * 0.9, col[2] + 20];
+        const popup = world.cover && r >= 2 && r <= 4 && c >= 1 && c <= 6; // the result pop-up: one flat grey block over 18 squares
+        for (let y = r * 16; y < r * 16 + 16; y++) for (let x = c * 16; x < c * 16 + 16; x++) {
+          let v = col;
+          if (p && x >= c * 16 + 4 && x < c * 16 + 12 && y >= r * 16 + 3 && y < r * 16 + 13) v = p === p.toUpperCase() ? [250, 250, 250] : [30, 30, 30];
+          if (popup) v = [60, 60, 70];
+          const i = (y * 128 + x) * 4; bm[i] = v[0]; bm[i + 1] = v[1]; bm[i + 2] = v[2]; bm[i + 3] = 255;
+        }
+      }
+      return { bitmap: bm, width: 128, height: 128 };
+    };
+    const sqAt = (px, py) => { const c = Math.floor(((px / 1000 - REG.x) / REG.w) * 8), r = Math.floor(((py / 1000 - REG.y) / REG.h) * 8); return r * 8 + c; };
+    const exec = (cmd, args, o, cb) => {
+      for (let i = 0; i < args.length; i++) if (args[i] === 'mousemove') {
+        world.clicks++;
+        if (world.cover || world.locked) continue; // the pop-up (or a game that has not started yet) swallows every click
+        world.buttons.push([Number(args[i + 1]), Number(args[i + 2])]);
+        const sq = sqAt(Number(args[i + 1]), Number(args[i + 2])), p = world.pieces.get(sq);
+        if (world.sel === null) { if (p && p === p.toUpperCase()) world.sel = sq; }
+        else if (sq !== world.sel) { world.pieces.set(sq, world.pieces.get(world.sel)); world.pieces.delete(world.sel); world.hl = new Set([world.sel, sq]); world.sel = null; }
+      }
+      cb(null, '');
+    };
+    const blackMoves = () => { // the opponent (black) plays any legal move
+      const st = chess.parseFen([...Array(8).keys()].map((r) => { let row = '', n = 0; for (let f = 0; f < 8; f++) { const p = world.pieces.get(r * 8 + f); if (!p) n++; else { row += (n || '') + p; n = 0; } } return row + (n || ''); }).join('/') + ' b - - 0 1');
+      const m = chess.legal(st)[0];
+      world.pieces.set(m.to, world.pieces.get(m.from)); world.pieces.delete(m.from); world.hl = new Set([m.from, m.to]);
+    };
+    const mk = (extra) => mkActions({ platform: 'linux', execFile: exec, getFull: () => true, getScreenInfo: () => ({ bounds: SCR, workArea: SCR, scaleFactor: 1 }), grabBoard: async (r, size) => (size === 256 && world.ctx ? world.ctx() : render()), recapMs: 10, ...extra });
+    return { world, REG, reset, blackMoves, mk };
+  };
+
+  await t('chess_play: a result pop-up over the board (opponent resigned) ends the game instead of waiting for a move that never comes', async () => {
+    const chess = require('./chess.js'), site = fakeChessSite(chess), said = [];
+    const P = site.mk({ notify: (x) => said.push(x) });
+    await (await P.prepare('start_game', { game: 'Chess' })).run();
+    const call = async (extra) => (await P.prepare('chess_play', { think_ms: 200, wait_ms: 20000, moves: 1, ...extra })).run();
+    const r1 = await call({ board: site.REG, my_color: 'white', flipped: false, new_game: true });
+    assert.match(r1, /^Played /, r1);
+    setTimeout(() => { site.world.cover = true; }, 1200); // the opponent resigns while Pip waits for their move
+    const t0 = Date.now(), r2 = await call({});
+    assert.match(r2, /^Game over: a result pop-up now covers the board/, r2);
+    assert.match(r2, /end_game/);
+    assert.ok(Date.now() - t0 < 8000, 'noticed within a few seconds, not after minutes: ' + (Date.now() - t0));
+    await new Promise((r) => setTimeout(r, 60));
+    assert.ok(said.length >= 1, 'Pip says something about it: ' + JSON.stringify(said));
+    P.endGame();
+  });
+
+  await t('chess_play: a pop-up that appears while Pip is thinking stops him from clicking through it', async () => {
+    const chess = require('./chess.js'), site = fakeChessSite(chess);
+    const P = site.mk({});
+    await (await P.prepare('start_game', { game: 'Chess' })).run();
+    const call = async (extra) => (await P.prepare('chess_play', { think_ms: 200, wait_ms: 20000, moves: 1, ...extra })).run();
+    const r1 = await call({ board: site.REG, my_color: 'white', flipped: false, new_game: true });
+    assert.match(r1, /^Played /, r1);
+    setTimeout(() => { site.blackMoves(); setTimeout(() => { site.world.cover = true; }, 350); }, 500); // they move, then resign before Pip has played
+    const clicksBefore = site.world.clicks, r2 = await call({});
+    assert.match(r2, /Game over: a result pop-up now covers the board/, r2);
+    assert.strictEqual(site.world.clicks, clicksBefore, 'no clicks went into the pop-up');
+    P.endGame();
+  });
+
+  await t('chess_play: new_game waits for the rematch board to be set up instead of demanding a FEN', async () => {
+    const chess = require('./chess.js'), site = fakeChessSite(chess);
+    for (const sq of [8, 9, 10, 11, 12, 48, 49, 50, 51, 52]) site.world.pieces.delete(sq); // the finished game's position...
+    site.world.cover = true; // ...with its game-over pop-up still showing when Pip is told to play again
+    const P = site.mk({});
+    await (await P.prepare('start_game', { game: 'Chess' })).run();
+    setTimeout(() => { site.world.cover = false; site.reset(); }, 1500); // the site then clears it and sets up a new game
+    const r = await (await P.prepare('chess_play', { board: site.REG, my_color: 'white', flipped: false, new_game: true, think_ms: 200, moves: 1, start_wait_ms: 6000 })).run();
+    assert.match(r, /^Played [a-h][1-8] to [a-h][1-8]/, r);
+    P.endGame();
+  });
+
+  await t('chess_play: an opponent who thinks longer than one wait round is still waited for (no crash)', async () => {
+    const chess = require('./chess.js'), site = fakeChessSite(chess);
+    const P = site.mk({});
+    await (await P.prepare('start_game', { game: 'Chess' })).run();
+    const call = async (extra) => (await P.prepare('chess_play', { think_ms: 200, wait_ms: 3000, moves: 1, hands_free: true, ...extra })).run();
+    const r1 = await call({ board: site.REG, my_color: 'white', flipped: false, new_game: true });
+    assert.match(r1, /^Played /, r1);
+    setTimeout(() => site.blackMoves(), 4500); // later than the 3 s wait round
+    const r2 = await call({});
+    assert.match(r2, /^Opponent played [a-h][1-8] to [a-h][1-8]\. Played /, r2);
+    P.endGame();
+  });
+
+  await t('chess_play: clocks beside the board that were ticking and then all stop on the opponent\'s turn mean the game ended (no pop-up, like Lichess)', async () => {
+    const chess = require('./chess.js'), site = fakeChessSite(chess);
+    let tick = 0, ticking = true;
+    const timer = setInterval(() => { if (ticking) tick++; }, 300);
+    site.world.ctx = () => { // the area around the board: grey, with a small clock patch that flips on every tick
+      const bm = Buffer.alloc(256 * 256 * 4, 200);
+      for (let y = 2; y < 12; y++) for (let x = 2; x < 20; x++) { const i = (y * 256 + x) * 4, v = tick % 2 ? 20 : 240; bm[i] = v; bm[i + 1] = v; bm[i + 2] = v; bm[i + 3] = 255; }
+      return { bitmap: bm, width: 256, height: 256 };
+    };
+    try {
+      const P = site.mk({ freezeMs: 2500 });
+      await (await P.prepare('start_game', { game: 'Chess' })).run();
+      const call = async (extra) => (await P.prepare('chess_play', { think_ms: 200, wait_ms: 30000, moves: 1, hands_free: true, ...extra })).run();
+      const r1 = await call({ board: site.REG, my_color: 'white', flipped: false, new_game: true });
+      assert.match(r1, /^Played /, r1);
+      setTimeout(() => { ticking = false; }, 6000); // the opponent resigns: the clocks stop (nothing is drawn over the board)
+      const t0 = Date.now(), r2 = await call({});
+      assert.match(r2, /^Game over: every clock on the screen has stopped ticking/, r2);
+      assert.ok(Date.now() - t0 < 16000, 'noticed within seconds of the clocks stopping: ' + (Date.now() - t0));
+      P.endGame();
+    } finally { clearInterval(timer); }
+  });
+
+  await t('chess_play: with no clocks on the page (or none ever seen ticking) a quiet board is never called game over', async () => {
+    const chess = require('./chess.js'), site = fakeChessSite(chess);
+    site.world.ctx = () => ({ bitmap: Buffer.alloc(256 * 256 * 4, 200), width: 256, height: 256 }); // a page that never changes
+    const P = site.mk({ freezeMs: 1000 });
+    await (await P.prepare('start_game', { game: 'Chess' })).run();
+    const call = async (extra) => (await P.prepare('chess_play', { think_ms: 200, wait_ms: 20000, moves: 1, hands_free: true, ...extra })).run();
+    await call({ board: site.REG, my_color: 'white', flipped: false, new_game: true });
+    setTimeout(() => site.blackMoves(), 5000);
+    const r2 = await call({});
+    assert.match(r2, /^Opponent played /, r2);
+    P.endGame();
+  });
+
+  await t('chess_play: a game that has not started yet (matchmaking) is waited for, then the first move is played', async () => {
+    const chess = require('./chess.js'), site = fakeChessSite(chess);
+    site.world.locked = true; // the site shows the start position but ignores clicks until an opponent is found
+    const unlock = setInterval(() => { if (site.world.clicks >= 14) { site.world.locked = false; clearInterval(unlock); } }, 50); // after the normal retries ran out
+    const P = site.mk({});
+    await (await P.prepare('start_game', { game: 'Chess' })).run();
+    try {
+      const r = await (await P.prepare('chess_play', { board: site.REG, my_color: 'white', flipped: false, new_game: true, think_ms: 200, moves: 1, start_wait_ms: 30000 })).run();
+      assert.match(r, /^Played [a-h][1-8] to [a-h][1-8]/, r);
+      assert.ok(site.world.clicks >= 14, 'it really did run out of normal retries first: ' + site.world.clicks);
+    } finally { clearInterval(unlock); }
+    P.endGame();
+  });
+
+  await t('chess_press: presses the taught resign and draw buttons in a chat game, and says so when a button was never taught', async () => {
+    const chess = require('./chess.js'), site = fakeChessSite(chess);
+    const P = site.mk({ getChessButtons: () => ({ resign: { x: 0.5, y: 0.2 }, confirm: { x: 0.6, y: 0.3 } }) });
+    await assert.rejects(async () => P.prepare('chess_press', { button: 'resign' }), /Start a game/);
+    await (await P.prepare('start_game', { game: 'Chess' })).run();
+    await assert.rejects(async () => P.prepare('chess_press', { button: 'castle' }), /button must be/);
+    const r = await (await P.prepare('chess_press', { button: 'resign' })).run();
+    assert.match(r, /Pressed the resign button and its confirmation/, r);
+    assert.deepStrictEqual(site.world.buttons.map((b) => b.map(Math.round)), [[500, 200], [600, 300]]);
+    const r2 = await (await P.prepare('chess_press', { button: 'draw' })).run();
+    assert.match(r2, /never taught/, r2);
+    P.endGame();
+  });
+
   await t('chess: Pip\'s full-screen window steps aside while a game runs and comes back when it ends', async () => {
     const log = [];
     const P = mkActions({ platform: 'linux', setOverlay: (v) => log.push(v), getFull: () => true, getScreenInfo: () => ({ bounds: { x: 0, y: 0, width: 1000, height: 1000 }, workArea: { x: 0, y: 0, width: 1000, height: 1000 }, scaleFactor: 1 }), grabBoard: async () => ({ bitmap: Buffer.alloc(128 * 128 * 4), width: 128, height: 128 }) });

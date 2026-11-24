@@ -656,11 +656,55 @@ function remind(minutes, message) {
   return due;
 }
 
+// ---- chess memory that survives a restart: where the board was, which seat Pip played, and the buttons the user taught him.
+// Kept per board position on the screen (a different site or window has a different board area, and its own buttons).
+let lastChess = null; // { board, white, pipBottom } of the last game, for the Rematch button and chess auto
+let chessProf = null;
+const profFile = () => path.join(app.getPath('userData'), 'chess-profiles.json');
+const btnFile = () => path.join(app.getPath('userData'), 'chess-buttons.json'); // the older, global buttons file: still the fallback
+function loadProf() {
+  if (chessProf) return chessProf;
+  try { chessProf = JSON.parse(fs.readFileSync(profFile(), 'utf8')); } catch (_) { chessProf = null; }
+  if (!chessProf || !Array.isArray(chessProf.list)) chessProf = { list: [], last: -1 };
+  return chessProf;
+}
+const saveProf = () => { try { fs.writeFileSync(profFile(), JSON.stringify(chessProf)); } catch (_) { /* a profile is a nicety */ } };
+const sameBoard = (a, b) => !!(a && b) && ['x', 'y', 'w', 'h'].every((k) => Math.abs(Number(a[k]) - Number(b[k])) < 0.03);
+function profFor(board, create) {
+  const P = loadProf();
+  let p = P.list.find((x) => sameBoard(x.board, board));
+  if (!p && create) { p = { board, buttons: {} }; P.list.push(p); if (P.list.length > 12) P.list.shift(); }
+  return p || null;
+}
+function rememberChess() { // write lastChess down (call after it changes)
+  if (!lastChess || !lastChess.board) return;
+  const p = profFor(lastChess.board, true);
+  p.board = lastChess.board; p.white = !!lastChess.white; p.pipBottom = lastChess.pipBottom;
+  loadProf().last = chessProf.list.indexOf(p);
+  saveProf();
+}
+function restoreChess() { // after a restart: the last game's board is still known
+  if (lastChess) return;
+  const P = loadProf(), p = P.list[P.last];
+  if (p && p.board) lastChess = { board: p.board, white: !!p.white, pipBottom: p.pipBottom };
+}
+function getBtns() { // buttons for the board in use, over the older global ones
+  let base = {}; try { base = JSON.parse(fs.readFileSync(btnFile(), 'utf8')); } catch (_) { /* none taught */ }
+  const p = lastChess && lastChess.board ? profFor(lastChess.board, false) : null;
+  return { ...base, ...(p && p.buttons ? p.buttons : {}) };
+}
+function saveBtn(which, pos) { // taught (or learned) button: stored with the current board's profile, or globally before any game
+  if (lastChess && lastChess.board) { const p = profFor(lastChess.board, true); p.buttons = { ...(p.buttons || {}), [which]: pos }; saveProf(); return; }
+  let bt = {}; try { bt = JSON.parse(fs.readFileSync(btnFile(), 'utf8')); } catch (_) { /* first one */ }
+  bt[which] = pos; fs.writeFileSync(btnFile(), JSON.stringify(bt));
+}
+
 let overlayHeldForGame = false; // Pip's window is hidden on purpose while a chess game runs
 function setupActions() {
   actions = createActions({
     captureScreen,
     grabBoard: (region, size) => captureScreen({ region, raw: true, size }),
+    getChessButtons: () => getBtns(),
     calendar,
     shell,
     clipboard,
@@ -767,7 +811,7 @@ function buildActionRules() {
     `nickname; never invent a date. To put something on their calendar use add_calendar_event; for "remind me in 20 minutes" use set_reminder. For to-dos and notes-to-self ("remember I need to email Sam", "add buy milk to my list", "what is on my list") use add_task, list_tasks and finish_task: no approval needed, and give a deadline when they mention one (Pip nudges them before it). Use remember only for lasting facts about the user.` +
     `\n\nWeb: to look something up or read a page, use fetch_url (for example https://duckduckgo.com/html/?q=search+words) and answer from what you read, ` +
     `naming the site; use open_url only when the user wants the page opened on screen.` +
-    `\n\nGAMES: when the user wants you to play a turn-based or puzzle game on screen (Wordle, Connections, Spelling Bee, a crossword, Strands, Sudoku, 2048, a trivia or quiz game like Krillion, chess or another board game, a keyboard or mouse puzzle), call start_game ONCE (for chess pass max_steps 150; a move takes about 3 steps) (they approve once), then do ONE look_at_screen to see the game, and after that loop with no chatter between steps: decide, game_keys (text for letters or digits, keys like enter or backspace). game_keys sends back a screenshot of the result by itself, so never call look_at_screen after it. click_many (several clicks in one call) and drag_screen (press, move along a path, release) also send a screenshot back. start_game's reply contains a PLAYBOOK for that game (Wordle, Connections, Spelling Bee, crosswords, Strands, Sudoku, 2048, Minesweeper, board games, trivia, memory games...): follow it. sudoku_solve solves a Sudoku grid exactly. Use the game's keyboard controls, or find_ui and press_ui for real buttons. If the game needs mouse clicks (chess, board games, puzzles), you do the clicks yourself with click_screen (no approval needed in game mode); NEVER ask the user to make a move or click for you, and never hand the game back unless it is over or something truly blocks you. CHESS: use chess_play. If the game is ALREADY IN PROGRESS (any piece has moved, a mid-game position), never assume the start: read every piece from the screenshot into a full FEN (rank 8 first, side to move, castling rights) and pass it as fen on the first chess_play; if it answers that the FEN does not match, look again and fix the squares it names. Do ONE look_at_screen to find the board's area (fractions of the whole screen), which side is at the bottom, and the user's colour; then call chess_play (board, my_color, flipped, new_game true) and keep calling chess_play with no arguments until it says the game is over. Never stop to talk between moves, never ask the user to confirm a move or continue: the one approval for start_game covers the whole game, and you only write a message once the game is over. Do not read pieces from the picture and do not call anything else between moves. Only if chess_play says it cannot tell the opponent's move, look_at_screen, write the FEN, and call chess_play with fen. (chess_best_move and board_move are the manual fallback.) ` +
+    `\n\nGAMES: when the user wants you to play a turn-based or puzzle game on screen (Wordle, Connections, Spelling Bee, a crossword, Strands, Sudoku, 2048, a trivia or quiz game like Krillion, chess or another board game, a keyboard or mouse puzzle), call start_game ONCE (for chess pass max_steps 150; a move takes about 3 steps) (they approve once), then do ONE look_at_screen to see the game, and after that loop with no chatter between steps: decide, game_keys (text for letters or digits, keys like enter or backspace). game_keys sends back a screenshot of the result by itself, so never call look_at_screen after it. click_many (several clicks in one call) and drag_screen (press, move along a path, release) also send a screenshot back. start_game's reply contains a PLAYBOOK for that game (Wordle, Connections, Spelling Bee, crosswords, Strands, Sudoku, 2048, Minesweeper, board games, trivia, memory games...): follow it. sudoku_solve solves a Sudoku grid exactly. Use the game's keyboard controls, or find_ui and press_ui for real buttons. If the game needs mouse clicks (chess, board games, puzzles), you do the clicks yourself with click_screen (no approval needed in game mode); NEVER ask the user to make a move or click for you, and never hand the game back unless it is over or something truly blocks you. CHESS: use chess_play. If the game is ALREADY IN PROGRESS (any piece has moved, a mid-game position), never assume the start: read every piece from the screenshot into a full FEN (rank 8 first, side to move, castling rights) and pass it as fen on the first chess_play; if it answers that the FEN does not match, look again and fix the squares it names. Do ONE look_at_screen to find the board's area (fractions of the whole screen), which side is at the bottom, and the user's colour; then call chess_play (board, my_color, flipped, new_game true) and keep calling chess_play with no arguments until it says the game is over. Never stop to talk between moves, never ask the user to confirm a move or continue: the one approval for start_game covers the whole game, and you only write a message once the game is over. Do not read pieces from the picture and do not call anything else between moves. If chess_play says the game is over, covered by a result pop-up, or the opponent resigned, call end_game and tell the user (a short, in-character line). If chess_play says I resign or would offer a draw, use chess_press (button resign, or draw and then chess_play again with no_draw true) before end_game. PLAYING AGAIN: when the user wants another game, call start_game again, look_at_screen, click the site's Rematch / Play again / New game button, wait for the pieces to be set up (look again if needed), check which colour is now at the bottom (colours usually swap), then call chess_play with board, my_color, flipped and new_game true. Only if chess_play says it cannot tell the opponent's move, look_at_screen, write the FEN, and call chess_play with fen. (chess_best_move and board_move are the manual fallback.) ` +
     `Wordle: for every guess call wordle_solve with all guesses so far and their colours (g green, y yellow, x grey) and type the word it returns; never choose words yourself. ` +
     `Rare-answer trivia like Krillion: each prompt has a short timer (about 25 seconds), so do ONE look per prompt and answer right away; a valid but less obvious answer scores more than the first one everyone thinks of, but never risk an invalid one, and spell it plainly. ` +
     `Only play single-player, practice or casual games the user asked for. Stop with end_game when it is over or stuck, and tell the user the result. If a login, payment, purchase or ad appears, stop and tell them.` +
@@ -1210,7 +1254,7 @@ function registerIpc() {
 
   // ---- chess on a real website or app, played by Pip's own engine with no AI service: the user shows the board by hovering the mouse on two corners
   let chessStopFlag = false;
-  let lastChess = null; // { board, white } of the last game, for the Rematch button
+  restoreChess();
   ipcMain.on('chess:stop', () => { chessStopFlag = true; if (actions) actions.endGame(); send('status', { text: '' }); });
   // ---- hands-free chess: one game by Pip's own engine; Pip's colour is passed in
   const chessLv = () => (settings.chessLevel === 'sloppy' ? 'sloppy' : 'sharp') + ':' + (settings.chessStrength || 7).toFixed(2) + (settings.chessBlunders >= 0 ? ':b' + Number(settings.chessBlunders).toFixed(2) : '') + (settings.chessBrilliants >= 0 ? ':f' + Number(settings.chessBrilliants).toFixed(2) : '');
@@ -1218,14 +1262,17 @@ function registerIpc() {
     let final = '';
     await (await actions.prepare('start_game', { game: 'chess', max_steps: 150 })).run();
     if (hello) send('say', { text: hello, ms: 3500 });
-    let first = true, errs = 0;
+    let first = true, errs = 0, noDraw = false;
     for (let i = 0; i < 400 && actions.gameActive() && !chessStopFlag; i++) {
       if (settings.chessConfirm) { // the user wants to approve every move
         const ans = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, { type: 'question', buttons: ['Play my move', 'Stop the game'], defaultId: 0, cancelId: 1, title: 'Chess', message: 'Pip is ready to play his next move.', detail: 'Turn off "Ask before every chess move" in settings to let him play on his own.' });
         if (ans.response === 1) { final = 'The game was stopped.'; break; }
       }
-      const r = await (await actions.prepare('chess_play', first ? { board, my_color: pipColor, level, moves: 60, clock: settings.chessClock || undefined } : { level, moves: 60 })).run();
+      const r = await (await actions.prepare('chess_play', first ? { board, my_color: pipColor, level, moves: 60, hands_free: true, new_game: true, start_wait_ms: 20000, clock: settings.chessClock || undefined } : { level, moves: 60, hands_free: true, no_draw: noDraw })).run();
       first = false;
+      if (!noDraw && /would offer a draw/.test(r) && getBtns().draw) { // press the taught draw button, then play on if they decline (no_draw: do not offer again)
+        await pressButtons(['draw', 'drawConfirm']); noDraw = true; await sleep(6000); continue;
+      }
       if (/Game over|I resign|offer a draw|Checkmate|Stalemate|was stopped|hopelessly lost/i.test(r)) { final = r; break; }
       if (/not moved yet/i.test(r)) { errs = 0; continue; }
       if (!/Played/.test(r) && /did not register|could not|turned off|blocked|missing|not available/i.test(r)) { if (++errs >= 6) { final = r; break; } await sleep(1200); } else errs = 0;
@@ -1234,19 +1281,46 @@ function registerIpc() {
     return final;
   }
   // buttons the user taught Pip by hovering (fractions of the screen): newGame, resign, confirm
-  const btnFile = () => path.join(app.getPath('userData'), 'chess-buttons.json');
-  const getBtns = () => { try { return JSON.parse(fs.readFileSync(btnFile(), 'utf8')); } catch (_) { return {}; } };
   async function pressButtons(names) {
     const bt = getBtns();
     for (const n of names) { if (bt[n]) { await actions.clickFrac(bt[n].x, bt[n].y); await sleep(900); } }
   }
+  // Get a fresh game on the board before playing: if the old one is still showing (a game-over pop-up, a finished position), press the
+  // "Play again" / "New game" buttons the user taught, then wait for the starting position (online matchmaking can take a while).
+  // Returns { atStart, whiteBottom } of the new board, or null when no new game appeared in time.
+  async function ensureFreshGame(board, waitSecs) {
+    const read = () => actions.readBoard(board).catch(() => null);
+    let st = await read();
+    if (!(st && st.atStart)) {
+      const bt = getBtns(), cur0 = screen.getCursorScreenPoint();
+      if (!bt.playAgain && !bt.newGame) send('say', { text: 'Start a new game on the site. I will begin as soon as the pieces are set up.', ms: 6000 });
+      else {
+        send('say', { text: 'Starting a new match.', ms: 2500 });
+        if (bt.playAgain) { await pressButtons(['playAgain']); await sleep(2500); st = await read(); } // the game-over pop-up's own button
+        if (!(st && st.atStart) && bt.newGame) await pressButtons(['newGame']);
+      }
+      for (let i = 0; i < waitSecs && !chessStopFlag && !(st && st.atStart); i++) { await sleep(1000); st = await read(); }
+      if (st && st.atStart && !bt.playAgain && !bt.newGame) { // the user started the new game by hand: the mouse is still on the button they pressed, so learn it
+        try {
+          const c = screen.getCursorScreenPoint(), d = screen.getPrimaryDisplay().bounds;
+          if (Math.hypot(c.x - cur0.x, c.y - cur0.y) > 40 && c.x >= d.x && c.x < d.x + d.width && c.y >= d.y && c.y < d.y + d.height) {
+            saveBtn('playAgain', { x: (c.x - d.x) / d.width, y: (c.y - d.y) / d.height });
+            send('say', { text: 'I noticed where you pressed to start the new game, so next time I can press it myself. If that is wrong, use chess teach.', ms: 7000 });
+          }
+        } catch (_) { /* learning is a bonus */ }
+      }
+    }
+    if (!(st && st.atStart) || chessStopFlag) return null;
+    await sleep(800); // let the pieces stop sliding in, then look once more (the board may still be rebuilding)
+    st = await read();
+    return st && st.atStart ? st : null;
+  }
   ipcMain.handle('chess:teach', async (_e, which) => {
-    if (!['newGame', 'playAgain', 'resign', 'confirm'].includes(which)) return { message: 'Unknown button.' };
-    const label = { newGame: 'NEW GAME / play button', playAgain: 'PLAY AGAIN button on the game-over pop-up', resign: 'RESIGN button', confirm: 'resign CONFIRM (Yes) button' }[which];
+    if (!['newGame', 'playAgain', 'resign', 'confirm', 'draw', 'drawConfirm'].includes(which)) return { message: 'Unknown button.' };
+    const label = { newGame: 'NEW GAME / play button', playAgain: 'PLAY AGAIN button on the game-over pop-up', resign: 'RESIGN button', confirm: 'resign CONFIRM (Yes) button', draw: 'OFFER DRAW button', drawConfirm: 'draw CONFIRM (Offer / Yes) button' }[which];
     for (let i = 6; i > 0; i--) { send('say', { text: `Hover the mouse on the ${label}. Learning it in ${i}...`, ms: 1100 }); await sleep(1000); }
     const p = screen.getCursorScreenPoint(), d = screen.getPrimaryDisplay().bounds;
-    const bt = getBtns(); bt[which] = { x: (p.x - d.x) / d.width, y: (p.y - d.y) / d.height };
-    fs.writeFileSync(btnFile(), JSON.stringify(bt));
+    saveBtn(which, { x: (p.x - d.x) / d.width, y: (p.y - d.y) / d.height });
     return { message: `Got it, I learned the ${label}.` };
   });
   ipcMain.handle('chess:resign', async () => {
@@ -1261,21 +1335,15 @@ function registerIpc() {
     if (!settings.fullAccess) return { message: 'Turn on "Let Pip do things for me" in the Pip settings first.' };
     if (!lastChess) return { message: 'Play one game with the chess button first, so I know where the board is. Then I can play on my own.' };
     const bt = getBtns();
-    if (!bt.newGame) return { message: 'Teach me the New Game button first (chess teach), so I can start matches.' };
+    if (!bt.newGame && !bt.playAgain) return { message: 'Teach me the Play again or New Game button first (chess teach), so I can start matches.' };
     chessStopFlag = false;
     const level = (opts && opts.level) || chessLv(), maxGames = Math.max(1, Math.min(50, Number(opts && opts.games) || 10));
     let played = 0, last = '';
     while (played < maxGames && !chessStopFlag) {
-      let st = await actions.readBoard(lastChess.board).catch(() => null);
-      if (!st || !st.atStart) { // not at the start of a game: press New Game and wait for a fresh board (online matchmaking can take a while)
-        send('say', { text: 'Starting a new match.', ms: 2500 });
-        if (getBtns().playAgain) { await pressButtons(['playAgain']); await sleep(2500); st = await actions.readBoard(lastChess.board).catch(() => null); } // the game-over pop-up's own button
-        if (!st || !st.atStart) await pressButtons(['newGame']);
-        for (let i = 0; i < 60 && !chessStopFlag && !(st && st.atStart); i++) { await sleep(1000); st = await actions.readBoard(lastChess.board).catch(() => null); if (st && st.atStart) break; }
-      }
-      if (chessStopFlag || !st || !st.atStart) { last = 'I could not find a fresh game, so I stopped.'; break; }
+      const st = await ensureFreshGame(lastChess.board, 60);
+      if (chessStopFlag || !st) { last = 'I could not find a fresh game, so I stopped.'; break; }
       const pipWhite = st.whiteBottom !== false; // Pip plays the side at the bottom of the board
-      lastChess.white = !pipWhite;
+      lastChess.white = !pipWhite; lastChess.pipBottom = true; rememberChess();
       let final = '';
       try { final = await playOne(lastChess.board, pipWhite ? 'white' : 'black', level, pipWhite ? 'I am white. Here I go.' : 'I am black.'); } catch (e) { final = String((e && e.message) || e); }
       if (actions) actions.endGame();
@@ -1293,7 +1361,8 @@ function registerIpc() {
     chessStopFlag = false;
     if (opts && opts.rematch && !lastChess) return { message: 'No earlier game to replay yet. Start one with the chess button first.' };
     if (opts && opts.rematch) opts = { ...opts, white: lastChess.white };
-    const white = !!(opts && opts.white), level = (opts && opts.level) || chessLv();
+    let white = !!(opts && opts.white);
+    const level = (opts && opts.level) || chessLv();
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const corner = async (label, secs) => {
       send('say', { text: `Put your mouse on the ${label} corner of the board. I will read it in ${secs} seconds.`, ms: secs * 1000 });
@@ -1301,7 +1370,16 @@ function registerIpc() {
       return screen.getCursorScreenPoint();
     };
     let board;
-    if (opts && opts.rematch) { board = lastChess.board; send('say', { text: 'Rematch! Same board, same side.', ms: 2500 }); await sleep(800); }
+    let seat; // did Pip play the side at the bottom of the board last time? (sites swap colours on a rematch, but your seat stays at the bottom)
+    if (opts && opts.rematch) {
+      board = lastChess.board; seat = lastChess.pipBottom;
+      send('say', { text: 'Rematch! Setting up a new game.', ms: 2500 }); await sleep(800);
+      const st = await ensureFreshGame(board, 90); // press Play again / New game, then wait for the pieces
+      send('status', { text: '' });
+      if (chessStopFlag) return { message: 'Stopped.' };
+      if (!st) return { message: 'I could not see a new game start on the board. Start one on the site (or teach me its Play again / New game button in the chess teach menu) and tap Rematch again.' };
+      if (st.whiteBottom !== null && seat !== undefined) white = seat ? !st.whiteBottom : st.whiteBottom; // colours may have swapped: go by which side is at the bottom now
+    }
     else {
     const a = await corner('TOP-LEFT', 6);
     if (chessStopFlag) return { message: 'Stopped.' };
@@ -1313,14 +1391,19 @@ function registerIpc() {
     const wpx = (b.x - a.x), hpx = (b.y - a.y);
     if (wpx < 120 || hpx < 120 || Math.abs(wpx - hpx) > 0.15 * Math.max(wpx, hpx)) return { message: 'Those corners do not make a square board. Try again, from the top-left square corner to the bottom-right one.' };
     }
-    lastChess = { board, white };
+    lastChess = { board, white, pipBottom: seat };
+    if (seat === undefined) { // first game: note which side Pip plays, from the board before the first move
+      const st0 = await actions.readBoard(board).catch(() => null);
+      if (st0 && st0.atStart && st0.whiteBottom !== null) lastChess.pipBottom = (!white) === st0.whiteBottom;
+    }
+    rememberChess();
     let final = '';
     try { final = await playOne(board, white ? 'black' : 'white', level, white ? 'Okay, you are white. Make your first move, I am watching the board.' : 'Okay, I am white. Here I go.'); } catch (e) { final = String((e && e.message) || e); }
     if (actions) actions.endGame();
     send('status', { text: '' });
     if (/FEN needed|FEN does not match/.test(final)) return { message: 'This game is already in progress and I could not read the pieces on my own this time. Start the chess button at the beginning of a game once (I learn the pieces then), or ask me in chat to play chess and I will read the position with the AI.' };
     console.log('[chess] ended:', String(final).slice(0, 300), chessStopFlag ? '(stop pressed)' : '');
-    const msg = /I was checkmated/.test(final) ? 'Well played, you got me.' : /I won|Checkmate, I won/.test(final) ? 'Checkmate. Good game!' : /resign/i.test(final) ? 'I am lost, so I resign. Good game!' : /draw/i.test(final) ? 'This looks like a draw. Maybe offer one on the site.' : chessStopFlag ? 'Okay, I stopped the game.' : (final ? final.slice(0, 160) : 'The game ended.');
+    const msg = /pop-up now covers the board/.test(final) ? (/I won\./.test(final) ? 'You resigned, so I win. Good game!' : 'The game ended. Good game! Tap Rematch for another.') : /I was checkmated/.test(final) ? 'Well played, you got me.' : /I won|Checkmate, I won/.test(final) ? 'Checkmate. Good game!' : /resign/i.test(final) ? 'I am lost, so I resign. Good game!' : /draw/i.test(final) ? 'This looks like a draw. Maybe offer one on the site.' : chessStopFlag ? 'Okay, I stopped the game.' : (final ? final.slice(0, 160) : 'The game ended.');
     return { message: msg };
   });
   ipcMain.on('debug:log', (_e, kind, text) => debugPush('ui-' + String(kind).slice(0, 12), [String(text).slice(0, 600)]));

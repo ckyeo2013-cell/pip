@@ -1670,7 +1670,7 @@
       case 'chessresign': (async () => { const r = await pip.chessResign(); if (r && r.message) showBubble(r.message, 5000); })(); break;
       case 'chessteach': (async () => {
         closeChatForGame();
-        const w = await pickOne('Which button should I learn?', [['newGame', 'New game'], ['playAgain', 'Play again (after game)'], ['resign', 'Resign'], ['confirm', 'Resign confirm (Yes)']]);
+        const w = await pickOne('Which button should I learn?', [['newGame', 'New game'], ['playAgain', 'Play again (after game)'], ['resign', 'Resign'], ['confirm', 'Resign confirm (Yes)'], ['draw', 'Offer draw'], ['drawConfirm', 'Draw confirm']]);
         if (!w) return;
         const r = await pip.chessTeach(w); if (r && r.message) showBubble(r.message, 5000);
       })(); break;
