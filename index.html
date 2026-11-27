@@ -31,6 +31,8 @@
       <button data-c="fact">Fun fact</button>
       <button data-c="screen">Help with my screen</button>
       <button data-c="cal">Check my calendar</button>
+      <button data-c="brief">My day (brief)</button>
+      <button data-c="activity">What Pip did (undo)</button>
       <button data-c="sys">Open a setting / do a task</button>
       <button data-c="clip">What I copied</button>
       <button data-c="clipsum">Summarize copied</button>
@@ -64,6 +66,8 @@
         <button type="button" class="s-go" data-sec="access"><b>Approvals & access</b><span>What Pip may do and when it asks</span></button>
         <button type="button" class="s-go" data-sec="cals"><b>Calendars</b><span>Birthdays and events</span></button>
         <button type="button" class="s-go" data-sec="chess"><b>Chess</b><span>Strength, clock, move confirmation</span></button>
+        <button type="button" class="s-go" data-sec="mcp"><b>Connected tools</b><span>Add your own tools (MCP)</span></button>
+        <button type="button" class="s-go" data-sec="activity"><b>Activity</b><span>What Pip did, with undo</span></button>
         <button type="button" class="s-go" data-sec="general"><b>General</b><span>Updates, replies, startup, debug</span></button>
       </div>
       <div class="sec" id="sec-ai">
@@ -73,6 +77,7 @@
         <option value="gemini">Google Gemini (free tier available)</option>
         <option value="groq">Groq (free, no card needed)</option>
         <option value="cloudflare">Cloudflare Workers AI (free, can see your screen)</option>
+        <option value="local">A model on this computer (Ollama / LM Studio, fully private)</option>
       </select>
       <div id="s-anth">
         <label for="s-key">Anthropic API key</label>
@@ -115,6 +120,16 @@
         </datalist>
         <div class="hint">The 120b model is smarter; the 20b one is faster. If a name is rejected, Groq may have renamed it: check console.groq.com/docs/models. These models read text only, so "look at my screen" won't work (use Gemini or Claude for that). Free limits are small, so long jobs may pause and retry.</div>
         <div class="hint warnbox">Privacy: what Pip sends (your chats, and anything you approve sharing, like files and command output) goes to Groq. Free services can have different data rules from paid ones, so check Groq's privacy policy and don't use it for private things.</div>
+      </div>
+      <div id="s-local" class="hidden">
+        <label for="s-lurl">Local server address</label>
+        <input id="s-lurl" type="text" maxlength="120" autocomplete="off" placeholder="http://localhost:11434/v1">
+        <div class="hint">Ollama uses <code>http://localhost:11434/v1</code>, LM Studio uses <code>http://localhost:1234/v1</code>. For your safety the address has to be on this computer (localhost or 127.0.0.1); Pip refuses anything else.</div>
+        <label for="s-lmodel">Model</label>
+        <input id="s-lmodel" type="text" list="s-lmodels" maxlength="120" autocomplete="off" placeholder="click Find my models">
+        <datalist id="s-lmodels"></datalist>
+        <div class="row tight"><button id="s-lfind" type="button" class="ghost">Find my models</button><span class="hint" id="s-lstatus"></span></div>
+        <div class="hint warnbox">Privacy: nothing Pip sends goes online. Chats, files, command output and clipboard text stay on this computer, and Pip will not fall back to an online service if the local one fails. It reads text only (no "look at my screen"). Pick a model that supports tool calling, or Pip can chat but not do things for you. Small models make more mistakes, so read each approval card.</div>
       </div>
       <div id="s-cf" class="hidden">
         <label for="s-cfkey">Cloudflare API token</label>
@@ -235,6 +250,7 @@
       </select>
       <label class="check"><input id="s-wander" type="checkbox"> Hop and glide around on its own</label>
       <label class="check"><input id="s-quips" type="checkbox"> Friendly nudges (water, stretch...)</label>
+      <label class="check"><input id="s-clipoffer" type="checkbox"> When I copy a chunk of text, show quick buttons (Summarize, Explain...) next to Pip. The text is only read when you press one.</label>
       <label class="check"><input id="s-react" type="checkbox"> React to music, copying, battery, long idle</label>
       <label class="check"><input id="s-sound" type="checkbox"> Sound effects</label>
       <label for="s-vol">Sound volume</label>
@@ -273,6 +289,7 @@
       <select id="s-clock"><option value="">Untimed</option><option value="1">1 min (bullet)</option><option value="1+1">1+1</option><option value="3">3 min (blitz)</option><option value="3+2">3+2</option><option value="5">5 min</option><option value="10">10 min (rapid)</option><option value="15+10">15+10</option></select>
       <label for="s-level">Chess style</label>
       <select id="s-level">
+        <option value="best">Play its best (always the strongest move, no slips, no randomness)</option>
         <option value="sharp">Sharp (plays great, finds sacrifices, rare slips)</option>
         <option value="sloppy">Sloppy (same style, but worse and slips more)</option>
       </select>
@@ -284,7 +301,40 @@
       <div style="display:flex;gap:8px;align-items:center"><input id="s-brill" type="range" min="0" max="5" step="0.5" value="1" style="flex:1"><span class="hint" id="s-brill-v" style="min-width:34px;text-align:right">auto</span><label class="hint" style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="s-bralto" checked> auto</label></div>
       <div class="hint">Blunders are overlooks (a piece left hanging, a threat missed), never in the opening. A brilliant needs a real sacrifice to exist, so the number is "up to".</div>
       </div>
+      <div class="sec" id="sec-mcp">
+        <div class="hint warnbox">A connected tool is a program that runs on this computer with your permissions and gives Pip new abilities (for example "notes", "GitHub" or "databases"). Only add ones you trust. Pip asks you before every single use and shows exactly what it will send. The AI itself can never add one: only you can, here.</div>
+        <div id="mcp-list"></div>
+        <label for="mcp-name">Name</label>
+        <input id="mcp-name" type="text" maxlength="40" autocomplete="off" placeholder="e.g. Notes">
+        <label for="mcp-cmd">Command that starts it</label>
+        <input id="mcp-cmd" type="text" maxlength="300" autocomplete="off" placeholder="e.g. npx">
+        <label for="mcp-args">Arguments (one per line)</label>
+        <textarea id="mcp-args" rows="3" maxlength="3000" placeholder="-y&#10;@modelcontextprotocol/server-memory"></textarea>
+        <label for="mcp-env">Secrets it needs (optional, one NAME=value per line)</label>
+        <textarea id="mcp-env" rows="2" maxlength="2000" placeholder="API_TOKEN=..."></textarea>
+        <div class="hint">These stay in a private file on this computer and are given only to that one program. Pip's own keys are never shared with it.</div>
+        <div class="row"><button id="mcp-add" type="button" class="ghost">Add and connect</button><span class="hint" id="mcp-msg"></span></div>
+      </div>
+      <div class="sec" id="sec-activity">
+        <div class="hint">The last 50 things Pip did on your computer, newest first. Undo works for files Pip moved, created, replaced or trashed (Pip keeps a private copy for 30 days), and for volume and tabs. Typed text and file contents are never saved here.</div>
+        <div id="act-list"></div>
+        <div class="row"><button id="act-clear" class="ghost" title="Empties this list and deletes Pip's saved copies of files">Clear list and saved copies</button></div>
+      </div>
+      <div class="sec" id="sec-language">
+        <label for="s-language">Language</label>
+        <select id="s-language"><option value="auto">Auto (follow what I write)</option><option value="en">English</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt">Português</option><option value="it">Italiano</option></select>
+        <span class="hint">Works offline for the basics (hello, time, date, jokes, open, search, volume, timers). With an AI key Pip answers everything in this language.</span>
+      </div>
+      <div class="sec" id="sec-glider">
+        <label class="check"><input id="s-gliderradar" type="checkbox"> Look for other sugar gliders on my screen (every few minutes Pip hides, takes a small screenshot and sends it to your AI to ask one question; it also reads window titles, tabs and links for the words "sugar glider" without any picture; the picture check needs an Anthropic, Gemini or Cloudflare key)</label>
+        <label class="check"><input id="s-gliderdoor" type="checkbox"> If that glider disappears, Pip shuts himself in a room (a door with a do-not-disturb sign). Off: he just cries.</label>
+        <label for="s-glidereverymin">Look every (minutes)</label>
+        <input id="s-glidereverymin" type="number" min="1" max="30" step="1" value="3">
+      </div>
       <div class="sec" id="sec-general">
+      <label for="s-weather">Weather city for the morning brief (optional)</label>
+      <div class="row tight"><input id="s-weather" type="text" maxlength="60" autocomplete="off" placeholder="e.g. Petaling Jaya"><select id="s-wunit"><option value="c">°C</option><option value="f">°F</option></select></div>
+      <div class="hint">Say "morning brief" or "my day" for events, tasks and weather. Only this city name is sent, to Open-Meteo (free, no account). Leave it empty for no weather.</div>
       <label class="check"><input id="s-autoupd" type="checkbox"> Update Pip automatically when a new version is released on GitHub</label>
       <label class="check"><input id="s-actionlog" type="checkbox"> Keep an action log so I can ask "what did you just do?" and say "undo"</label>
       <label class="check"><input id="s-short" type="checkbox"> Short replies (faster)</label>

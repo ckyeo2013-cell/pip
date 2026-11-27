@@ -8,7 +8,7 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder",
-    "test": "node selftest.js && node selftest-brain.js && node selftest-main.js && node selftest-flight.js"
+    "test": "node selftest.js && node selftest-brain.js && node selftest-main.js && node selftest-new.js && node selftest-flight.js"
   },
   "devDependencies": {
     "electron": "^39.0.0",
@@ -24,6 +24,7 @@
       "ui.js",
       "agent.js",
       "brain.js",
+      "lang.js",
       "chess.js",
       "chess-thread.js",
       "games.js",
@@ -38,7 +39,18 @@
       "model.js",
       "icon.png",
       "tray.png",
-      "package.json"
+      "package.json",
+      "sfx.js",
+      "minigames.js",
+      "wordle.js",
+      "chess-worker.js",
+      "brief.js",
+      "undo.js",
+      "mcp.js",
+      "chess-vision.js",
+      "chess-think.js",
+      "mood.js",
+      "recap.js"
     ],
     "win": {
       "target": "nsis"

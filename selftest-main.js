@@ -15,7 +15,7 @@ class Win {
   isVisible() { return true; } isDestroyed() { return false; } setBounds() {} hide() {} blur() {} focus() {}
 }
 const electron = {
-  app: { requestSingleInstanceLock: () => true, on() {}, quit() {}, getPath: () => userData, dock: null, setLoginItemSettings() {}, whenReady: () => ({ then: (f) => { f(); } }) },
+  app: { requestSingleInstanceLock: () => true, on() {}, quit() {}, getPath: () => userData, getVersion: () => '0.0.0-test', dock: null, setLoginItemSettings() {}, whenReady: () => ({ then: (f) => { f(); } }) },
   BrowserWindow: Win,
   Tray: class { on() {} setToolTip() {} setContextMenu() {} },
   Menu: { buildFromTemplate: () => ({ popup() {} }) },
@@ -246,6 +246,29 @@ const txt = (t) => ({ candidates: [{ content: { parts: [{ text: t }] } }] });
   await t('only the four key pages can be opened', () => {
     listeners['link:open']({}, 'gemini'); listeners['link:open']({}, 'anthropic'); listeners['link:open']({}, 'groq'); listeners['link:open']({}, 'cloudflare'); listeners['link:open']({}, 'https://evil.example');
     assert.deepStrictEqual(opened, ['https://aistudio.google.com/apikey', 'https://console.anthropic.com/settings/keys', 'https://console.groq.com/keys', 'https://dash.cloudflare.com/profile/api-tokens']);
+  });
+  await t('a model on this computer: address must be local, chats stay on this computer, and it never falls back online', async () => {
+    const rej = await handlers['settings:save']({}, { localUrl: 'http://evil.example.com/v1' });
+    assert.strictEqual(rej.localUrl, 'http://localhost:11434/v1', 'a remote address is not accepted');
+    await handlers['settings:save']({}, { geminiKey: 'AIzaKEEP', provider: 'local', localUrl: 'http://127.0.0.1:1234/v1/', localModel: 'qwen3:8b' });
+    const st = await handlers['settings:get']();
+    assert.deepStrictEqual([st.provider, st.localUrl, st.localModel, st.hasKey], ['local', 'http://127.0.0.1:1234/v1', 'qwen3:8b', true]);
+    const realFetch = global.fetch, urls = [];
+    global.fetch = async (url) => { urls.push(String(url)); throw new Error('fetch failed'); };
+    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'explain how clouds form' }] });
+    global.fetch = realFetch;
+    assert.ok(urls.length >= 1 && urls.every((u) => u.startsWith('http://127.0.0.1:1234/')), 'only the local server was contacted: ' + urls.join(' '));
+    assert.match(r.error || r.text || '', /local model|Ollama/i);
+    global.fetch = async (url) => ({ ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ choices: [{ message: { content: 'Clouds form when air cools.' } }] }) });
+    const ok = await handlers.chat({}, { messages: [{ role: 'user', content: 'explain how clouds form' }] });
+    global.fetch = realFetch;
+    assert.match(ok.text, /Clouds form/);
+    await handlers['settings:save']({}, { provider: 'anthropic' });
+  });
+  await t('"morning brief" answers with events, tasks and no AI key needed', async () => {
+    const r = await handlers.chat({}, { messages: [{ role: 'user', content: 'morning brief' }] });
+    assert.match(r.text, /Here is your day/);
+    assert.match(r.text, /To do/);
   });
   console.log(`\n${n} main-process checks passed${process.exitCode ? ' (some FAILED)' : ''}`);
   clearTimeout(intervalKillers);

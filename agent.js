@@ -632,4 +632,58 @@ function runChatCloudflare({ accountId, ...opts }) {
   return runChatOpenAI({ url: cloudflareUrl(accountId), label: 'Cloudflare', vision: true, errorMessage: cloudflareErrorMessage, ...opts });
 }
 
-module.exports = { makeLoopGuard, actionNudge, runChat, runChatGemini, runChatGroq, runChatCloudflare, cloudflareUrl, toGeminiTools, toGeminiSchema, toGroqTools };
+// ---------------------------------------------------------------------------------------------
+// A model running on this computer (Ollama, LM Studio, llama.cpp server...). They all speak the same OpenAI-style API.
+// Nothing leaves the machine: the address must be a loopback one (localhost, 127.x.x.x or ::1), so a typo or a pasted
+// link can never quietly send your chats to a remote server.
+// ---------------------------------------------------------------------------------------------
+
+function normalizeLocalUrl(u) {
+  let url;
+  try { url = new URL(String(u || '').trim()); } catch (_) { return null; }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  const h = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (!(h === 'localhost' || h === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h))) return null;
+  if (url.username || url.password || url.search || url.hash) return null;
+  return url.origin + url.pathname.replace(/\/+$/, '');
+}
+const localChatUrl = (base) => `${normalizeLocalUrl(base)}/chat/completions`;
+const localModelsUrl = (base) => `${normalizeLocalUrl(base)}/models`;
+
+function localErrorMessage(status, detail, model) {
+  const d = detail ? ` (${detail})` : '';
+  if (status === 404 || (status === 400 && /model/i.test(detail))) return `Your local server does not know the model "${model}". Pick one from the list in Pip settings (for Ollama, run "ollama pull ${model}" first).${d}`;
+  if (status === 400 && /tool|function/i.test(detail)) return `The local model "${model}" cannot use tools. Pick a model that supports tool calling (for example a recent Qwen, Llama 3.1+ or Mistral build).${d}`;
+  if (status >= 500) return `Your local model server had a problem (${status}). It may still be loading the model; try again in a moment.${d}`;
+  return `Local model error ${status}${d}`;
+}
+
+async function runChatLocal({ baseUrl, ...opts }) {
+  if (!normalizeLocalUrl(baseUrl)) return { error: 'The local model address must point at this computer, like http://localhost:11434/v1.' };
+  const r = await runChatOpenAI({ url: localChatUrl(baseUrl), label: 'Local model', vision: false, errorMessage: localErrorMessage, timeoutMs: 600000, ...opts });
+  if (r && typeof r.error === 'string' && /^Network problem|^The request timed out/.test(r.error)) {
+    return { error: /timed out/.test(r.error)
+      ? 'The local model took too long to answer. A smaller model, or one that is already loaded, will be faster.'
+      : `Pip could not reach your local model at ${normalizeLocalUrl(baseUrl)}. Is Ollama (or LM Studio) running with the server turned on?` };
+  }
+  return r;
+}
+
+// Asks the local server which models it has, for the picker in settings.
+async function listLocalModels(baseUrl, fetchFn) {
+  if (!normalizeLocalUrl(baseUrl)) return { ok: false, reason: 'That address is not on this computer.' };
+  try {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 4000);
+    let res;
+    try { res = await fetchFn(localModelsUrl(baseUrl), { signal: ac.signal }); } finally { clearTimeout(t); }
+    if (!res.ok) return { ok: false, reason: `The server answered ${res.status}.` };
+    const j = await res.json();
+    const models = (Array.isArray(j && j.data) ? j.data : []).map((m) => m && m.id).filter((x) => typeof x === 'string').slice(0, 200);
+    return { ok: true, models };
+  } catch (_) {
+    return { ok: false, reason: 'Could not reach the server. Is Ollama (or LM Studio) running?' };
+  }
+}
+
+module.exports = { makeLoopGuard, actionNudge, runChat, runChatGemini, runChatGroq, runChatCloudflare, runChatLocal, normalizeLocalUrl, listLocalModels, cloudflareUrl, toGeminiTools, toGeminiSchema, toGroqTools };

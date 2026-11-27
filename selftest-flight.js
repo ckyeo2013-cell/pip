@@ -40,7 +40,8 @@ let branchCanvas = null;
 const doc = { getElementById: (id) => els[id] || (els[id] = stub(id)), querySelector: () => petCanvas,
   createElement: () => { branchCanvas = stub('branchcanvas'); branchCanvas.getContext = () => fakeGL('branch'); return branchCanvas; }, body: stub('body'), addEventListener() {}, hasFocus: () => true };
 const win = { innerWidth: 1600, innerHeight: 900, devicePixelRatio: 1, pip: pipApi, addEventListener() {}, requestAnimationFrame: (f) => { rafQueue.push(f); return 1; } };
-const g = { window: win, document: doc, performance: { now: () => NOW }, requestAnimationFrame: win.requestAnimationFrame, setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {}, console };
+const noopApi = () => new Proxy(function () {}, { get: (_, k) => (k === 'then' ? undefined : () => noopApi()), set: () => true, apply: () => noopApi() }); // PipVoice, PipGames, PipSfx: not under test here
+const g = { PipVoice: noopApi(), PipGames: noopApi(), PipSfx: noopApi(), PipChess: noopApi(), window: win, document: doc, performance: { now: () => NOW }, requestAnimationFrame: win.requestAnimationFrame, setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {}, console };
 const Model = require('./model.js');
 const posesSeen = []; // every pose the renderer asked the model for, so the tests can look at arms, glide, flip...
 const recModel = Object.assign({}, Model, { buildParts: (p) => { posesSeen.push(p); return Model.buildParts(p); } });

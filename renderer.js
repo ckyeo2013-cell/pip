@@ -4,7 +4,7 @@
  */
 (() => {
   'use strict';
-  const chessLv = () => (settings.chessLevel === 'sloppy' ? 'sloppy' : 'sharp') + ':' + (Number(settings.chessStrength) || 7).toFixed(2) + (settings.chessBlunders >= 0 ? ':b' + Number(settings.chessBlunders).toFixed(2) : '') + (settings.chessBrilliants >= 0 ? ':f' + Number(settings.chessBrilliants).toFixed(2) : '');
+  const chessLv = () => settings.chessLevel === 'best' ? 'max' : ((settings.chessLevel === 'sloppy' ? 'sloppy' : 'sharp') + ':' + (Number(settings.chessStrength) || 7).toFixed(2) + (settings.chessBlunders >= 0 ? ':b' + Number(settings.chessBlunders).toFixed(2) : '') + (settings.chessBrilliants >= 0 ? ':f' + Number(settings.chessBrilliants).toFixed(2) : ''));
   const Model = globalThis.GliderModel;
   const pip = window.pip;
 
@@ -682,6 +682,7 @@
     dizzy: { wide: 0.5, mouth: -0.3, mouthO: 0.3, thinking: 0.9, wobble: 1 },
     yawn: { sleepy: 0.6, mouthO: 1 },
     lonely: { brow: -0.8, mouth: -0.7, sleepy: 0.5, earBack: 0.4 },
+    cry: { brow: -1, mouth: -1, wide: 0.3, earBack: 0.8, shake: 0.03, sleepy: 0.25 },
   };
   // resting face: shaped by how he feels about the user (saved between sessions, see mood memory in main.js)
   function moodBase() {
@@ -693,7 +694,7 @@
     if (m.level === 'friendly') return { mouth: 0.25 };
     return EMO.neutral;
   }
-  const EPRI = { neutral: 0, yawn: 0.5, bored: 1, sleepy: 1, happy: 1.5, confused: 1.5, proud: 2, excited: 2, surprised: 2, shy: 2, nervous: 2, dizzy: 2.5, embarrassed: 2.5, love: 3, jealous: 3, disgusted: 3, lonely: 3, mad: 4, scared: 4 };
+  const EPRI = { neutral: 0, yawn: 0.5, bored: 1, sleepy: 1, happy: 1.5, confused: 1.5, proud: 2, excited: 2, surprised: 2, shy: 2, nervous: 2, dizzy: 2.5, embarrassed: 2.5, love: 3, jealous: 3, disgusted: 3, lonely: 3, cry: 4, mad: 4, scared: 4 };
   const refreshMood = () => pip.moodGet().then((m) => { st.mood = m; return m; }).catch(() => null);
   const EMO_KEYS = ['brow', 'mouth', 'mouthO', 'wide', 'blush', 'earBack', 'sleepy', 'happy', 'alert', 'thinking'];
   st.emo = { name: 'neutral', until: 0, cur: {} };
@@ -1021,7 +1022,9 @@
     const overGames = !!gr && mouse.x >= gr.left && mouse.x <= gr.right && mouse.y >= gr.top && mouse.y <= gr.bottom;
     const pk = document.querySelector('.pick'), pr = pk ? pk.getBoundingClientRect() : null;
     const overPick = !!pr && mouse.x >= pr.left && mouse.x <= pr.right && mouse.y >= pr.top && mouse.y <= pr.bottom;
-    const want = st.dragging || !!panelDrag || !!resizing || hot || overPanel(mouse.x, mouse.y) || overGames || overPick;
+    const gu = document.getElementById('glider-ui'), gr2 = gu ? gu.getBoundingClientRect() : null;
+    const overGl = !!gr2 && mouse.x >= gr2.left && mouse.x <= gr2.right && mouse.y >= gr2.top && mouse.y <= gr2.bottom;
+    const want = overGl || st.dragging || !!panelDrag || !!resizing || hot || overPanel(mouse.x, mouse.y) || overGames || overPick;
     if (want !== interactive) {
       interactive = want;
       pip.setInteractive(want);
@@ -1359,6 +1362,40 @@
       box.style.top = Math.max(8, st.y - 130) + 'px';
     });
   }
+  // When a chunk of text is copied, a small non-blocking row of buttons appears next to Pip. The clipboard is only read to decide
+  // whether it is worth offering (it stays in this window) and again when a button is pressed. Short things, links and
+  // password-like single words never get an offer, and it asks at most once a minute.
+  const CLIP_OFFER = { last: 0 };
+  function clipKind(t) {
+    const s = String(t || '').trim();
+    if (s.length < 40 || s.length > 20000) return null;
+    if (/^https?:\/\/\S+$/i.test(s) || !/\s/.test(s)) return null; // a single link or token (could be a password or key)
+    const lines = s.split('\n');
+    const codey = lines.length >= 3 && (s.match(/[{};=()<>\[\]]/g) || []).length / s.length > 0.04;
+    if (codey) return 'code';
+    return s.split(/\s+/).length >= 8 ? 'prose' : null;
+  }
+  async function offerClip() {
+    if (settings.clipOffer === false || settings.reactions === false || quiet() || st.away || st.dragging || st.chatOpen) return false;
+    if (document.querySelector('.pick') || performance.now() - CLIP_OFFER.last < 60000) return false;
+    let text = '';
+    try { text = await pip.readClipboard(); } catch (_) { return false; }
+    const kind = clipKind(text);
+    if (!kind) return false;
+    CLIP_OFFER.last = performance.now();
+    const opts = kind === 'code' ? [['explain', 'Explain'], ['fix', 'Find bugs']] : [['summarize', 'Summarize'], ['explain', 'Explain'], ['fix', 'Fix writing'], ['translate', 'Translate']];
+    const box = document.createElement('div');
+    box.className = 'pick clipoffer';
+    const q = document.createElement('div'); q.textContent = kind === 'code' ? 'Copied some code. Want help with it?' : 'Copied some text. Want help with it?'; box.appendChild(q);
+    const gone = () => { clearTimeout(timer); box.remove(); };
+    for (const [v, label] of opts) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', () => { gone(); openChat(); send(v); }); box.appendChild(b); }
+    const x = document.createElement('button'); x.className = 'x'; x.textContent = '×'; x.title = 'Not now'; x.addEventListener('click', gone); box.appendChild(x);
+    const timer = setTimeout(gone, 10000);
+    document.body.appendChild(box);
+    box.style.left = Math.max(8, Math.min(area.w - 350, st.x - 40)) + 'px';
+    box.style.top = Math.max(8, st.y - 110) + 'px';
+    return true;
+  }
   const CLIP_RE = /^(explain|reply|draft a reply|summari[sz]e|fix|proofread|rewrite|shorten|simplify|translate(?: to ([a-z ]{2,20}))?)(?: (?:this|that|it|what i copied|my clipboard|the clipboard))?[.!]?$/i;
   const CLIP_ASK = { explain: 'Explain what I copied.', summarize: 'Summarize what I copied in a few sentences.', fix: 'Fix any mistakes in what I copied (spelling, grammar, or bugs if it is code) and give me the corrected version.', proofread: 'Proofread what I copied and give me the corrected version.', rewrite: 'Rewrite what I copied so it reads better.', shorten: 'Shorten what I copied but keep the meaning.', simplify: 'Explain what I copied in simpler words.', reply: 'Draft a short, friendly reply to what I copied (it is probably a message to me). Give just the reply, then one line offering a more formal or more casual version.', 'draft a reply': 'Draft a short, friendly reply to what I copied (it is probably a message to me). Give just the reply, then one line offering a more formal or more casual version.' };
   async function send(text, opts = {}) {
@@ -1389,7 +1426,7 @@
       if (liveEl) { liveEl.remove(); liveEl = null; } // the final message below replaces the live one
       if (res.error === 'no_key') {
         history.pop();
-        addMsg('pet', `I need ${res.provider === 'gemini' ? 'a Google Gemini key' : res.provider === 'groq' ? 'a Groq key' : res.provider === 'cloudflare' ? 'a Cloudflare token' : 'an Anthropic key'} before I can chat! Tap the gear button above and paste one in. (Simple things like opening sites, volume, timers, maths and coin flips work without it)`);
+        addMsg('pet', res.provider === 'local' ? 'Pick a model for your local server first: tap the gear button, open the AI section, press Find my models, and choose one. (Simple things like opening sites, volume, timers, maths and coin flips work without it)' : `I need ${res.provider === 'gemini' ? 'a Google Gemini key' : res.provider === 'groq' ? 'a Groq key' : res.provider === 'cloudflare' ? 'a Cloudflare token' : res.provider === 'local' ? 'a local model picked' : 'an Anthropic key'} before I can chat! Tap the gear button above and paste one in. (Simple things like opening sites, volume, timers, maths and coin flips work without it)`);
       } else if (res.error) {
         history.pop();
         addMsg('pet', 'Oops, something went wrong: ' + res.error);
@@ -1675,6 +1712,8 @@
         const r = await pip.chessTeach(w); if (r && r.message) showBubble(r.message, 5000);
       })(); break;
       case 'stopgame': pip.chessStop(); showBubble('Okay, I stopped.', 3000); break;
+      case 'brief': send('morning brief'); break;
+      case 'activity': openSettings(); showSec('activity'); loadActivity(); break;
       case 'clipsum': send('summarize'); break;
       case 'clipfix': send('fix'); break;
       case 'clip': {
@@ -1739,13 +1778,23 @@
     $('s-gem').classList.toggle('hidden', v !== 'gemini');
     $('s-groq').classList.toggle('hidden', v !== 'groq');
     $('s-cf').classList.toggle('hidden', v !== 'cloudflare');
-    $('s-anth').classList.toggle('hidden', v === 'gemini' || v === 'groq' || v === 'cloudflare');
+    $('s-local').classList.toggle('hidden', v !== 'local');
+    $('s-anth').classList.toggle('hidden', v === 'gemini' || v === 'groq' || v === 'cloudflare' || v === 'local');
   }
   $('s-provider').addEventListener('change', showProvider);
   $('s-getkey-a').addEventListener('click', () => pip.openKeyPage('anthropic'));
   $('s-getkey-g').addEventListener('click', () => pip.openKeyPage('gemini'));
   $('s-getkey-gr').addEventListener('click', () => pip.openKeyPage('groq'));
   $('s-getkey-cf').addEventListener('click', () => pip.openKeyPage('cloudflare'));
+  $('s-lfind').addEventListener('click', async () => {
+    const out = $('s-lstatus'); out.textContent = 'Looking...';
+    let r; try { r = await pip.localModels($('s-lurl').value); } catch (_) { r = null; }
+    const dl = $('s-lmodels'); dl.textContent = '';
+    if (!r || !r.ok) { out.textContent = (r && r.reason) || 'Could not look.'; return; }
+    for (const m of r.models) { const o = document.createElement('option'); o.value = m; dl.appendChild(o); }
+    if (r.models.length && !$('s-lmodel').value) { $('s-lmodel').value = r.models[0]; autosave(); }
+    out.textContent = r.models.length ? `Found ${r.models.length}. Pick one in the box.` : 'Connected, but no models are installed yet.';
+  });
 
   function skinNow() { // "Seasonal" picks the skin from today's date
     const s = settings.style || 'classic';
@@ -1766,6 +1815,8 @@
     $('s-grkey').value = '';
     $('s-grkey').placeholder = settings.hasGroqKey ? 'Key saved (type to replace)' : 'gsk_...';
     $('s-grmodel').value = settings.groqModel || 'openai/gpt-oss-120b';
+    $('s-lurl').value = settings.localUrl || 'http://localhost:11434/v1';
+    $('s-lmodel').value = settings.localModel || '';
     $('s-cfkey').value = '';
     $('s-cfkey').placeholder = settings.hasCloudflareKey ? 'Token saved (type to replace)' : 'API token';
     $('s-cfacct').value = settings.cloudflareAccountId || '';
@@ -1789,6 +1840,11 @@
     $('s-model').value = settings.model || 'claude-haiku-5-5';
     $('s-wander').checked = !!settings.wander;
     $('s-quips').checked = !!settings.quips;
+    $('s-clipoffer').checked = settings.clipOffer !== false;
+    $('s-language').value = settings.language || 'auto';
+    $('s-gliderradar').checked = !!settings.gliderRadar; $('s-gliderdoor').checked = settings.gliderDoor !== false; $('s-glidereverymin').value = settings.gliderEvery || 3;
+    $('s-weather').value = settings.weatherCity || '';
+    $('s-wunit').value = settings.weatherUnit === 'f' ? 'f' : 'c';
     $('s-short').checked = settings.shortReplies !== false;
     $('s-fallback').checked = settings.fallback !== false;
     $('s-react').checked = settings.reactions !== false;
@@ -1796,7 +1852,7 @@
     $('s-vol').value = Math.round((settings.soundVolume == null ? 0.5 : settings.soundVolume) * 100);
     $('s-memory').checked = settings.moodMemory !== false;
     $('s-apppersona').checked = settings.appPersona !== false;
-    $('s-level').value = settings.chessLevel === 'sloppy' ? 'sloppy' : 'sharp'; $('s-strength').value = settings.chessStrength || 7;
+    $('s-level').value = ['sloppy', 'best'].includes(settings.chessLevel) ? settings.chessLevel : 'sharp'; $('s-strength').value = settings.chessStrength || 7;
     { const bl = Number(settings.chessBlunders), br = Number(settings.chessBrilliants);
       $('s-blauto').checked = !(bl >= 0); $('s-blunders').value = bl >= 0 ? bl : 2; $('s-blunders').disabled = !(bl >= 0);
       $('s-bralto').checked = !(br >= 0); $('s-brill').value = br >= 0 ? br : 1; $('s-brill').disabled = !(br >= 0);
@@ -1855,6 +1911,69 @@
   });
   $('s-vol').addEventListener('input', () => { try { PipSfx.setVolume(Number($('s-vol').value) / 100); PipSfx.play('pop'); } catch (_) {} }); // hear the new volume as you drag
   for (const b of settingsEl.querySelectorAll('.s-go')) b.addEventListener('click', () => showSec(b.dataset.sec));
+  // ---- Settings > Activity: what Pip did, with Undo (textContent only, so nothing in a command or path can act as markup)
+  async function loadActivity() {
+    const box = $('act-list'); box.textContent = '';
+    let list = []; try { list = await pip.actionLogList(); } catch (_) {}
+    if (!list.length) { const d = document.createElement('div'); d.className = 'hint'; d.textContent = settings.actionLog === false ? 'The action log is switched off in General.' : 'Pip has not done anything yet.'; box.appendChild(d); return; }
+    for (const e of list) {
+      const row = document.createElement('div'); row.className = 'act';
+      const t = document.createElement('div'); t.className = 't'; t.textContent = e.title; row.appendChild(t);
+      const w = document.createElement('div'); w.className = 'w'; w.textContent = new Date(e.at).toLocaleString() + (e.undone ? '  (undone)' : ''); row.appendChild(w);
+      if (e.detail) {
+        const det = document.createElement('details'); const sm = document.createElement('summary'); sm.textContent = 'Show exactly what ran'; det.appendChild(sm);
+        const pre = document.createElement('pre'); pre.textContent = e.detail; det.appendChild(pre);
+        const cp = document.createElement('button'); cp.type = 'button'; cp.textContent = 'Copy'; cp.addEventListener('click', () => { pip.copyText(e.detail); cp.textContent = 'Copied'; setTimeout(() => { cp.textContent = 'Copy'; }, 1200); }); det.appendChild(cp);
+        row.appendChild(det);
+      }
+      const res = document.createElement('div'); res.className = 'res';
+      if (e.canUndo) {
+        const u = document.createElement('button'); u.type = 'button'; u.textContent = 'Undo';
+        u.addEventListener('click', async () => { u.disabled = true; let r; try { r = await pip.actionLogUndo(e.id); } catch (_) { r = { ok: false, text: 'That did not work.' }; } res.textContent = r.text; if (r.ok) u.remove(); else u.disabled = false; });
+        row.appendChild(u);
+      }
+      row.appendChild(res);
+      box.appendChild(row);
+    }
+  }
+  // ---- Settings > Connected tools (MCP). Everything is drawn with textContent.
+  async function loadMcp() {
+    const box = $('mcp-list'); box.textContent = '';
+    let list = []; try { list = await pip.mcpList(); } catch (_) {}
+    if (!list.length) { const d = document.createElement('div'); d.className = 'hint'; d.textContent = 'No connected tools yet.'; box.appendChild(d); }
+    for (const s of list) {
+      const row = document.createElement('div'); row.className = 'act';
+      const t = document.createElement('div'); t.className = 't'; t.textContent = s.name; row.appendChild(t);
+      const w = document.createElement('div'); w.className = 'w';
+      w.textContent = s.status === 'ready' ? `Running. ${s.tools.length} tool${s.tools.length === 1 ? '' : 's'}: ${s.tools.join(', ') || 'none'}` : s.status === 'starting' ? 'Starting...' : s.status === 'error' ? `Problem: ${s.error}` : 'Switched off';
+      row.appendChild(w);
+      const mk = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.addEventListener('click', async () => { b.disabled = true; try { await fn(); } catch (_) {} setTimeout(loadMcp, 600); }); row.appendChild(b); };
+      mk(s.enabled ? 'Switch off' : 'Switch on', () => pip.mcpToggle(s.id, !s.enabled));
+      if (s.enabled) mk('Restart', () => pip.mcpRestart(s.id));
+      mk('Remove', () => pip.mcpRemove(s.id));
+      box.appendChild(row);
+    }
+  }
+  $('mcp-add').addEventListener('click', async () => {
+    const msg = $('mcp-msg'); msg.textContent = '';
+    const env = {};
+    for (const line of $('mcp-env').value.split('\n')) { const i = line.indexOf('='); if (i > 0) env[line.slice(0, i).trim()] = line.slice(i + 1).trim(); }
+    const r = await pip.mcpAdd({ name: $('mcp-name').value, command: $('mcp-cmd').value, args: $('mcp-args').value.split('\n').map((x) => x.trim()).filter(Boolean), env });
+    if (!r || !r.ok) { msg.textContent = (r && r.reason) || 'That did not work.'; return; }
+    for (const id of ['mcp-name', 'mcp-cmd', 'mcp-args', 'mcp-env']) $(id).value = '';
+    msg.textContent = 'Added. Connecting...'; setTimeout(loadMcp, 1200); setTimeout(() => { msg.textContent = ''; loadMcp(); }, 5000);
+  });
+  settingsEl.querySelector('.s-go[data-sec="mcp"]').addEventListener('click', loadMcp);
+  let clearArmed = 0;
+  $('act-clear').addEventListener('click', async () => { // two clicks, so a stray tap cannot wipe the saved copies
+    const b = $('act-clear');
+    if (!clearArmed) { clearArmed = setTimeout(() => { clearArmed = 0; b.textContent = 'Clear list and saved copies'; }, 4000); b.textContent = 'Click again to confirm (this cannot be undone)'; return; }
+    clearTimeout(clearArmed); clearArmed = 0; b.textContent = 'Clear list and saved copies';
+    try { await pip.actionLogClear(); } catch (_) {}
+    loadActivity();
+  });
+  settingsEl.querySelector('.s-go[data-sec="activity"]').addEventListener('click', loadActivity);
+  pip.onOpenActivity(() => { if (!st.chatOpen) openChat(); openSettings(); showSec('activity'); loadActivity(); });
   $('s-cancel').addEventListener('click', () => ($('s-menu').classList.contains('off') ? showSec(null) : settingsEl.classList.remove('open')));
   $('s-choose').addEventListener('click', async () => {
     const f = await pip.chooseFolder();
@@ -1923,6 +2042,8 @@
       geminiModel: $('s-gmodel').value,
       groqKey: $('s-grkey').value,
       groqModel: $('s-grmodel').value,
+      localUrl: $('s-lurl').value,
+      localModel: $('s-lmodel').value,
       cloudflareKey: $('s-cfkey').value,
       cloudflareAccountId: $('s-cfacct').value,
       cloudflareModel: $('s-cfmodel').value,
@@ -1935,6 +2056,11 @@
       model: $('s-model').value,
       wander: $('s-wander').checked,
       quips: $('s-quips').checked,
+      clipOffer: $('s-clipoffer').checked,
+      language: $('s-language').value,
+      gliderRadar: $('s-gliderradar').checked, gliderDoor: $('s-gliderdoor').checked, gliderEvery: Number($('s-glidereverymin').value) || 3,
+      weatherCity: $('s-weather').value,
+      weatherUnit: $('s-wunit').value,
       shortReplies: $('s-short').checked,
       fallback: $('s-fallback').checked,
       reactions: $('s-react').checked,
@@ -1969,12 +2095,69 @@
   // autosave: no Save button. Changes apply as you make them (typing waits for a short pause)
   let saveQ = Promise.resolve(), saveT = 0;
   const autosave = () => { saveQ = saveQ.then(saveNow).catch(() => { $('s-status').textContent = 'Could not save'; }); };
-  settingsEl.addEventListener('change', (e) => { if (e.target.closest('#sec-ai, #sec-voice, #sec-look, #sec-access, #sec-cals, #sec-chess, #sec-general')) { clearTimeout(saveT); autosave(); } });
+  settingsEl.addEventListener('change', (e) => { if (e.target.closest('#sec-ai, #sec-voice, #sec-look, #sec-access, #sec-cals, #sec-chess, #sec-language, #sec-glider, #sec-general')) { clearTimeout(saveT); autosave(); } });
   settingsEl.addEventListener('input', (e) => { if (e.target.matches('input[type=text],input[type=range]') && e.target.id !== 's-find' && e.target.id !== 's-calname' && e.target.id !== 's-calurl') { clearTimeout(saveT); saveT = setTimeout(autosave, 700); } });
+
+  // ---------------------------------------------------------------- another sugar glider on the screen (see the radar in main.js)
+  const GL_YAP = ['Another sugar glider! ANOTHER ONE!', 'Look look look, it is a glider like me!', 'Is that a friend?! I have to say hi!', 'Hi hi hi hi hi! Can you hear me?', 'Those big eyes! That fluffy tail! I cannot even!', 'Do you think it glides too? I bet it glides!', 'We are the same! We are literally the same!', 'I have so many questions. Are you also nocturnal?', 'Wait, is it looking at me? It is looking at me!', 'Best day ever. Best. Day. Ever.', 'Can we keep it? Can it live here?', 'I am going to tell it everything about my day!', 'Squeee! Sorry. Squeeeee!'];
+  const GL_JOKES = [['Knock knock.', 'Who is there? ...Cargo. Cargo who? Car go beep beep!'], ['Why did the sugar glider cross the road?', 'It did not. It glided over it.'], ['What do you call a sleepy sugar glider?', 'A nap-possum!'], ['Why are sugar gliders bad at secrets?', 'Because they always spill the nectar.'], ['What is a glider\'s favourite kind of music?', 'Anything with a good drop!'], ['Why did the glider bring a ladder?', 'To reach new heights. Then it just jumped off.'], ['What did the tree say to the sugar glider?', 'Leaf me alone... just kidding, stay!'], ['What do you call two gliders hanging out?', 'A fluff-le!'], ['Why was the glider great at maths?', 'It always found the right angle to land.'], ['Knock knock.', 'Who is there? ...Boo. Boo who? Do not cry, it is just a joke!']];
+  const glPick = (a) => a[Math.floor(Math.random() * a.length)];
+  const glx = { yap: null, ui: null, sadMode: null };
+  function glStopYap() { if (glx.yap) { clearInterval(glx.yap.t); clearTimeout(glx.yap.end); glx.yap = null; } }
+  function glClearUi() { if (glx.ui) { glx.ui.remove(); glx.ui = null; } glx.sadMode = null; }
+  function gliderFound() {
+    glClearUi();
+    const wasAway = !!st.away;
+    if (wasAway) comeBack('You will not BELIEVE what I just saw!');
+    glStopYap();
+    const go = () => {
+      sfx('happy'); setEmotion('excited', 9000); startDance('flourish');
+      let n = 0;
+      const say = () => { const line = n === 0 ? 'WAIT. Is that ANOTHER SUGAR GLIDER on your screen?!' : glPick(GL_YAP); n++; showBubble(line, 2600); setEmotion('excited', 6000); if (n % 3 === 0) startDance('flourish'); else st.queue.push({ tx: clamp(st.x + (Math.random() < 0.5 ? -70 : 70), minPetX(), maxPetX()), h: 60 }); };
+      say();
+      glx.yap = { t: setInterval(say, 2900), end: setTimeout(glStopYap, 180000) }; // yapping, nonstop, until it vanishes (or three minutes of it)
+    };
+    if (wasAway) setTimeout(go, 2200); else go();
+  }
+  function glJoke(done) { // setup, a pause, the punchline
+    const [a, b] = glPick(GL_JOKES);
+    return { a, b, done };
+  }
+  function glCheerUp(show) { // show(text, ms) displays a line; resolves after the punchline
+    const j = glPick(GL_JOKES);
+    show(j[0], 3600);
+    return new Promise((res) => setTimeout(() => { show(j[1], 4200); setTimeout(res, 3600); }, 3700));
+  }
+  function gliderLost(door) {
+    glStopYap(); glClearUi();
+    if (st.away) return;
+    if (!door) { // no room: just sad, with tears
+      setEmotion('cry', 60000); showBubble('...it is gone. It was just here...', 5000); sfx('sad');
+      const chip = document.createElement('button'); chip.id = 'glider-ui'; chip.className = 'glider-chip'; chip.textContent = 'Cheer Pip up (tell a joke)';
+      document.body.appendChild(chip); glx.ui = chip; glx.sadMode = 'cry'; let busy = false;
+      chip.onclick = async () => { if (busy) return; busy = true; chip.disabled = true; await glCheerUp((t, ms) => showBubble(t, ms)); glClearUi(); sfx('happy'); setEmotion('happy', 7000); cheer(3000); showBubble('Hehe... okay, that helped. Thank you.', 4000); };
+      return;
+    }
+    goSad(); sfx('sad'); showBubble('The glider is gone...', 2400);
+    setTimeout(() => { // the room: a door with a sign. Clicking it is a knock; a joke through the door brings him back.
+      if (!st.away) return;
+      const d = document.createElement('div'); d.id = 'glider-ui'; d.className = 'glider-door';
+      d.innerHTML = '<div class="gd-sign">DO NOT DISTURB<br><small>depressed sugar glider inside</small></div><div class="gd-door"><div class="gd-knob"></div></div><div class="gd-say"></div><div class="gd-hint">knock to cheer him up</div>';
+      document.body.appendChild(d); glx.ui = d; glx.sadMode = 'door'; let busy = false;
+      const say = d.querySelector('.gd-say');
+      d.onclick = async () => {
+        if (busy) return; busy = true; d.classList.add('knock'); d.querySelector('.gd-hint').textContent = '';
+        await glCheerUp((t, ms) => { say.textContent = t; say.classList.add('show'); clearTimeout(say._t); say._t = setTimeout(() => say.classList.remove('show'), ms); });
+        glClearUi(); comeBack('Ha! Okay, that was actually good. I am back!'); setTimeout(() => setEmotion('happy', 6000), 2000);
+      };
+    }, 6500);
+  }
+  function gliderEvent(m) { if (m.state === 'found') gliderFound(); else if (m.state === 'lost') gliderLost(!!m.door); }
 
   pip.onMood((m) => {
     const now = performance.now();
     if (m.type === 'call') { st.inCall = !!m.on; if (m.on) showBubble("Zoom meeting, I'll stay quiet", 5000); return; }
+    if (m.type === 'glider') { if (!quiet()) gliderEvent(m); return; }
     if (quiet()) return;
     if (settings.reactions === false && ['idle', 'music', 'copied', 'morning'].includes(m.type)) return;
     if (m.type === 'emote') { if (m.name === 'excited' || m.name === 'proud') startDance('flourish'); setEmotion(m.name, 6000); return; }
@@ -1988,8 +2171,8 @@
       return;
     }
     if (m.type === 'music') { if (m.on) { setEmotion('excited', 6000); startDance(); showBubble('Ooh, music!', 4000); } return; }
-    if (m.type === 'copied') { alertUntil = now + 2500; if (Math.random() < 0.25) showBubble('Ooh, what did you copy?', 3000); return; }
-    if (m.type === 'morning') { setEmotion('happy', 7000); showBubble('Good morning! Ready for today?', 6000); return; }
+    if (m.type === 'copied') { alertUntil = now + 2500; offerClip().then((shown) => { if (!shown && Math.random() < 0.25) showBubble('Ooh, what did you copy?', 3000); }); return; }
+    if (m.type === 'morning') { setEmotion('happy', 7000); showBubble(m.text ? `${m.text} Say "my day" for details.` : 'Good morning! Ready for today?', m.text ? 11000 : 6000); return; }
     if (m.type === 'return') {
       alertUntil = now + 4000;
       cheer(2200);

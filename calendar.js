@@ -403,7 +403,8 @@ function createCalendar({ fetchFn, readFile, execFile, platform = process.platfo
     return labels;
   }
 
-  async function search(input, now = new Date()) {
+  // Reads every connected calendar and returns the matching event instances (structured), plus notes about any source that failed.
+  async function gather(input, now = new Date()) {
     const query = typeof (input && input.query) === 'string' ? input.query.trim().slice(0, 80) : '';
     const { from, to } = windowFor(input, now);
     const tokens = norm(query).split(/\s+/).filter(Boolean);
@@ -440,7 +441,16 @@ function createCalendar({ fetchFn, readFile, execFile, platform = process.platfo
       seen.add(k);
       return true;
     }).sort((a, b) => a.start - b.start);
-    return formatResults({ query, from, to, insts: all, notes, labels });
+    return { query, from, to, insts: all, notes, labels };
+  }
+
+  async function search(input, now = new Date()) {
+    return formatResults(await gather(input, now));
+  }
+
+  // Structured events (for the morning brief), e.g. events({ start_date: '2026-11-24', end_date: '2026-11-24' }).
+  async function events(input, now = new Date()) {
+    return (await gather(input, now)).insts;
   }
 
   // Used when adding a calendar in settings: returns how many events it found, or throws.
@@ -449,7 +459,7 @@ function createCalendar({ fetchFn, readFile, execFile, platform = process.platfo
     return (await loadSource(src)).length;
   }
 
-  return { search, describe, test, windowFor };
+  return { search, events, describe, test, windowFor };
 }
 
 module.exports = { createCalendar, parseICS, expand, windowFor, parseRRule, formatResults };

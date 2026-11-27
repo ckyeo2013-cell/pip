@@ -1,4 +1,4 @@
-/* Pip's own games window: chess, checkers, connect four and tic-tac-toe against Pip. Everything runs offline in this window,
+/* Pip's own games window: chess, checkers, connect four, tic-tac-toe, gomoku, hangman, battleship and dots and boxes against Pip. Everything runs offline in this window,
    no AI service and no screen reading needed. The game rules and Pip's move choice are plain functions (exported for tests);
    the window itself only exists in the browser. */
 (function (root) {
@@ -193,7 +193,145 @@
     return picks[rnd(picks.length)];
   }
 
-  const logic = { tttWinner, tttPick, tttScore, c4Drop, c4Wins, c4Pick, ckStart, ckMoves, ckApply, ckPick, ckEval };
+  // ================================================================ gomoku (11x11, five in a row; 'X' moves first)
+  const GN = 11;
+  function gmWins(b, i, p) { // does the stone just placed at i make five or more in a row?
+    const r = Math.floor(i / GN), c = i % GN;
+    for (const [dr, dc] of [[0, 1], [1, 0], [1, 1], [1, -1]]) {
+      let n = 1;
+      for (const s of [1, -1]) { let rr = r + dr * s, cc = c + dc * s; while (rr >= 0 && rr < GN && cc >= 0 && cc < GN && b[rr * GN + cc] === p) { n++; rr += dr * s; cc += dc * s; } }
+      if (n >= 5) return true;
+    }
+    return false;
+  }
+  function gmValue(b, i, p) { // how good is it for p to put a stone on empty cell i (runs of its own stones, and whether the ends are open)
+    const r = Math.floor(i / GN), c = i % GN;
+    let total = 0;
+    for (const [dr, dc] of [[0, 1], [1, 0], [1, 1], [1, -1]]) {
+      let n = 1, open = 0;
+      for (const s of [1, -1]) {
+        let rr = r + dr * s, cc = c + dc * s;
+        while (rr >= 0 && rr < GN && cc >= 0 && cc < GN && b[rr * GN + cc] === p) { n++; rr += dr * s; cc += dc * s; }
+        if (rr >= 0 && rr < GN && cc >= 0 && cc < GN && b[rr * GN + cc] === '') open++;
+      }
+      total += n >= 5 ? 100000 : n === 4 ? (open === 2 ? 10000 : open === 1 ? 1000 : 0) : n === 3 ? (open === 2 ? 1000 : open === 1 ? 100 : 0) : n === 2 ? (open === 2 ? 100 : open === 1 ? 10 : 0) : 1;
+    }
+    return total;
+  }
+  function gmPick(b, pip, level) {
+    const opp = pip === 'X' ? 'O' : 'X';
+    if (!b.some(Boolean)) return Math.floor(GN / 2) * GN + Math.floor(GN / 2);
+    const cand = [];
+    for (let i = 0; i < GN * GN; i++) {
+      if (b[i] !== '') continue;
+      const r = Math.floor(i / GN), c = i % GN;
+      let near = false;
+      for (let dr = -2; dr <= 2 && !near; dr++) for (let dc = -2; dc <= 2; dc++) { const rr = r + dr, cc = c + dc; if (rr >= 0 && rr < GN && cc >= 0 && cc < GN && b[rr * GN + cc] !== '') { near = true; break; } }
+      if (near) cand.push(i);
+    }
+    if (!cand.length) { const e = b.findIndex((v) => v === ''); return e; }
+    if (Math.random() >= SLIP[level]) { // a sloppy Pip sometimes misses the win or the block
+      for (const i of cand) if (gmValue(b, i, pip) >= 100000) return i;
+      for (const i of cand) if (gmValue(b, i, opp) >= 100000) return i;
+    }
+    const defend = 0.8 + 0.04 * strN(level);
+    const noise = String(level).startsWith('sloppy') ? 0.6 : Math.max(0.02, 0.25 - 0.02 * strN(level));
+    let best = [], top = -1;
+    for (const i of cand) {
+      const s = (gmValue(b, i, pip) + defend * gmValue(b, i, opp)) * (1 + Math.random() * noise);
+      if (s > top + 1e-9) { top = s; best = [i]; } else if (Math.abs(s - top) <= 1e-9) best.push(i);
+    }
+    return best[rnd(best.length)];
+  }
+
+  // ================================================================ hangman (Pip picks a word; longer words at higher strength)
+  const HM_WORDS = {
+    easy: 'apple bread chair dance eagle flame grape house juice knife lemon mouse night ocean piano queen river stone table tiger uncle voice water zebra cloud dream earth fruit green happy light money north paper radio sheep train'.split(' '),
+    mid: 'balloon blanket bicycle cabinet chimney compass dolphin gadget factory gallery harvest journey kitchen lantern monster network orchard penguin pyramid rainbow shelter thunder village whistle volcano pumpkin library cottage dragon fortune'.split(' '),
+    hard: 'elephant adventure afternoon blueberry butterfly chocolate dangerous earthquake fireworks gentleman hurricane invisible jellyfish kangaroo lighthouse microscope nightingale orchestra parachute questions rectangle sandwiches telescope umbrella waterfall xylophone pineapple crocodile marshmallow'.split(' '),
+  };
+  const hmWord = (level) => { const s = strN(level), pool = s <= 3 ? HM_WORDS.easy : s <= 7 ? HM_WORDS.mid : HM_WORDS.hard; return pool[rnd(pool.length)]; };
+  const hmMask = (word, guessed) => word.split('').map((ch) => (guessed.includes(ch) ? ch : ''));
+  const HM_MAX = 7;
+
+  // ================================================================ battleship (10x10; ships of 5, 4, 3, 3, 2)
+  const BN = 10;
+  const BS_SHIPS = [['carrier', 5], ['battleship', 4], ['cruiser', 3], ['submarine', 3], ['destroyer', 2]];
+  function bsPlace() {
+    const grid = new Array(BN * BN).fill(-1), ships = [];
+    BS_SHIPS.forEach(([name, len], k) => {
+      for (let tries = 0; tries < 500; tries++) {
+        const horiz = rnd(2) === 0, r = rnd(horiz ? BN : BN - len + 1), c = rnd(horiz ? BN - len + 1 : BN);
+        const cells = []; for (let j = 0; j < len; j++) cells.push((horiz ? r : r + j) * BN + (horiz ? c + j : c));
+        if (cells.some((x) => grid[x] !== -1)) continue;
+        cells.forEach((x) => { grid[x] = k; });
+        ships.push({ name, len, cells, hit: 0 });
+        return;
+      }
+    });
+    return { grid, ships };
+  }
+  // shots[i]: 0 not fired, 1 miss, 2 hit, 3 part of a sunk ship
+  function bsFire(fleet, shots, i) {
+    if (shots[i]) return null;
+    const k = fleet.grid[i];
+    if (k < 0) { shots[i] = 1; return { result: 'miss' }; }
+    shots[i] = 2;
+    const s = fleet.ships[k];
+    s.hit++;
+    if (s.hit === s.len) { s.cells.forEach((c) => { shots[c] = 3; }); return { result: 'sunk', ship: s }; }
+    return { result: 'hit' };
+  }
+  const bsAllSunk = (fleet) => fleet.ships.every((s) => s.hit === s.len);
+  function bsPick(shots, remaining, level) { // uses only what Pip can see: its own shots and which ships are still afloat
+    const free = []; for (let i = 0; i < BN * BN; i++) if (!shots[i]) free.push(i);
+    if (Math.random() < SLIP[level] * 2) return free[rnd(free.length)];
+    const dens = new Array(BN * BN).fill(0);
+    for (const len of remaining) {
+      for (let r = 0; r < BN; r++) for (let c = 0; c < BN; c++) for (const horiz of [true, false]) {
+        if (horiz ? c + len > BN : r + len > BN) continue;
+        let hits = 0, bad = false; const cells = [];
+        for (let j = 0; j < len; j++) { const x = (horiz ? r : r + j) * BN + (horiz ? c + j : c); if (shots[x] === 1 || shots[x] === 3) { bad = true; break; } if (shots[x] === 2) hits++; cells.push(x); }
+        if (bad) continue;
+        const w = hits ? 1 + hits * hits * 30 : 1;
+        for (const x of cells) if (!shots[x]) dens[x] += w;
+      }
+    }
+    let best = [], top = 0;
+    for (const i of free) { if (dens[i] > top) { top = dens[i]; best = [i]; } else if (dens[i] === top && top > 0) best.push(i); }
+    return best.length ? best[rnd(best.length)] : free[rnd(free.length)];
+  }
+
+  // ================================================================ dots and boxes (4x4 boxes). Edges 0..19 are horizontal (5 rows of 4), 20..39 vertical (4 rows of 5).
+  const DB = 4, DB_H = DB * (DB + 1), DB_E = 2 * DB_H;
+  const dbH = (r, c) => r * DB + c, dbV = (r, c) => DB_H + r * (DB + 1) + c;
+  const DB_SIDES = [], DB_ADJ = Array.from({ length: DB_E }, () => []);
+  for (let r = 0; r < DB; r++) for (let c = 0; c < DB; c++) { const s = [dbH(r, c), dbH(r + 1, c), dbV(r, c), dbV(r, c + 1)]; DB_SIDES.push(s); s.forEach((e) => DB_ADJ[e].push(r * DB + c)); }
+  const dbCount = (edges, box) => DB_SIDES[box].reduce((n, e) => n + edges[e], 0);
+  function dbPlay(edges, owners, e, who) { // takes edge e for `who`, returns how many boxes that completed (those boxes are theirs, and they go again)
+    edges[e] = 1; let n = 0;
+    for (const box of DB_ADJ[e]) if (dbCount(edges, box) === 4 && !owners[box]) { owners[box] = who; n++; }
+    return n;
+  }
+  function dbPick(edges, owners, level) {
+    const free = []; for (let e = 0; e < DB_E; e++) if (!edges[e]) free.push(e);
+    if (Math.random() >= SLIP[level]) { const grab = free.filter((e) => DB_ADJ[e].some((b) => dbCount(edges, b) === 3)); if (grab.length) return grab[rnd(grab.length)]; }
+    const safe = free.filter((e) => DB_ADJ[e].every((b) => dbCount(edges, b) <= 1));
+    if (safe.length) return safe[rnd(safe.length)];
+    if (String(level).startsWith('sloppy') && Math.random() < 0.5) return free[rnd(free.length)];
+    // every move gives something away: give away as little as possible (what could the other side grab straight after?)
+    let best = [], least = Infinity;
+    for (const e of free) {
+      const ed = edges.slice(), ow = owners.slice();
+      dbPlay(ed, ow, e, 'pip');
+      let given = 0, again = true;
+      while (again) { again = false; for (let f = 0; f < DB_E; f++) if (!ed[f] && DB_ADJ[f].some((b) => dbCount(ed, b) === 3)) { given += dbPlay(ed, ow, f, 'you'); again = true; } }
+      if (given < least) { least = given; best = [e]; } else if (given === least) best.push(e);
+    }
+    return best[rnd(best.length)];
+  }
+
+  const logic = { gmWins, gmPick, gmValue, GN, hmWord, hmMask, HM_WORDS, HM_MAX, bsPlace, bsFire, bsAllSunk, bsPick, BS_SHIPS, dbPlay, dbPick, dbCount, DB_E, DB_SIDES, tttWinner, tttPick, tttScore, c4Drop, c4Wins, c4Pick, ckStart, ckMoves, ckApply, ckPick, ckEval };
   root.PipGameLogic = logic;
   if (typeof document === 'undefined') { if (typeof module !== 'undefined' && module.exports) module.exports = logic; return; }
 
@@ -229,7 +367,7 @@
     panel = el('div'); panel.id = 'gm';
     const hd = el('div', 'gm-hd');
     titleSel = el('select');
-    for (const [v, t] of [['chess', 'Chess'], ['checkers', 'Checkers'], ['connect4', 'Connect four'], ['ttt', 'Tic-tac-toe']]) { const o = el('option', '', t); o.value = v; titleSel.appendChild(o); }
+    for (const [v, t] of [['chess', 'Chess'], ['checkers', 'Checkers'], ['connect4', 'Connect four'], ['ttt', 'Tic-tac-toe'], ['gomoku', 'Gomoku (five in a row)'], ['hangman', 'Hangman'], ['battleship', 'Battleship'], ['dots', 'Dots and boxes']]) { const o = el('option', '', t); o.value = v; titleSel.appendChild(o); }
     levelSel = el('select');
     for (const [v, t] of [['sharp', 'Sharp'], ['sloppy', 'Sloppy']]) { const o = el('option', '', t); o.value = v; levelSel.appendChild(o); }
     strSel = el('input'); strSel.type = 'range'; strSel.min = 1; strSel.max = 10; strSel.step = 0.05; strSel.title = 'Weaker \u2192 Stronger'; strSel.style.width = '90px';
@@ -264,7 +402,7 @@
     body.textContent = '';
     plies = 0; lastTalk = -9;
     host.started(game);
-    if (game === 'ttt') startTtt(); else if (game === 'connect4') startC4(); else if (game === 'checkers') startCheckers(); else startChess();
+    if (game === 'ttt') startTtt(); else if (game === 'connect4') startC4(); else if (game === 'checkers') startCheckers(); else if (game === 'gomoku') startGomoku(); else if (game === 'hangman') startHangman(); else if (game === 'battleship') startBattleship(); else if (game === 'dots') startDots(); else startChess();
   }
 
   // ---- tic-tac-toe
@@ -336,6 +474,163 @@
     }
     setStatus(me === 'R' ? 'You are red. Click a column.' : 'You are yellow. Pip goes first.');
     if (me === 'Y') { turn = 'pip'; setTimeout(pipTurn, 450); }
+  }
+
+  // ---- gomoku
+  function startGomoku() {
+    const my = token, b = new Array(GN * GN).fill(''), grid = el('div', 'gm-gom'), cells = [];
+    const me = playerSide === 'first' ? 'X' : 'O', pip = me === 'X' ? 'O' : 'X';
+    let turn = 'X', last = -1;
+    for (let i = 0; i < GN * GN; i++) { const c = el('button', 'gm-gcell'); cells.push(c); grid.appendChild(c); c.addEventListener('click', () => play(i)); }
+    body.appendChild(grid);
+    const draw = () => cells.forEach((c, i) => { c.className = 'gm-gcell' + (b[i] === 'X' ? ' bk' : b[i] === 'O' ? ' wh' : '') + (i === last ? ' last' : ''); });
+    const settle = (i, p) => {
+      draw();
+      if (gmWins(b, i, p)) { finish(p === me ? 'player' : 'pip'); return true; }
+      if (b.every(Boolean)) { finish('draw'); return true; }
+      return false;
+    };
+    const pipTurn = () => {
+      if (my !== token) return;
+      const i = gmPick(b.slice(), pip, level);
+      b[i] = pip; last = i; host.sfx('move'); plies++;
+      if (settle(i, pip)) return;
+      turn = me; setStatus('Your turn.');
+    };
+    function play(i) {
+      if (my !== token || turn !== me || b[i]) return;
+      b[i] = me; last = i; host.sfx('move'); plies++;
+      if (settle(i, me)) return;
+      turn = 'pip'; setStatus('Pip is thinking...');
+      setTimeout(pipTurn, 450);
+    }
+    setStatus(me === 'X' ? 'You are black and go first. Get five in a row!' : 'You are white. Pip goes first.');
+    if (me === 'O') { turn = 'pip'; setTimeout(pipTurn, 450); }
+  }
+
+  // ---- hangman (Pip thinks of a word; the strength slider makes the words longer)
+  const HM_ART = [
+    '\n\n\n\n\n\n_______',
+    '\n |\n |\n |\n |\n |\n_|_____',
+    ' ______\n |\n |\n |\n |\n |\n_|_____',
+    ' ______\n |    |\n |\n |\n |\n |\n_|_____',
+    ' ______\n |    |\n |    O\n |\n |\n |\n_|_____',
+    ' ______\n |    |\n |    O\n |    |\n |\n |\n_|_____',
+    ' ______\n |    |\n |    O\n |   /|\\\n |\n |\n_|_____',
+    ' ______\n |    |\n |    O\n |   /|\\\n |   / \\\n |\n_|_____',
+  ];
+  function startHangman() {
+    const my = token, word = hmWord(level), guessed = [];
+    let wrong = 0, over = false;
+    const art = el('pre', 'gm-hmart'), wordEl = el('div', 'gm-hmword'), keys = el('div', 'gm-hmkeys'), btns = {};
+    const draw = () => {
+      art.textContent = HM_ART[wrong];
+      wordEl.textContent = hmMask(word, guessed).map((ch) => (ch || '_').toUpperCase()).join(' ');
+    };
+    const wrap = el('div', 'gm-hm'); wrap.append(art, wordEl, keys); body.appendChild(wrap);
+    for (const ch of 'abcdefghijklmnopqrstuvwxyz') {
+      const k = el('button', 'gm-hmkey', ch.toUpperCase()); btns[ch] = k; keys.appendChild(k);
+      k.addEventListener('click', () => {
+        if (my !== token || over || guessed.includes(ch)) return;
+        guessed.push(ch); k.disabled = true; plies++;
+        if (word.includes(ch)) { k.classList.add('good'); host.sfx('move'); } else { k.classList.add('bad'); wrong++; host.sfx('move'); }
+        draw();
+        if (!hmMask(word, guessed).includes('')) { over = true; finish('player'); setStatus(`You got it: ${word.toUpperCase()}!`); }
+        else if (wrong >= HM_MAX) { over = true; draw(); finish('pip'); setStatus(`Pip wins this one. The word was ${word.toUpperCase()}.`); }
+        else setStatus(`${HM_MAX - wrong} wrong guesses left.`);
+      });
+    }
+    draw();
+    setStatus(`Pip is thinking of a ${word.length}-letter word. Guess a letter!`);
+  }
+
+  // ---- battleship (you fire at Pip's waters; Pip fires at yours; the fleets are placed at random)
+  function startBattleship() {
+    const my = token, mine = bsPlace(), theirs = bsPlace(), myShots = new Array(BN * BN).fill(0), pipShots = new Array(BN * BN).fill(0);
+    let turn = 'you', over = false;
+    const board = (cls, click) => { const g = el('div', 'gm-bs ' + cls), cs = []; for (let i = 0; i < BN * BN; i++) { const c = el('button', 'gm-bcell'); cs.push(c); g.appendChild(c); if (click) c.addEventListener('click', () => fire(i)); } return { g, cs }; };
+    const enemy = board('enemy', true), home = board('home', false);
+    const wrap = el('div', 'gm-bswrap');
+    wrap.append(el('div', 'gm-bslabel', "Pip's waters (click to fire)"), enemy.g, el('div', 'gm-bslabel', 'Your fleet'), home.g);
+    body.appendChild(wrap);
+    const mark = (cs, shots, fleet, showShips) => cs.forEach((c, i) => {
+      const s = shots[i], ship = fleet.grid[i] >= 0;
+      c.className = 'gm-bcell' + (showShips && ship ? ' ship' : '') + (s === 1 ? ' miss' : s === 2 ? ' hit' : s === 3 ? ' sunk' : '');
+    });
+    const draw = () => { mark(enemy.cs, myShots, theirs, false); mark(home.cs, pipShots, mine, true); };
+    const left = (f) => f.ships.filter((s) => s.hit < s.len).length;
+    function pipTurn() {
+      if (my !== token || over) return;
+      const rem = mine.ships.filter((s) => s.hit < s.len).map((s) => s.len);
+      const i = bsPick(pipShots, rem, level), r = bsFire(mine, pipShots, i);
+      host.sfx('move'); plies++; draw();
+      if (bsAllSunk(mine)) { over = true; finish('pip'); return; }
+      const word = r.result === 'sunk' ? `Pip sank your ${r.ship.name}!` : r.result === 'hit' ? 'Pip hit one of your ships!' : 'Pip missed.';
+      if (r.result === 'sunk') talk([['Gotcha! Down goes your ' + r.ship.name + '!', 'happy']], true);
+      if (r.result === 'hit') { setTimeout(pipTurn, 600); setStatus(word + ' Pip fires again...'); return; }
+      turn = 'you'; setStatus(word + ' Your turn.');
+    }
+    function fire(i) {
+      if (my !== token || over || turn !== 'you' || myShots[i]) return;
+      const r = bsFire(theirs, myShots, i);
+      host.sfx('move'); plies++; draw();
+      if (bsAllSunk(theirs)) { over = true; finish('player'); return; }
+      const word = r.result === 'sunk' ? `You sank Pip's ${r.ship.name}!` : r.result === 'hit' ? 'A hit! Fire again.' : 'A miss.';
+      if (r.result === 'sunk') talk([['Oh no, not my ' + r.ship.name + '!', 'sad']], true);
+      if (r.result === 'hit') { setStatus(word + ` Pip has ${left(theirs)} ships left.`); return; } // a hit earns another shot
+      turn = 'pip'; setStatus(word + ' Pip is aiming...');
+      setTimeout(pipTurn, 600);
+    }
+    draw();
+    setStatus('Sink all 5 of Pip\'s ships. A hit earns another shot. Fire away!');
+  }
+
+  // ---- dots and boxes (finish a box to score it and go again; most boxes wins)
+  function startDots() {
+    const my = token, edges = new Array(DB_E).fill(0), owners = new Array(DB * DB).fill('');
+    const me = 'you';
+    let turn = playerSide === 'first' ? 'you' : 'pip', last = -1;
+    const grid = el('div', 'gm-db'), edgeEl = {}, boxEl = [];
+    for (let gr = 0; gr < 2 * DB + 1; gr++) for (let gc = 0; gc < 2 * DB + 1; gc++) {
+      if (gr % 2 === 0 && gc % 2 === 0) { grid.appendChild(el('div', 'gm-dot')); continue; }
+      if (gr % 2 === 1 && gc % 2 === 1) { const bx = el('div', 'gm-box'); boxEl[((gr - 1) / 2) * DB + (gc - 1) / 2] = bx; grid.appendChild(bx); continue; }
+      const horiz = gr % 2 === 0, e = horiz ? dbH(gr / 2, (gc - 1) / 2) : dbV((gr - 1) / 2, gc / 2);
+      const b = el('button', 'gm-edge ' + (horiz ? 'h' : 'v')); edgeEl[e] = b; grid.appendChild(b);
+      b.addEventListener('click', () => play(e));
+    }
+    body.appendChild(grid);
+    const score = (w) => owners.filter((o) => o === w).length;
+    const draw = () => {
+      for (let e = 0; e < DB_E; e++) edgeEl[e].className = 'gm-edge ' + (e < DB_H ? 'h' : 'v') + (edges[e] ? ' on' : '') + (e === last ? ' last' : '');
+      owners.forEach((o, i) => { boxEl[i].className = 'gm-box' + (o === 'you' ? ' you' : o === 'pip' ? ' pip' : ''); boxEl[i].textContent = o === 'you' ? 'Y' : o === 'pip' ? 'P' : ''; });
+    };
+    const scoreLine = () => `You ${score('you')} - Pip ${score('pip')}.`;
+    const ended = () => {
+      if (owners.some((o) => !o)) return false;
+      const a = score('you'), p = score('pip'); draw();
+      finish(a > p ? 'player' : p > a ? 'pip' : 'draw'); setStatus(`${a > p ? 'You won' : p > a ? 'Pip won' : 'A draw'}: ${scoreLine()}`);
+      return true;
+    };
+    function pipTurn() {
+      if (my !== token) return;
+      const e = dbPick(edges, owners, level), n = dbPlay(edges, owners, e, 'pip');
+      last = e; host.sfx('move'); plies++; draw();
+      if (ended()) return;
+      if (n) { setStatus(`Pip scored and goes again. ${scoreLine()}`); setTimeout(pipTurn, 550); return; }
+      turn = me; setStatus(`Your turn. ${scoreLine()}`);
+    }
+    function play(e) {
+      if (my !== token || turn !== me || edges[e]) return;
+      const n = dbPlay(edges, owners, e, 'you');
+      last = e; host.sfx('move'); plies++; draw();
+      if (ended()) return;
+      if (n) { setStatus(`Nice, a box! Go again. ${scoreLine()}`); return; }
+      turn = 'pip'; setStatus(`Pip is thinking... ${scoreLine()}`);
+      setTimeout(pipTurn, 500);
+    }
+    draw();
+    setStatus(turn === 'you' ? 'Draw a line between two dots. Close a box to score it.' : 'Pip goes first.');
+    if (turn === 'pip') setTimeout(pipTurn, 500);
   }
 
   // ---- checkers (you are light and move up; Pip is dark). Swapping sides is not offered here, you always move first.
@@ -483,7 +778,7 @@
   function open(which) {
     if (!panel) build();
     panel.style.display = 'block';
-    if (which && ['chess', 'checkers', 'connect4', 'ttt'].includes(which)) game = which;
+    if (which && ['chess', 'checkers', 'connect4', 'ttt', 'gomoku', 'hangman', 'battleship', 'dots'].includes(which)) game = which;
     titleSel.value = game; levelSel.value = level.split(':')[0]; strSel.value = strN(level);
     start();
   }

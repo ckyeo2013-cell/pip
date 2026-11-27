@@ -151,8 +151,13 @@ function think(rawText, ctx = {}) {
   const platform = ctx.platform || process.platform;
   const hasAI = !!ctx.hasAI;
   const now = ctx.now instanceof Date ? ctx.now : new Date();
-  const orig = clean(rawText);
+  let orig = clean(rawText);
   if (!orig || orig.length > 400) return null;
+  { // other languages and a few extra offline tricks (lang.js): answered here, or turned into the English request the rest of this file knows
+    const lg = require('./lang').process(orig, ctx.lang, now);
+    if (lg && lg.reply) return { reply: lg.reply };
+    if (lg && lg.text) orig = lg.text;
+  }
   const t = orig.toLowerCase();
   let m;
 
@@ -161,7 +166,7 @@ function think(rawText, ctx = {}) {
   if (/^(?:hi|hello|hey|yo|sup|hiya|howdy|good (?:morning|afternoon|evening))(?: pip| there)?$|^pip$/.test(hello)) return { reply: pick(['Hi! What can I do for you?', 'Hello! Ready when you are.', 'Hey! What are we doing today?']) };
   if (/^(?:thanks|thank you|thx|ty|cheers)(?: pip| so much| a lot)?$/.test(t)) return { reply: pick(['Anytime!', 'You got it!', 'Happy to help!']) };
   if (/^(?:what can you do|help|what do you do|how do you work|what are your commands)\??$/.test(t)) {
-    return { reply: 'Without any AI, I can: open sites and apps ("open YouTube"), search ("play lofi on YouTube", "google cats"), control volume and music, scroll, switch tabs, set timers and reminders ("remind me in 20 minutes to stretch"), do quick maths, flip coins and roll dice, tell the time, open settings pages ("wifi settings"), look in your calendar ("when is Sam\'s birthday"), and open a Discord, Slack, Teams or WhatsApp chat ("message Sam on Discord saying hi"). For everything else (writing, code, questions, seeing your screen) I need an AI key in the gear button.' };
+    return { reply: 'Without any AI, I can: open sites and apps ("open YouTube"), search ("play lofi on YouTube", "google cats"), control volume and music, scroll, switch tabs, set timers and reminders ("remind me in 20 minutes to stretch"), do quick maths, flip coins and roll dice, tell the time, open settings pages ("wifi settings"), look in your calendar ("when is Sam\'s birthday"), and open a Discord, Slack, Teams or WhatsApp chat ("message Sam on Discord saying hi"). I also speak Spanish, French, German, Portuguese and Italian for the basics (pick one in settings, or leave it on Auto), and can make passwords, pick between options, work out percentages, reverse or count text, convert colours and roman numerals. For everything else (writing, code, questions, seeing your screen) I need an AI key in the gear button.' };
   }
 
   // ---- time, date
